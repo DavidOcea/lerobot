@@ -107,3 +107,24 @@ class ROS2RobotLeader(Teleoperator):
         return {
             "joint_positions": np.array([pos_map.get(name, 0.0) for name in self.joint_names]),
         }
+
+    @property
+    def action_features(self) -> dict:
+        return {
+            "joint_positions": (self.config.num_joints,),
+        }
+    @property
+    def feedback_features(self) -> dict[str, type]:
+        return {}
+    
+    @property
+    def is_calibrated(self) -> bool:
+        return True
+
+    def calibrate(self) -> None:
+        pass
+
+    def send_feedback(self, feedback: dict[str, float]) -> None:
+        # TODO(rcadene, aliberts): Implement force feedback
+        raise NotImplementedError
+    
