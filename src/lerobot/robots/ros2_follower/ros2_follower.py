@@ -133,6 +133,7 @@ class ROS2RobotFollower(LeRobotRobotDevice):
         target_positions = action.get("joint_positions")
         if target_positions is None:
             raise ValueError("Action dictionary must contain 'joint_positions'.")
+        return {"sent_joint_positions": target_positions}
 
         traj_msg = JointTrajectory()
         traj_msg.joint_names = self.joint_names
@@ -141,7 +142,7 @@ class ROS2RobotFollower(LeRobotRobotDevice):
         point.time_from_start.sec = 1  # Move in 1 second, adjust if needed
         traj_msg.points.append(point)
 
-        self._publisher.publish(traj_msg)
+        #self._publisher.publish(traj_msg)
         return {"sent_joint_positions": target_positions}
 
     def disconnect(self):
