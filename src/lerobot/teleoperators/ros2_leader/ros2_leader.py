@@ -21,11 +21,11 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
-from lerobot.common.robot_devices.lerobot_robot_device import LeRobotRobotDevice
+from ..teleoperator import Teleoperator
 from lerobot.teleoperators.ros2_leader.config_ros2_leader import ROS2LeaderConfig
 
 
-class ROS2RobotLeader(LeRobotRobotDevice):
+class ROS2RobotLeader(Teleoperator):
     """
     The "Leader" teleoperator, representing the right arm.
     It reads its own joint states and provides them as actions for the follower.

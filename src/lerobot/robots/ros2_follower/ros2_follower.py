@@ -22,11 +22,11 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
-from lerobot.common.robot_devices.lerobot_robot_device import LeRobotRobotDevice
+from ..robot import Robot
 from lerobot.robots.ros2_follower.config_ros2_follower import ROS2FollowerConfig
 
 
-class ROS2RobotFollower(LeRobotRobotDevice):
+class ROS2RobotFollower(Robot):
     """
     The "Follower" robot, representing the left arm.
     It receives actions and applies them, and provides its own state as an observation.
