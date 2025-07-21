@@ -108,6 +108,9 @@ class ROS2RobotLeader(Teleoperator):
             "joint_positions": np.array([pos_map.get(name, 0.0) for name in self.joint_names]),
         }
 
+
+    def configure(self) -> None:
+        pass
     @property
     def action_features(self) -> dict:
         return {
