@@ -158,3 +158,6 @@ class ROS2RobotFollower(Robot):
         # Implement the logic to send the robot to a home position if required.
         print("Homing sequence not implemented for ROS2RobotFollower.")
         pass
+
+    def configure(self) -> None:
+        pass
