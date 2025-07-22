@@ -167,6 +167,7 @@ class ROS2RobotFollower(Robot):
         # Build the trajectory
         traj = JointTrajectory()
         traj.joint_names = self.joint_names
+        print(f"Joint names: {traj.joint_names} target_positions: {target_positions}")
         point = JointTrajectoryPoint()
         point.positions = [float(p) for p in target_positions]
         # Set a duration for the movement. Make this configurable.
@@ -183,7 +184,6 @@ class ROS2RobotFollower(Robot):
         # on the next tick, which will preempt the old one.
         self._action_client.send_goal_async(goal_msg)
         
-        return {"sent_joint_positions": target_positions}
         return {"sent_joint_positions": target_positions}
 
     def home(self, **kwargs):
