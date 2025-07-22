@@ -74,6 +74,8 @@ class ROS2RobotFollower(Robot):
             print("Follower robot is already connected.")
             return
 
+        # --- FIX: Call this BEFORE creating any ROS2 objects ---
+        SharedROS2Manager.ensure_initialized()
         # Create the node but DO NOT spin it here
         self._ros_node = Node(f"{self.name}_robot_interface_{id(self)}")
         self._publisher = self._ros_node.create_publisher(

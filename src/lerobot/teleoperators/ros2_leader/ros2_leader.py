@@ -60,7 +60,8 @@ class ROS2RobotLeader(Teleoperator):
         if self.is_connected:
             print("Leader teleoperator is already connected.")
             return
-
+        # --- FIX: Call this BEFORE creating any ROS2 objects ---
+        SharedROS2Manager.ensure_initialized()
         # 3. 不再手动初始化 rclpy 或创建线程
         # 节点创建保持不变
         self._ros_node = Node(f"{self.name}_teleop_interface_{id(self)}")

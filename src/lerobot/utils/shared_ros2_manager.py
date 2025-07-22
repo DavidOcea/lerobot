@@ -33,6 +33,16 @@ class SharedROS2Manager:
             cls._active_nodes.add(node)
 
     @classmethod
+    def ensure_initialized(cls):
+        """
+        Ensures that rclpy.init() has been called. This should be called
+        before any rclpy objects (like a Node) are created.
+        """
+        with cls._lock:
+            if not rclpy.ok():
+                print("--- Initializing rclpy context ---")
+                rclpy.init()
+    @classmethod
     def remove_node(cls, node: Node):
         """Removes a node and shuts down the executor if it's the last one."""
         with cls._lock:
