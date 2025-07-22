@@ -272,6 +272,8 @@ def record_loop(
         sent_action = robot.send_action(action)
 
         if dataset is not None:
+            print(f"sent_action: {sent_action}")
+            print(f"dataset.features: {dataset.features}")
             action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
             frame = {**observation_frame, **action_frame}
             dataset.add_frame(frame, task=single_task)
