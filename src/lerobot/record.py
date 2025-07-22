@@ -234,8 +234,8 @@ def record_loop(
         observation = robot.get_observation()
 
         if policy is not None or dataset is not None:
-            print(f"Observation: {observation}")
-            print(f"dataset.features: {dataset.features}")
+            #print(f"Observation: {observation}")
+            #print(f"dataset.features: {dataset.features}")
             observation_frame = build_dataset_frame(dataset.features, observation, prefix="observation")
 
         if policy is not None:
@@ -272,8 +272,8 @@ def record_loop(
         sent_action = robot.send_action(action)
 
         if dataset is not None:
-            print(f"sent_action: {sent_action}")
-            print(f"dataset.features: {dataset.features}")
+            #print(f"sent_action: {sent_action}")
+            #print(f"dataset.features: {dataset.features}")
             action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
             frame = {**observation_frame, **action_frame}
             dataset.add_frame(frame, task=single_task)
