@@ -138,9 +138,7 @@ class ROS2RobotFollower(Robot):
         if not self.is_connected:
             raise RuntimeError("Follower robot is not connected.")
 
-        target_positions = action.get("joint_positions")
-        if target_positions is None:
-            raise ValueError("Action dictionary must contain 'joint_positions'.")
+        target_positions = action
         return {"sent_joint_positions": target_positions}
 
         traj_msg = JointTrajectory()
