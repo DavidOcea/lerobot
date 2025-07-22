@@ -157,7 +157,7 @@ class ROS2RobotFollower(Robot):
         # sorted_items is now a list of (key, value) tuples, sorted correctly.
         #print(f"Received action: {sorted_items}")
         # Extract just the values from the sorted list
-        target_positions = [value+30 for key, value in sorted_items]
+        target_positions = [value for key, value in sorted_items]
 
         #print(f"Sending action: {target_positions}")
 
@@ -171,7 +171,7 @@ class ROS2RobotFollower(Robot):
         point = JointTrajectoryPoint()
         point.positions = [float(p) for p in target_positions]
         # Set a duration for the movement. Make this configurable.
-        point.time_from_start.sec = 5
+        point.time_from_start.sec = 1
         point.time_from_start.nanosec = 0
         traj.points.append(point)
         
