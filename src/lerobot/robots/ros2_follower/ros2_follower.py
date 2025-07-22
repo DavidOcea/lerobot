@@ -142,7 +142,7 @@ class ROS2RobotFollower(Robot):
             raise ValueError("Action dictionary must contain 'joint_positions'.")
         sorted_items = sorted(action.items(), key=lambda item: int(item[0].split('_')[-1]))
         # sorted_items is now a list of (key, value) tuples, sorted correctly.
-
+        print(f"Received action: {sorted_items}")
         # Extract just the values from the sorted list
         target_positions = [value for key, value in sorted_items]
 
