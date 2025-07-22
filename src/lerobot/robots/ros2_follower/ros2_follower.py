@@ -51,8 +51,41 @@ class ROS2RobotFollower(Robot):
         self.joint_names = [f"{self.config.joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
 
     def _joint_state_callback(self, msg: JointState):
-        with self._lock:
-            self._joint_state = msg
+        # Prepare lists to hold the filtered data
+        filtered_names = []
+        filtered_positions = []
+        filtered_velocities = []
+        
+        # Check if the incoming message has position and velocity data
+        has_positions = len(msg.position) == len(msg.name)
+        has_velocities = len(msg.velocity) == len(msg.name)
+        
+        #print(f"Received joint states: {msg.name}")
+        # Iterate through the received message and pick out the joints we care about
+        for i, name in enumerate(msg.name):
+            if name in self.joint_names:
+                filtered_names.append(name)
+                if has_positions:
+                    filtered_positions.append(msg.position[i])
+                if has_velocities:
+                    filtered_velocities.append(msg.velocity[i])
+        
+        # --- Validation Step ---
+        # Only accept the message if it contains ALL the joints we need.
+        # This prevents storing a partial state.
+        if len(filtered_names) == len(self.joint_names):
+            # Create a new, clean JointState message
+            filtered_msg = JointState()
+            filtered_msg.header = msg.header
+            filtered_msg.name = filtered_names
+            filtered_msg.position = filtered_positions
+            filtered_msg.velocity = filtered_velocities
+            with self._lock:
+                self._joint_state = filtered_msg
+        else: 
+            print(f"Follower joint states are missing some joints. Ignoring this message. joint_names: {self.joint_names} filterred_names: {filtered_names}")
+
+
 
     @property
     def observation_features(self) -> dict:
