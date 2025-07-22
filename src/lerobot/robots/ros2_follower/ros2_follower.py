@@ -19,8 +19,10 @@ from typing import Any, ClassVar, Type
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.action import ActionClient
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from control_msgs.action import FollowJointTrajectory
 
 from ..robot import Robot
 from lerobot.robots.ros2_follower.config_ros2_follower import ROS2FollowerConfig
@@ -40,7 +42,7 @@ class ROS2RobotFollower(Robot):
         self.config = config
         self._ros_node: Node | None = None
         self._ros_thread: threading.Thread | None = None
-        self._publisher = None
+        self._action_client: ActionClient | None = None        
         self._joint_state: JointState | None = None
         self._lock = threading.Lock()
 
@@ -67,8 +69,7 @@ class ROS2RobotFollower(Robot):
 
     @property
     def is_connected(self) -> bool:
-        return self._ros_node is not None and rclpy.ok()
-
+        return self._ros_node is not None and self._action_client is not None and self._action_client.server_is_ready()
     def connect(self, calibrate: bool = True):
         if self.is_connected:
             print("Follower robot is already connected.")
@@ -78,15 +79,26 @@ class ROS2RobotFollower(Robot):
         SharedROS2Manager.ensure_initialized()
         # Create the node but DO NOT spin it here
         self._ros_node = Node(f"{self.name}_robot_interface_{id(self)}")
-        self._publisher = self._ros_node.create_publisher(
-            JointTrajectory, self.config.topic_joint_trajectory, 10
+        # --- CREATE ACTION CLIENT INSTEAD OF PUBLISHER ---
+        # The topic_joint_trajectory from the config now refers to the action name
+        self._action_client = ActionClient(
+            self._ros_node, FollowJointTrajectory, self.config.topic_joint_trajectory
         )
+
         self._ros_node.create_subscription(
             JointState, self.config.topic_joint_states, self._joint_state_callback, 10
         )
 
         # Add the node to our shared manager, which handles the executor
         SharedROS2Manager.add_node(self._ros_node)
+
+        # Wait for the action server to be available
+        print(f"Waiting for '{self.config.topic_joint_trajectory}' action server...")
+        if not self._action_client.wait_for_server(timeout_sec=5.0):
+            self._ros_node.get_logger().error("Action server not available after waiting")
+            self.disconnect()
+            raise RuntimeError("FollowJointTrajectory action server not available.")
+        print("Action server found.")
 
         print("Waiting for the first joint state message from the follower (left arm)...")
         # The while loop now works because the shared executor is spinning in a background thread
@@ -102,11 +114,12 @@ class ROS2RobotFollower(Robot):
 
     def disconnect(self):
         if self.is_connected and self._ros_node is not None:
+            # Action client doesn't need explicit destruction like a publisher
+            self._action_client = None
             # Tell the manager to remove our node. It will handle shutdown if we are the last one.
             SharedROS2Manager.remove_node(self._ros_node)
             self._ros_node.destroy_node() # Still need to destroy the node itself
             self._ros_node = None
-            self._publisher = None
             print("Follower robot disconnected.")
 
     @property
@@ -147,14 +160,30 @@ class ROS2RobotFollower(Robot):
         target_positions = [value for key, value in sorted_items]
 
         #print(f"Sending action: {target_positions}")
-        traj_msg = JointTrajectory()
-        traj_msg.joint_names = self.joint_names
+
+        # --- NEW ACTION CLIENT LOGIC ---
+        goal_msg = FollowJointTrajectory.Goal()
+        
+        # Build the trajectory
+        traj = JointTrajectory()
+        traj.joint_names = self.joint_names
         point = JointTrajectoryPoint()
         point.positions = [float(p) for p in target_positions]
-        point.time_from_start.sec = 5  # Move in 1 second, adjust if needed
-        traj_msg.points.append(point)
-
-        self._publisher.publish(traj_msg)
+        # Set a duration for the movement. Make this configurable.
+        point.time_from_start.sec = 5
+        point.time_from_start.nanosec = 0
+        traj.points.append(point)
+        
+        goal_msg.trajectory = traj
+        
+        self._ros_node.get_logger().info('Sending goal to action server...')
+        
+        # Send the goal asynchronously.
+        # In a teleop loop, we don't wait for the result. We send a new goal
+        # on the next tick, which will preempt the old one.
+        self._action_client.send_goal_async(goal_msg)
+        
+        return {"sent_joint_positions": target_positions}
         return {"sent_joint_positions": target_positions}
 
     def home(self, **kwargs):
