@@ -30,5 +30,6 @@ class ROS2FollowerConfig(RobotConfig):
     topic_joint_states: str = "/joint_states"
     topic_joint_trajectory: str = "/right_arm_controller/follow_joint_trajectory"
     joint_name_prefix:str = "right_arm_joint_"
+    observation_joint_name_prefix: str = "arm_joint_"
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)

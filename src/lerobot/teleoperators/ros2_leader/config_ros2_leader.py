@@ -28,3 +28,4 @@ class ROS2LeaderConfig(TeleoperatorConfig):
     num_joints: int = 7  # Default to 7, adjust as needed
     topic_joint_states: str = "/joint_states"
     joint_name_prefix: str = "left_arm_joint_"
+    observation_joint_name_prefix: str = "arm_joint_"

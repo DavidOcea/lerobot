@@ -56,6 +56,7 @@ class ROS2RobotFollower(Robot):
         # IMPORTANT: Joint names are now constructed from the config's prefix.
         # Verify that `joint_name_prefix` and `num_joints` in your config match the robot.
         self.joint_names = [f"{self.config.joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
+        self.observation_joint_names = [f"{self.config.observation_joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
         self.cameras = make_cameras_from_configs(config.cameras)
     def _joint_state_callback(self, msg: JointState):
         # Prepare lists to hold the filtered data
@@ -178,7 +179,14 @@ class ROS2RobotFollower(Robot):
                 raise RuntimeError("Follower joint states are not being received.")
             state = self._joint_state
         pos_map = dict(zip(state.name, state.position))
-        obs_dict = {f"{motor}.pos": val for motor, val in pos_map.items()}
+
+        action_value = {}
+        for i in range(self.config.num_joints):
+            joint_name = self.joint_names[i]
+            observation_joint_name = self.observation_joint_names[i]
+            action_value[observation_joint_name] = pos_map[joint_name]    
+
+        obs_dict = {f"{motor}.pos": val for motor, val in action_value.items()}
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
@@ -195,6 +203,8 @@ class ROS2RobotFollower(Robot):
 
         if action is None:
             raise ValueError("Action dictionary must contain 'joint_positions'.")
+        
+        action = {key.removesuffix(".pos"): val for key, val in action.items()}
         sorted_items = sorted(action.items(), key=lambda item: int(item[0].split('_')[-1]))
         # sorted_items is now a list of (key, value) tuples, sorted correctly.
         #print(f"Received action: {sorted_items}")
@@ -246,4 +256,4 @@ class ROS2RobotFollower(Robot):
 
     @property
     def _motors_ft(self) -> dict[str, type]:
-        return {f"{motor}.pos": float for motor in self.joint_names}
+        return {f"{motor}.pos": float for motor in self.observation_joint_names}

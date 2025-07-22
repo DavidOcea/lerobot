@@ -24,7 +24,7 @@ from sensor_msgs.msg import JointState
 from ..teleoperator import Teleoperator
 from lerobot.teleoperators.ros2_leader.config_ros2_leader import ROS2LeaderConfig
 from lerobot.utils.shared_ros2_manager import SharedROS2Manager
-
+from functools import cached_property
 
 class ROS2RobotLeader(Teleoperator):
     """
@@ -46,7 +46,7 @@ class ROS2RobotLeader(Teleoperator):
         # IMPORTANT: Joint names are now constructed from the config's prefix.
         # Verify that `joint_name_prefix` and `num_joints` in your config match the robot.
         self.joint_names = [f"{self.config.joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
-
+        self.observation_joint_names = [f"{self.config.observation_joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
     def _joint_state_callback(self, msg: JointState):
         # Prepare lists to hold the filtered data
         filtered_names = []
@@ -125,8 +125,8 @@ class ROS2RobotLeader(Teleoperator):
 
     def get_action(self) -> dict[str, Any]:
         """
-        Reads the leader's (right arm) current state and formats it as an action
-        for the follower (left arm).
+        Reads the leader's (left arm) current state and formats it as an action
+        for the follower (right arm).
         """
         if not self.is_connected:
             raise RuntimeError("Leader teleoperator is not connected.")
@@ -137,18 +137,25 @@ class ROS2RobotLeader(Teleoperator):
             state = self._joint_state
 
         pos_map = dict(zip(state.name, state.position))
-
+        action_value = {}
+        for i in range(self.config.num_joints):
+            joint_name = self.joint_names[i]
+            observation_joint_name = self.observation_joint_names[i]
+            action_value[observation_joint_name] = pos_map[joint_name]
         # The action for the follower is the position of the leader's joints.
-        return pos_map
+        action = {f"{m}.pos":v for m,v in action_value.items()}
+        return action
 
 
     def configure(self) -> None:
         pass
+    @cached_property
+    def action_features(self) -> dict[str, type]:
+        return self._motors_ft
+
     @property
-    def action_features(self) -> dict:
-        return {
-            "joint_positions": (self.config.num_joints,),
-        }
+    def _motors_ft(self) -> dict[str, type]:
+        return {f"{motor}.pos": float for motor in self.observation_joint_names}
     @property
     def feedback_features(self) -> dict[str, type]:
         return {}
