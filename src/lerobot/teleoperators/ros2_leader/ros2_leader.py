@@ -76,9 +76,10 @@ class ROS2RobotLeader(Teleoperator):
             filtered_msg.name = filtered_names
             filtered_msg.position = filtered_positions
             filtered_msg.velocity = filtered_velocities
-            
-            with self._lock:
-                self._joint_state = filtered_msg
+        else: 
+            print(f"Leader joint states are missing some joints. Ignoring this message. joint_names: {self.joint_names} filterred_names: {filtered_names}")
+        with self._lock:
+            self._joint_state = filtered_msg
 
     @property
     def is_connected(self) -> bool:
