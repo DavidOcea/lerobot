@@ -23,6 +23,7 @@ from sensor_msgs.msg import JointState
 
 from ..teleoperator import Teleoperator
 from lerobot.teleoperators.ros2_leader.config_ros2_leader import ROS2LeaderConfig
+from lerobot.robots.utils.shared_ros2_manager import SharedROS2Manager
 
 
 class ROS2RobotLeader(Teleoperator):
@@ -46,45 +47,47 @@ class ROS2RobotLeader(Teleoperator):
         # Verify that `joint_name_prefix` and `num_joints` in your config match the robot.
         self.joint_names = [f"{self.config.joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
 
-    def _ros_spin(self):
-        rclpy.spin(self._ros_node)
-
     def _joint_state_callback(self, msg: JointState):
         with self._lock:
             self._joint_state = msg
 
     @property
     def is_connected(self) -> bool:
-        return self._ros_node is not None
+        # 更稳健的检查：节点存在且rclpy仍在运行
+        return self._ros_node is not None and rclpy.ok()
 
     def connect(self, calibrate: bool = True):
         if self.is_connected:
             print("Leader teleoperator is already connected.")
             return
 
-        try:
-            rclpy.init()
-        except RuntimeError:
-            pass  # Already initialized
-
-        self._ros_node = Node(f"{self.name}_teleop_interface")
+        # 3. 不再手动初始化 rclpy 或创建线程
+        # 节点创建保持不变
+        self._ros_node = Node(f"{self.name}_teleop_interface_{id(self)}")
         self._ros_node.create_subscription(
             JointState, self.config.topic_joint_states, self._joint_state_callback, 10
         )
 
-        self._ros_thread = threading.Thread(target=self._ros_spin, daemon=True)
-        self._ros_thread.start()
+        # 将节点添加到共享管理器，由它负责启动和管理执行器
+        SharedROS2Manager.add_node(self._ros_node)
 
         print("Waiting for the first joint state message from the leader (right arm)...")
+        # 因为共享执行器已在后台运行，这个循环现在可以正常工作了
+        start_time = time.time()
         while self._joint_state is None:
+            if time.time() - start_time > 5: # 增加5秒超时
+                raise RuntimeError("Failed to receive joint state for leader within 5 seconds.")
             time.sleep(0.1)
         print("Leader teleoperator connected.")
 
     def disconnect(self):
-        if self.is_connected:
+        if self.is_connected and self._ros_node is not None:
+            # 4. 通知共享管理器移除此节点
+            # 管理器会在最后一个节点被移除时自动关闭执行器
+            SharedROS2Manager.remove_node(self._ros_node)
+
+            # 销毁节点本身
             self._ros_node.destroy_node()
-            # Attempt to shutdown rclpy, it's safe to call multiple times
-            rclpy.try_shutdown()
             self._ros_node = None
             print("Leader teleoperator disconnected.")
 

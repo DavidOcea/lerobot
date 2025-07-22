@@ -24,7 +24,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from ..robot import Robot
 from lerobot.robots.ros2_follower.config_ros2_follower import ROS2FollowerConfig
-
+from lerobot.robots.utils.shared_ros2_manager import SharedROS2Manager
 
 class ROS2RobotFollower(Robot):
     """
@@ -48,9 +48,6 @@ class ROS2RobotFollower(Robot):
         # Verify that `joint_name_prefix` and `num_joints` in your config match the robot.
         self.joint_names = [f"{self.config.joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
 
-    def _ros_spin(self):
-        rclpy.spin(self._ros_node)
-
     def _joint_state_callback(self, msg: JointState):
         with self._lock:
             self._joint_state = msg
@@ -70,19 +67,15 @@ class ROS2RobotFollower(Robot):
 
     @property
     def is_connected(self) -> bool:
-        return self._ros_node is not None and self._publisher is not None
+        return self._ros_node is not None and rclpy.ok()
 
     def connect(self, calibrate: bool = True):
         if self.is_connected:
             print("Follower robot is already connected.")
             return
 
-        try:
-            rclpy.init()
-        except RuntimeError:
-            pass  # Already initialized
-
-        self._ros_node = Node(f"{self.name}_robot_interface")
+        # Create the node but DO NOT spin it here
+        self._ros_node = Node(f"{self.name}_robot_interface_{id(self)}")
         self._publisher = self._ros_node.create_publisher(
             JointTrajectory, self.config.topic_joint_trajectory, 10
         )
@@ -90,16 +83,29 @@ class ROS2RobotFollower(Robot):
             JointState, self.config.topic_joint_states, self._joint_state_callback, 10
         )
 
-        self._ros_thread = threading.Thread(target=self._ros_spin, daemon=True)
-        self._ros_thread.start()
+        # Add the node to our shared manager, which handles the executor
+        SharedROS2Manager.add_node(self._ros_node)
 
         print("Waiting for the first joint state message from the follower (left arm)...")
+        # The while loop now works because the shared executor is spinning in a background thread
+        start_time = time.time()
         while self._joint_state is None:
+            if time.time() - start_time > 5: # Add a timeout
+                raise RuntimeError("Failed to receive joint state for follower within 5 seconds.")
             time.sleep(0.1)
         print("Follower robot connected.")
 
         if calibrate:
             self.calibrate()
+
+    def disconnect(self):
+        if self.is_connected and self._ros_node is not None:
+            # Tell the manager to remove our node. It will handle shutdown if we are the last one.
+            SharedROS2Manager.remove_node(self._ros_node)
+            self._ros_node.destroy_node() # Still need to destroy the node itself
+            self._ros_node = None
+            self._publisher = None
+            print("Follower robot disconnected.")
 
     @property
     def is_calibrated(self) -> bool:
@@ -144,14 +150,6 @@ class ROS2RobotFollower(Robot):
 
         #self._publisher.publish(traj_msg)
         return {"sent_joint_positions": target_positions}
-
-    def disconnect(self):
-        if self.is_connected:
-            self._ros_node.destroy_node()
-            # Do not shutdown rclpy here, as the leader might still be using it
-            self._ros_node = None
-            self._publisher = None
-            print("Follower robot disconnected.")
 
     def home(self, **kwargs):
         """Return the robot to a pre-defined home position."""
