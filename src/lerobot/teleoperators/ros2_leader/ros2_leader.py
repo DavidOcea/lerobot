@@ -57,7 +57,7 @@ class ROS2RobotLeader(Teleoperator):
         has_positions = len(msg.position) == len(msg.name)
         has_velocities = len(msg.velocity) == len(msg.name)
         
-        print(f"Received joint states: {msg.name}")
+        # print(f"Received joint states: {msg.name}")
         # Iterate through the received message and pick out the joints we care about
         for i, name in enumerate(msg.name):
             if name in self.joint_names:

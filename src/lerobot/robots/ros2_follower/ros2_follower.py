@@ -138,11 +138,15 @@ class ROS2RobotFollower(Robot):
         if not self.is_connected:
             raise RuntimeError("Follower robot is not connected.")
 
-        target_positions = action
-        if target_positions is None:
+        if action is None:
             raise ValueError("Action dictionary must contain 'joint_positions'.")
-        return {"sent_joint_positions": target_positions}
+        sorted_items = sorted(action.items(), key=lambda item: int(item[0].split('_')[-1]))
+        # sorted_items is now a list of (key, value) tuples, sorted correctly.
 
+        # Extract just the values from the sorted list
+        target_positions = [value for key, value in sorted_items]
+
+        print(f"Sending action: {target_positions}")
         traj_msg = JointTrajectory()
         traj_msg.joint_names = self.joint_names
         point = JointTrajectoryPoint()
