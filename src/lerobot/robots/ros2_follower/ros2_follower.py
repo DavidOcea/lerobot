@@ -236,7 +236,7 @@ class ROS2RobotFollower(Robot):
         # on the next tick, which will preempt the old one.
         self._action_client.send_goal_async(goal_msg)
         
-        return {"sent_joint_positions": target_positions}
+        return action
 
     def home(self, **kwargs):
         """Return the robot to a pre-defined home position."""
