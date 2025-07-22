@@ -24,7 +24,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from ..robot import Robot
 from lerobot.robots.ros2_follower.config_ros2_follower import ROS2FollowerConfig
-from lerobot.robots.utils.shared_ros2_manager import SharedROS2Manager
+from lerobot.utils.shared_ros2_manager import SharedROS2Manager
 
 class ROS2RobotFollower(Robot):
     """

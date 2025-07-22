@@ -23,7 +23,7 @@ from sensor_msgs.msg import JointState
 
 from ..teleoperator import Teleoperator
 from lerobot.teleoperators.ros2_leader.config_ros2_leader import ROS2LeaderConfig
-from lerobot.robots.utils.shared_ros2_manager import SharedROS2Manager
+from lerobot.utils.shared_ros2_manager import SharedROS2Manager
 
 
 class ROS2RobotLeader(Teleoperator):
