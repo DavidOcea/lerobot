@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
+
 import threading
 import time
 from typing import Any, ClassVar, Type
@@ -24,9 +26,14 @@ from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 
+from lerobot.cameras.utils import make_cameras_from_configs
+
 from ..robot import Robot
 from lerobot.robots.ros2_follower.config_ros2_follower import ROS2FollowerConfig
 from lerobot.utils.shared_ros2_manager import SharedROS2Manager
+from functools import cached_property
+
+logger = logging.getLogger(__name__)
 
 class ROS2RobotFollower(Robot):
     """
@@ -49,7 +56,7 @@ class ROS2RobotFollower(Robot):
         # IMPORTANT: Joint names are now constructed from the config's prefix.
         # Verify that `joint_name_prefix` and `num_joints` in your config match the robot.
         self.joint_names = [f"{self.config.joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
-
+        self.cameras = make_cameras_from_configs(config.cameras)
     def _joint_state_callback(self, msg: JointState):
         # Prepare lists to hold the filtered data
         filtered_names = []
@@ -87,13 +94,9 @@ class ROS2RobotFollower(Robot):
 
 
 
-    @property
-    def observation_features(self) -> dict:
-        return {
-            "joint_positions": (self.config.num_joints,),
-            "joint_velocities": (self.config.num_joints,),
-        }
-
+    @cached_property
+    def observation_features(self) -> dict[str, type | tuple]:
+        return {**self._motors_ft, **self._cameras_ft}
     @property
     def action_features(self) -> dict:
         return {
@@ -102,7 +105,7 @@ class ROS2RobotFollower(Robot):
 
     @property
     def is_connected(self) -> bool:
-        return self._ros_node is not None and self._action_client is not None and self._action_client.server_is_ready()
+        return self._ros_node is not None and self._action_client is not None and self._action_client.server_is_ready() and all(cam.is_connected for cam in self.cameras.values())
     def connect(self, calibrate: bool = True):
         if self.is_connected:
             print("Follower robot is already connected.")
@@ -145,6 +148,11 @@ class ROS2RobotFollower(Robot):
         if calibrate:
             self.calibrate()
 
+        for cam in self.cameras.values():
+            cam.connect()
+
+        self.configure()
+
     def disconnect(self):
         if self.is_connected and self._ros_node is not None:
             # Action client doesn't need explicit destruction like a publisher
@@ -172,13 +180,15 @@ class ROS2RobotFollower(Robot):
                 raise RuntimeError("Follower joint states are not being received.")
             state = self._joint_state
 
-        pos_map = dict(zip(state.name, state.position))
-        vel_map = dict(zip(state.name, state.velocity))
+        obs_dict = {f"{motor}.pos": val for motor, val in state.items()}
+        # Capture images from cameras
+        for cam_key, cam in self.cameras.items():
+            start = time.perf_counter()
+            obs_dict[cam_key] = cam.async_read()
+            dt_ms = (time.perf_counter() - start) * 1e3
+            logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
-        return {
-            "joint_positions": np.array([pos_map.get(name, 0.0) for name in self.joint_names]),
-            "joint_velocities": np.array([vel_map.get(name, 0.0) for name in self.joint_names]),
-        }
+
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         if not self.is_connected:
@@ -227,3 +237,14 @@ class ROS2RobotFollower(Robot):
 
     def configure(self) -> None:
         pass
+
+    @property
+    def _cameras_ft(self) -> dict[str, tuple]:
+        return {
+            cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3) for cam in self.cameras
+        }    
+    
+
+    @property
+    def _motors_ft(self) -> dict[str, type]:
+        return {f"{motor}.pos": float for motor in self.joint_names}
