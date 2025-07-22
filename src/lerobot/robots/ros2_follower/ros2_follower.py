@@ -179,8 +179,8 @@ class ROS2RobotFollower(Robot):
             if self._joint_state is None:
                 raise RuntimeError("Follower joint states are not being received.")
             state = self._joint_state
-
-        obs_dict = {f"{motor}.pos": val for motor, val in state.items()}
+        pos_map = dict(zip(state.name, state.position))
+        obs_dict = {f"{motor}.pos": val for motor, val in pos_map.items()}
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
