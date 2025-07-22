@@ -139,6 +139,7 @@ class ROS2RobotFollower(Robot):
             raise RuntimeError("Follower robot is not connected.")
 
         target_positions = action
+        print(f"Sending joint positions: {target_positions}")
         return {"sent_joint_positions": target_positions}
 
         traj_msg = JointTrajectory()
