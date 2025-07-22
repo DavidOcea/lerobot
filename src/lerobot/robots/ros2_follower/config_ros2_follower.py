@@ -33,3 +33,4 @@ class ROS2FollowerConfig(RobotConfig):
     observation_joint_name_prefix: str = "arm_joint_"
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    joint_direction: list= field(default_factory=lambda: [1, -1, 1, 1, 1, 1, 1])

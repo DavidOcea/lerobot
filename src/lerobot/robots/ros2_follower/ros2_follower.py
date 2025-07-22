@@ -58,6 +58,7 @@ class ROS2RobotFollower(Robot):
         self.joint_names = [f"{self.config.joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
         self.observation_joint_names = [f"{self.config.observation_joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
         self.cameras = make_cameras_from_configs(config.cameras)
+        self.joint_direction_map = {f"{self.observation_joint_names[i]}.pos": config.joint_direction[i] for i in range(len(self.observation_joint_names))}
     def _joint_state_callback(self, msg: JointState):
         # Prepare lists to hold the filtered data
         filtered_names = []
@@ -203,7 +204,9 @@ class ROS2RobotFollower(Robot):
 
         if action is None:
             raise ValueError("Action dictionary must contain 'joint_positions'.")
-        
+        # modify the action by joint_direction_map
+        action = {key: val * self.joint_direction_map[key] for key, val in action.items()}
+
         action_pos = {key.removesuffix(".pos"): val for key, val in action.items()}
         sorted_items = sorted(action_pos.items(), key=lambda item: int(item[0].split('_')[-1]))
         # sorted_items is now a list of (key, value) tuples, sorted correctly.
@@ -223,8 +226,8 @@ class ROS2RobotFollower(Robot):
         point = JointTrajectoryPoint()
         point.positions = [float(p) for p in target_positions]
         # Set a duration for the movement. Make this configurable.
-        point.time_from_start.sec = 1
-        point.time_from_start.nanosec = 0
+        point.time_from_start.sec = 0
+        point.time_from_start.nanosec = 100000000
         traj.points.append(point)
         
         goal_msg.trajectory = traj
