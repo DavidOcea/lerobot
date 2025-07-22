@@ -97,11 +97,9 @@ class ROS2RobotFollower(Robot):
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
         return {**self._motors_ft, **self._cameras_ft}
-    @property
-    def action_features(self) -> dict:
-        return {
-            "joint_positions": (self.config.num_joints,),
-        }
+    @cached_property
+    def action_features(self) -> dict[str, type]:
+        return self._motors_ft
 
     @property
     def is_connected(self) -> bool:
@@ -187,6 +185,7 @@ class ROS2RobotFollower(Robot):
             obs_dict[cam_key] = cam.async_read()
             dt_ms = (time.perf_counter() - start) * 1e3
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
+        return obs_dict
 
 
 
