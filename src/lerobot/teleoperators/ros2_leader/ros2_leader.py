@@ -108,9 +108,7 @@ class ROS2RobotLeader(Teleoperator):
         pos_map = dict(zip(state.name, state.position))
 
         # The action for the follower is the position of the leader's joints.
-        return {
-            "joint_positions": np.array([pos_map.get(name, 0.0) for name in self.joint_names]),
-        }
+        return pos_map
 
 
     def configure(self) -> None:
