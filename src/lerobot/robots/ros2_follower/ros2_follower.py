@@ -142,19 +142,19 @@ class ROS2RobotFollower(Robot):
             raise ValueError("Action dictionary must contain 'joint_positions'.")
         sorted_items = sorted(action.items(), key=lambda item: int(item[0].split('_')[-1]))
         # sorted_items is now a list of (key, value) tuples, sorted correctly.
-        print(f"Received action: {sorted_items}")
+        #print(f"Received action: {sorted_items}")
         # Extract just the values from the sorted list
         target_positions = [value for key, value in sorted_items]
 
-        print(f"Sending action: {target_positions}")
+        #print(f"Sending action: {target_positions}")
         traj_msg = JointTrajectory()
         traj_msg.joint_names = self.joint_names
         point = JointTrajectoryPoint()
         point.positions = [float(p) for p in target_positions]
-        point.time_from_start.sec = 1  # Move in 1 second, adjust if needed
+        point.time_from_start.sec = 5  # Move in 1 second, adjust if needed
         traj_msg.points.append(point)
 
-        #self._publisher.publish(traj_msg)
+        self._publisher.publish(traj_msg)
         return {"sent_joint_positions": target_positions}
 
     def home(self, **kwargs):
