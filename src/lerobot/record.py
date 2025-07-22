@@ -234,6 +234,8 @@ def record_loop(
         observation = robot.get_observation()
 
         if policy is not None or dataset is not None:
+            print(f"Observation: {observation}")
+            print(f"dataset.features: {dataset.features}")
             observation_frame = build_dataset_frame(dataset.features, observation, prefix="observation")
 
         if policy is not None:
