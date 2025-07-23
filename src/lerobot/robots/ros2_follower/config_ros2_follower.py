@@ -29,6 +29,7 @@ class ROS2FollowerConfig(RobotConfig):
     num_joints: int = 7  # Default to 7, adjust as needed
     topic_joint_states: str = "/joint_states"
     topic_joint_trajectory: str = "/right_arm_controller/follow_joint_trajectory"
+    topic_joint_positions: str = "/right_arm_controller/commands"
     joint_name_prefix:str = "right_arm_joint_"
     observation_joint_name_prefix: str = "arm_joint_"
     # cameras

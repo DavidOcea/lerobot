@@ -25,6 +25,7 @@ from rclpy.action import ActionClient
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
+from std_msgs.msg import Float64MultiArray
 
 from lerobot.cameras.utils import make_cameras_from_configs
 
@@ -52,6 +53,8 @@ class ROS2RobotFollower(Robot):
         self._action_client: ActionClient | None = None        
         self._joint_state: JointState | None = None
         self._lock = threading.Lock()
+
+        self._publisher_: Float64MultiArray | None = None
 
         # IMPORTANT: Joint names are now constructed from the config's prefix.
         # Verify that `joint_name_prefix` and `num_joints` in your config match the robot.
@@ -105,7 +108,9 @@ class ROS2RobotFollower(Robot):
 
     @property
     def is_connected(self) -> bool:
-        return self._ros_node is not None and self._action_client is not None and self._action_client.server_is_ready() and all(cam.is_connected for cam in self.cameras.values())
+        #return self._ros_node is not None and self._action_client is not None and self._action_client.server_is_ready() and all(cam.is_connected for cam in self.cameras.values())
+        return self._ros_node is not None and all(cam.is_connected for cam in self.cameras.values())
+
     def connect(self, calibrate: bool = True):
         if self.is_connected:
             print("Follower robot is already connected.")
@@ -117,9 +122,9 @@ class ROS2RobotFollower(Robot):
         self._ros_node = Node(f"{self.name}_robot_interface_{id(self)}")
         # --- CREATE ACTION CLIENT INSTEAD OF PUBLISHER ---
         # The topic_joint_trajectory from the config now refers to the action name
-        self._action_client = ActionClient(
-            self._ros_node, FollowJointTrajectory, self.config.topic_joint_trajectory
-        )
+        #self._action_client = ActionClient(
+        #    self._ros_node, FollowJointTrajectory, self.config.topic_joint_trajectory
+        #)
 
         self._ros_node.create_subscription(
             JointState, self.config.topic_joint_states, self._joint_state_callback, 10
@@ -129,12 +134,20 @@ class ROS2RobotFollower(Robot):
         SharedROS2Manager.add_node(self._ros_node)
 
         # Wait for the action server to be available
-        print(f"Waiting for '{self.config.topic_joint_trajectory}' action server...")
-        if not self._action_client.wait_for_server(timeout_sec=5.0):
-            self._ros_node.get_logger().error("Action server not available after waiting")
-            self.disconnect()
-            raise RuntimeError("FollowJointTrajectory action server not available.")
-        print("Action server found.")
+        #print(f"Waiting for '{self.config.topic_joint_trajectory}' action server...")
+        #if not self._action_client.wait_for_server(timeout_sec=5.0):
+        #    self._ros_node.get_logger().error("Action server not available after waiting")
+        #    self.disconnect()
+        #    raise RuntimeError("FollowJointTrajectory action server not available.")
+        #print("Action server found.")
+
+        # 1. 创建一个发布者
+        # -----------------
+        # 主题名称遵循 ros2_control 的标准格式：/<控制器名称>/commands
+        # 消息类型必须是 Float64MultiArray
+        # QoS 配置文件的大小设为10，这是通用标准。
+        topic_name = self.config.topic_joint_positions
+        self.publisher_ = self.create_publisher(Float64MultiArray, topic_name, 10)
 
         print("Waiting for the first joint state message from the follower (left arm)...")
         # The while loop now works because the shared executor is spinning in a background thread
@@ -216,13 +229,38 @@ class ROS2RobotFollower(Robot):
 
         #print(f"Sending action: {target_positions}")
 
+        return action
+
+    def send_target_position(self, target_positions):
+        """
+        发送一组目标关节位置。
+
+        Args:
+            target_positions (list of float): 一个包含所有关节目标位置的列表。
+                                              列表的顺序必须与控制器配置文件中的关节顺序严格一致。
+        """
+        # 2. 创建消息对象
+        # -----------------
+        msg = Float64MultiArray()
+
+        # 3. 填充消息数据
+        # -----------------
+        # 将 Python 列表赋值给消息的 data 字段。
+        msg.data = target_positions
+
+        # 4. 发布消息
+        # -------------
+        self.publisher_.publish(msg)
+        self.get_logger().info(f'已发布目标位置: {msg.data}')
+
+    def send_target_trajectory(self, target_positions: list[Any],action_client:ActionClient):
         # --- NEW ACTION CLIENT LOGIC ---
         goal_msg = FollowJointTrajectory.Goal()
         
         # Build the trajectory
         traj = JointTrajectory()
         traj.joint_names = self.joint_names
-        print(f"Joint names: {traj.joint_names} target_positions: {target_positions}")
+        #print(f"Joint names: {traj.joint_names} target_positions: {target_positions}")
         point = JointTrajectoryPoint()
         point.positions = [float(p) for p in target_positions]
         # Set a duration for the movement. Make this configurable.
@@ -237,10 +275,7 @@ class ROS2RobotFollower(Robot):
         # Send the goal asynchronously.
         # In a teleop loop, we don't wait for the result. We send a new goal
         # on the next tick, which will preempt the old one.
-        self._action_client.send_goal_async(goal_msg)
-        
-        return action
-
+        action_client.send_goal_async(goal_msg)
     def home(self, **kwargs):
         """Return the robot to a pre-defined home position."""
         # Implement the logic to send the robot to a home position if required.
