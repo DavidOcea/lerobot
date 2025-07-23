@@ -228,7 +228,7 @@ class ROS2RobotFollower(Robot):
         target_positions = [value for key, value in sorted_items]
 
         #print(f"Sending action: {target_positions}")
-
+        self.send_target_position(target_positions)
         return action
 
     def send_target_position(self, target_positions):
