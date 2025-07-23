@@ -147,7 +147,7 @@ class ROS2RobotFollower(Robot):
         # 消息类型必须是 Float64MultiArray
         # QoS 配置文件的大小设为10，这是通用标准。
         topic_name = self.config.topic_joint_positions
-        self.publisher_ = self.create_publisher(Float64MultiArray, topic_name, 10)
+        self.publisher_ = self._ros_node.create_publisher(Float64MultiArray, topic_name, 10)
 
         print("Waiting for the first joint state message from the follower (left arm)...")
         # The while loop now works because the shared executor is spinning in a background thread
