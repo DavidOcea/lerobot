@@ -149,6 +149,10 @@ class ROS2RobotFollower(Robot):
         topic_name = self.config.topic_joint_positions
         self.publisher_ = self._ros_node.create_publisher(Float64MultiArray, topic_name, 10)
 
+
+        self._ros_node.get_logger().info('Waiting for subscriber to connect...')
+        while self.publisher_.get_subscription_count() == 0:
+            rclpy.spin_once(self._ros_node, timeout_sec=0.1) # 短暂spin来处理事件
         print("Waiting for the first joint state message from the follower (left arm)...")
         # The while loop now works because the shared executor is spinning in a background thread
         start_time = time.time()
