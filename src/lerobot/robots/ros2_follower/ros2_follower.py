@@ -255,7 +255,7 @@ class ROS2RobotFollower(Robot):
         # 4. 发布消息
         # -------------
         self.publisher_.publish(msg)
-        self.get_logger().info(f'已发布目标位置: {msg.data}')
+        self._ros_node.get_logger().info(f'已发布目标位置: {msg.data}')
 
     def send_target_trajectory(self, target_positions: list[Any],action_client:ActionClient):
         # --- NEW ACTION CLIENT LOGIC ---
