@@ -256,7 +256,7 @@ class ROS2RobotFollower(Robot):
         current_timestamp = time.time()
 
         # 准备要记录的数据，键名使用 'action/' 前缀进行分组
-        log_data = {f"action/{key}": value for key, value in sorted_items.items()}
+        log_data = {f"action/{key}": value for key, value in sorted_items}
         
         # 将时间戳本身也添加到 log_data 中，这是定义 x 轴的关键
         log_data["timestamp"] = current_timestamp
