@@ -68,7 +68,7 @@ class ROS2RobotFollower(Robot):
         # 2. 在初始化时启动 wandb run
         try:
             wandb.init(
-                project="lerobot-ros2-follower", 
+                project="gpttest", 
                 name=f"{self.name}-run-{int(time.time())}",
                 config=self.config.to_dict(),
                 reinit=True
