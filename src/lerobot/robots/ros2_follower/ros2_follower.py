@@ -70,7 +70,7 @@ class ROS2RobotFollower(Robot):
             wandb.init(
                 project="gpttest", 
                 name=f"{self.name}-run-{int(time.time())}",
-                config=self.config.to_dict(),
+                config={},
                 reinit=True
             )
             # 定义 "timestamp" 为自定义 x 轴
