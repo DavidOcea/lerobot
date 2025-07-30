@@ -33,6 +33,7 @@ from ..robot import Robot
 from lerobot.robots.ros2_follower.config_ros2_follower import ROS2FollowerConfig
 from lerobot.utils.shared_ros2_manager import SharedROS2Manager
 from functools import cached_property
+import wandb
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,25 @@ class ROS2RobotFollower(Robot):
         self.observation_joint_names = [f"{self.config.observation_joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
         self.cameras = make_cameras_from_configs(config.cameras)
         self.joint_direction_map = {f"{self.observation_joint_names[i]}.pos": config.joint_direction[i] for i in range(len(self.observation_joint_names))}
+      
+        ### WANDB MODIFICATION START ###
+        # 2. 在初始化时启动 wandb run
+        try:
+            wandb.init(
+                project="lerobot-ros2-follower", 
+                name=f"{self.name}-run-{int(time.time())}",
+                config=self.config.to_dict(),
+                reinit=True
+            )
+            # 定义 "timestamp" 为自定义 x 轴
+            wandb.define_metric("timestamp")
+            # 将所有 "action/" 开头的指标的 x 轴都设置为 "timestamp"
+            wandb.define_metric("action/*", step_metric="timestamp")
+            print("Weights & Biases initialized for ROS2RobotFollower, using 'timestamp' as metric.")
+        except Exception as e:
+            print(f"Could not initialize Weights & Biases. Error: {e}")
+            wandb.init(mode="disabled")
+        ### WANDB MODIFICATION END ###
     def _joint_state_callback(self, msg: JointState):
         # Prepare lists to hold the filtered data
         filtered_names = []
@@ -228,9 +248,24 @@ class ROS2RobotFollower(Robot):
         sorted_items = sorted(action_pos.items(), key=lambda item: int(item[0].split('_')[-1]))
         # sorted_items is now a list of (key, value) tuples, sorted correctly.
         #print(f"Received action: {sorted_items}")
+
+
+
+        ### WANDB MODIFICATION START ###
+        # 4. 在发送动作时，使用时间戳记录 action 数据
+        current_timestamp = time.time()
+
+        # 准备要记录的数据，键名使用 'action/' 前缀进行分组
+        log_data = {f"action/{key}": value for key, value in sorted_items.items()}
+        
+        # 将时间戳本身也添加到 log_data 中，这是定义 x 轴的关键
+        log_data["timestamp"] = current_timestamp
+        
+        wandb.log(log_data)
+        ### WANDB MODIFICATION END ###
+
         # Extract just the values from the sorted list
         target_positions = [value for key, value in sorted_items]
-
         #print(f"Sending action: {target_positions}")
         self.send_target_position(target_positions)
         return action
