@@ -26,6 +26,8 @@ from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from control_msgs.action import FollowJointTrajectory
 from std_msgs.msg import Float64MultiArray
+from rclpy.publisher import Publisher
+
 
 from lerobot.cameras.utils import make_cameras_from_configs
 
@@ -55,8 +57,8 @@ class ROS2RobotFollower(Robot):
         self._joint_state: JointState | None = None
         self._lock = threading.Lock()
 
-        self._publisher_: Float64MultiArray | None = None
-
+        self._publisher: Publisher | None = None
+        self._gripper_publisher: Publisher |None = None
         # IMPORTANT: Joint names are now constructed from the config's prefix.
         # Verify that `joint_name_prefix` and `num_joints` in your config match the robot.
         self.joint_names = [f"{self.config.joint_name_prefix}{i+1}" for i in range(self.config.num_joints)]
