@@ -39,14 +39,14 @@ import wandb
 
 logger = logging.getLogger(__name__)
 
-class ROS2RobotFollower(Robot):
+class ROS2DualRobotFollower(Robot):
     """
     The "Follower" robot, representing the left arm.
     It receives actions and applies them, and provides its own state as an observation.
     """
 
     config_class: ClassVar[Type[ROS2DualFollowerConfig]] = ROS2DualFollowerConfig
-    name: str = "ros2_follower"
+    name: str = "ros2_dual_follower"
 
     def __init__(self, config: ROS2DualFollowerConfig):
         super().__init__(config)
