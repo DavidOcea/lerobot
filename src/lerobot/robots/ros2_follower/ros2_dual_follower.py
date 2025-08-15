@@ -172,7 +172,7 @@ class ROS2DualRobotFollower(Robot):
         self.left_arm_publisher_ = self._ros_node.create_publisher(Float64MultiArray, topic_name, 10)
 
 
-        self._ros_node.get_logger().info('Waiting for subscriber to connect...')
+        self._ros_node.get_logger().info('Waiting for left arm subscriber to connect...')
         while self.left_arm_publisher_ .get_subscription_count() == 0:
             rclpy.spin_once(self._ros_node, timeout_sec=0.1) # 短暂spin来处理事件
 
@@ -180,7 +180,7 @@ class ROS2DualRobotFollower(Robot):
         self.right_arm_publisher_ = self._ros_node.create_publisher(Float64MultiArray, topic_name, 10)
 
 
-        self._ros_node.get_logger().info('Waiting for subscriber to connect...')
+        self._ros_node.get_logger().info('Waiting for right arm subscriber to connect...')
         while self.right_arm_publisher_ .get_subscription_count() == 0:
             rclpy.spin_once(self._ros_node, timeout_sec=0.1) # 短暂spin来处理事件
 
