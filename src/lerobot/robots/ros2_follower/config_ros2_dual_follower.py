@@ -31,7 +31,7 @@ class ROS2DualFollowerConfig(RobotConfig):
     topic_joint_positions_right: str = "/supre_robot_follower/right_arm_controller/commands"
     topic_joint_positions_left: str = "/supre_robot_follower/left_arm_controller/commands"
     joint_name_prefix:str = "follower_"
-    joint_names: list[str] = [
+    joint_names: list[str] = field(default_factory=lambda:[
         'left_arm_joint_1',
         'left_arm_joint_2',
         'left_arm_joint_3',
@@ -44,7 +44,7 @@ class ROS2DualFollowerConfig(RobotConfig):
         'right_arm_joint_4',
         'right_arm_joint_5',
         'right_arm_joint_6',
-    ]
+    ])
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     joint_direction: list= field(default_factory=lambda: [1, 1, 1, 1, 1, 1,1, 1, 1, 1, 1, 1])

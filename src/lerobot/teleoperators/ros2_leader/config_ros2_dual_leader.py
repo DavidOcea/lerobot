@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lerobot.teleoperators.config import TeleoperatorConfig
 
@@ -28,7 +28,7 @@ class ROS2DualLeaderConfig(TeleoperatorConfig):
     num_joints: int = 7  # Default to 7, adjust as needed
     topic_joint_states: str = "/supre_robot_leader/joint_states"
     joint_name_prefix: str = "leader_"
-    joint_names: list[str] = [
+    joint_names: list[str] = field(default_factory=lambda:[
         'left_arm_joint_1',
         'left_arm_joint_2',
         'left_arm_joint_3',
@@ -41,4 +41,4 @@ class ROS2DualLeaderConfig(TeleoperatorConfig):
         'right_arm_joint_4',
         'right_arm_joint_5',
         'right_arm_joint_6',
-    ]
+    ])
