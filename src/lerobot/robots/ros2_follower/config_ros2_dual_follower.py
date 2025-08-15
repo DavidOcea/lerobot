@@ -47,4 +47,4 @@ class ROS2DualFollowerConfig(RobotConfig):
     ])
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
-    joint_direction: list= field(default_factory=lambda: [1, 1, 1, 1, 1, 1,1, 1, 1, 1, 1, 1])
+    joint_direction: list= field(default_factory=lambda: [-1, -1, 1, 1, 1, 1,-1, -1, 1, 1, 1, 1])
