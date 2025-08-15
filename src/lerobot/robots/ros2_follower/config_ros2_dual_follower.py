@@ -38,15 +38,13 @@ class ROS2DualFollowerConfig(RobotConfig):
         'left_arm_joint_4',
         'left_arm_joint_5',
         'left_arm_joint_6',
-        'left_arm_joint_7',
         'right_arm_joint_1',
         'right_arm_joint_2',
         'right_arm_joint_3',
         'right_arm_joint_4',
         'right_arm_joint_5',
         'right_arm_joint_6',
-        'right_arm_joint_7',
     ]
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
-    joint_direction: list= field(default_factory=lambda: [1, -1, 1, 1, 1, 1, 1])
+    joint_direction: list= field(default_factory=lambda: [1, 1, 1, 1, 1, 1,1, 1, 1, 1, 1, 1])
