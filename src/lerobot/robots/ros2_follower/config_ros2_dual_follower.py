@@ -18,22 +18,35 @@ from lerobot.cameras import CameraConfig
 
 from lerobot.robots.config import RobotConfig
 
-@RobotConfig.register_subclass("ros2_follower")
+@RobotConfig.register_subclass("ros2_dual_follower")
 @dataclass
-class ROS2FollowerConfig(RobotConfig):
+class ROS2DualFollowerConfig(RobotConfig):
     """
     Configuration for the ROS2 Follower Robot (Right Arm).
     """
 
-    name: str = "ros2_follower"
+    name: str = "ros2_dual_follower"
     num_joints: int = 7  # Default to 7, adjust as needed
-    topic_joint_states: str = "/joint_states"
-    topic_joint_trajectory: str = "/right_arm_controller/follow_joint_trajectory"
-    topic_joint_positions: str = "/right_arm_controller/commands"
-    topic_gripper = '/misumi_gripper_controller/commands'
-    topic_gripper_joint_positions = '/misumi_gripper/joint_states'
-    joint_name_prefix:str = "right_arm_joint_"
-    observation_joint_name_prefix: str = "arm_joint_"
+    topic_joint_states: str = "/supre_robot_follower/joint_states"
+    topic_joint_positions_right: str = "/supre_robot_follower/right_arm_controller/commands"
+    topic_joint_positions_left: str = "/supre_robot_follower/left_arm_controller/commands"
+    joint_name_prefix:str = "follower_"
+    joint_names: list[str] = [
+        'left_arm_joint_1',
+        'left_arm_joint_2',
+        'left_arm_joint_3',
+        'left_arm_joint_4',
+        'left_arm_joint_5',
+        'left_arm_joint_6',
+        'left_arm_joint_7',
+        'right_arm_joint_1',
+        'right_arm_joint_2',
+        'right_arm_joint_3',
+        'right_arm_joint_4',
+        'right_arm_joint_5',
+        'right_arm_joint_6',
+        'right_arm_joint_7',
+    ]
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     joint_direction: list= field(default_factory=lambda: [1, -1, 1, 1, 1, 1, 1])
