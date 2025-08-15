@@ -321,14 +321,14 @@ class ROS2DualRobotFollower(Robot):
         # Create and publish the message for the left arm
         left_msg = Float64MultiArray()
         left_msg.data = left_positions
-        self.left_arm_publisher_.publish(left_msg)
-        self._ros_node.get_logger().debug(f'Published to left arm: {left_msg.data}')
+        result = self.left_arm_publisher_.publish(left_msg)
+        self._ros_node.get_logger().info(f'Published to left arm: {left_msg.data} result: {result}')
 
         # Create and publish the message for the right arm
         right_msg = Float64MultiArray()
         right_msg.data = right_positions
-        self.right_arm_publisher_.publish(right_msg)
-        self._ros_node.get_logger().debug(f'Published to right arm: {right_msg.data}')
+        result = self.right_arm_publisher_.publish(right_msg)
+        self._ros_node.get_logger().info(f'Published to right arm: {right_msg.data} result: {result}')
 
     def send_target_trajectory(self, target_positions: list[Any],action_client:ActionClient):
         # --- NEW ACTION CLIENT LOGIC ---
