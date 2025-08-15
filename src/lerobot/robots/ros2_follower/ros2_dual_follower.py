@@ -247,6 +247,7 @@ class ROS2DualRobotFollower(Robot):
 
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
+        self._ros_node.get_logger().info(f"Sending action: {action}")
         if not self.is_connected:
             raise RuntimeError("Follower robot is not connected.")
 
@@ -297,7 +298,7 @@ class ROS2DualRobotFollower(Robot):
             target_positions (list of float): A list containing target positions for all joints,
                                               ordered as [left_arm_joints..., right_arm_joints...].
         """
-
+        self._ros_node.get_logger().info(f"Sending target positions:{target_positions}")
         if self.left_arm_publisher_ is None or self.right_arm_publisher_ is None:
             self._ros_node.get_logger().error("Arm publishers are not initialized!")
             return

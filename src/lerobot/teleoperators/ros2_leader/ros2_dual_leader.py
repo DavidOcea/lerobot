@@ -144,6 +144,7 @@ class ROS2DualRobotLeader(Teleoperator):
             action_value[observation_joint_name] = pos_map[joint_name]
         # The action for the follower is the position of the leader's joints.
         action = {f"{m}.pos":v for m,v in action_value.items()}
+        self._ros_node.get_logger().info(f"get action: {action}")
         return action
 
 
