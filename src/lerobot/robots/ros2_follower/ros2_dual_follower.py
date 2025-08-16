@@ -35,6 +35,8 @@ from ..robot import Robot
 from lerobot.robots.ros2_follower.config_ros2_dual_follower import ROS2DualFollowerConfig
 from lerobot.utils.shared_ros2_manager import SharedROS2Manager
 from functools import cached_property
+from ..utils import ensure_safe_goal_position
+
 import wandb
 
 logger = logging.getLogger(__name__)
@@ -245,7 +247,19 @@ class ROS2DualRobotFollower(Robot):
         return obs_dict
 
 
+    def get_current_position(self) -> dict[str, float]:
+        with self._lock:
+            if self._joint_state is None:
+                raise RuntimeError("Leader joint states are not being received.")
+            state = self._joint_state
 
+        pos_map = dict(zip(state.name, state.position))
+        action_value = {}
+        for i in range(len(self.joint_names)):
+            joint_name = self.joint_names[i]
+            observation_joint_name = self.observation_joint_names[i]
+            action_value[observation_joint_name] = pos_map[joint_name]
+        return action_value
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         self._ros_node.get_logger().info(f"Sending action: {action}")
         if not self.is_connected:
@@ -258,17 +272,50 @@ class ROS2DualRobotFollower(Robot):
 
         action_pos = {key.removesuffix(".pos"): val for key, val in action.items()}
 
-        # sorted_items is now a list of (key, value) tuples, sorted correctly.
-        try:
-            # Create the list of target positions by iterating through the canonical joint names
-            target_positions = [action_pos[name] for name in self.observation_joint_names]
+        ensure_safe = True
+        if ensure_safe:
+            # 1. --- GET CURRENT STATE (Now much cleaner!) ---
+            present_positions_map = self.get_current_position()
+            # 2. --- PREPARE DATA FOR SAFETY CHECK ---
+            # Create the `goal_present_pos` dictionary required by the safety function.
+            # This part is now simpler because both dicts use observation_joint_names as keys.
+            goal_present_pos = {}
+            for obs_name in self.observation_joint_names:
+                try:
+                    goal_pos = action_pos[obs_name]
+                    present_pos = present_positions_map[obs_name]
+                    goal_present_pos[obs_name] = (goal_pos, present_pos)
+                except KeyError as e:
+                    raise ValueError(f"Could not find required joint '{e}' in action or current state.")
             
-            # Create `sorted_items` for logging purposes, ensuring it has the same correct order.
-            sorted_items = list(zip(self.observation_joint_names, target_positions))
-            
-        except KeyError as e:
-            # This error handling is crucial. It tells you if the received action is missing a joint.
-            raise ValueError(f"Action dictionary is missing a required joint: {e}. Provided joints: {list(action_pos.keys())}") from e
+            # 3. --- APPLY THE SAFETY FUNCTION ---
+            # Call `ensure_safe_goal_position` to get the clamped goal positions.
+            # (Remember to add `max_relative_joint_move` to your config class)
+            safe_goal_positions_map = ensure_safe_goal_position(
+                goal_present_pos,
+                self.config.max_relative_joint_move 
+            )
+
+        if ensure_safe:
+            # 4. --- USE THE SAFE GOAL POSITIONS ---
+            # Reconstruct the target_positions list using the SAFE values,
+            # ensuring the correct order.
+            target_positions = [safe_goal_positions_map[name] for name in self.observation_joint_names]
+                
+            # Create `sorted_items` for logging purposes, using the safe values.
+            sorted_items = list(zip(self.observation_joint_names, target_positions))   
+        else:                  
+            # sorted_items is now a list of (key, value) tuples, sorted correctly.
+            try:
+                # Create the list of target positions by iterating through the canonical joint names
+                target_positions = [action_pos[name] for name in self.observation_joint_names]
+                
+                # Create `sorted_items` for logging purposes, ensuring it has the same correct order.
+                sorted_items = list(zip(self.observation_joint_names, target_positions))
+                
+            except KeyError as e:
+                # This error handling is crucial. It tells you if the received action is missing a joint.
+                raise ValueError(f"Action dictionary is missing a required joint: {e}. Provided joints: {list(action_pos.keys())}") from e
 
 
 
