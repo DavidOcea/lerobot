@@ -55,7 +55,7 @@ class ROS2DualFollowerConfig(RobotConfig):
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     joint_direction: list= field(default_factory=lambda: [-1, -1, 1, 1, 1, 1,-1, -1, 1, 1, 1, 1])
     max_relative_joint_move: float = 30.0
-    calibration = field(default_factory=lambda: [
+    calibration:list[MotorCalibration] = field(default_factory=lambda: [
         MotorCalibration(
             joint_name="left_arm_joint_1",
             min_position=-160.0,
