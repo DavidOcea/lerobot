@@ -378,7 +378,7 @@ class ROS2DualRobotFollower(Robot):
         # 将时间戳本身也添加到 log_data 中，这是定义 x 轴的关键
         log_data["timestamp"] = current_timestamp
         
-        wandb.log(log_data)
+        #wandb.log(log_data)
         ### WANDB MODIFICATION END ###
 
         # Extract just the values from the sorted list
