@@ -383,7 +383,7 @@ class ROS2DualRobotFollower(Robot):
 
         # Extract just the values from the sorted list
         #print(f"Sending action: {target_positions}")
-        self.send_target_position(target_positions)
+        self.send_target_position(final_target_positions)
         # 首先，创建一个包含最终执行值的字典 (key: 'left_arm_joint_1', value: final_pos)
         final_action = {
             f"{name}.pos": pos 
