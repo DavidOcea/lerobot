@@ -37,16 +37,36 @@ class ControllerSwitcher(Node):
 def main(args=None):
     rclpy.init(args=args)
     
-    # ... (aligner 和 joint_names 的定义) ...
-    aligner = TeleopAligner(follower_joint_names)
+    leader_joint_name_prefix = "leader_"
+    follower_joint_name_prefix = "follower_"
+    observation_joint_names= [
+        'left_arm_joint_1',
+        'left_arm_joint_2',
+        'left_arm_joint_3',
+        'left_arm_joint_4',
+        'left_arm_joint_5',
+        'left_arm_joint_6',
+        'right_arm_joint_1',
+        'right_arm_joint_2',
+        'right_arm_joint_3',
+        'right_arm_joint_4',
+        'right_arm_joint_5',
+        'right_arm_joint_6',
+    ]
+
+    leader_joint_names = [f"{leader_joint_name_prefix}{name}" for name in observation_joint_names]
+    follower_joint_names = [f"{follower_joint_name_prefix}{name}" for name in observation_joint_names]
+    aligner = TeleopAligner(leader_joint_names,follower_joint_names)
     switcher = ControllerSwitcher()
     
+    align_controllers = []
+    teleop_controllers = []
     # --- 遥操作主逻辑 ---
     try:
         # 1. 切换到对齐模式 (激活轨迹控制器)
         if not switcher.switch(
-            activate_controllers=['right_arm_trajectory_controller'],
-            deactivate_controllers=['right_arm_position_controller']
+            activate_controllers= align_controllers,
+            deactivate_controllers= teleop_controllers
         ):
             raise RuntimeError("无法切换到对齐模式！")
 
@@ -56,8 +76,8 @@ def main(args=None):
             
             # 3. 对齐成功，切换到实时遥操作模式
             if not switcher.switch(
-                activate_controllers=['right_arm_position_controller'],
-                deactivate_controllers=['right_arm_trajectory_controller']
+                activate_controllers=teleop_controllers,
+                deactivate_controllers=align_controllers
             ):
                  raise RuntimeError("无法切换到遥操作模式！")
             
@@ -72,7 +92,7 @@ def main(args=None):
     finally:
         # 清理
         aligner.get_logger().info("程序退出，正在停止所有控制器...")
-        switcher.switch(activate_controllers=[], deactivate_controllers=['right_arm_trajectory_controller', 'right_arm_position_controller'])
+        #switcher.switch(activate_controllers=[], deactivate_controllers=['right_arm_trajectory_controller', 'right_arm_position_controller'])
         aligner.destroy_node()
         switcher.destroy_node()
         rclpy.shutdown()

@@ -18,6 +18,12 @@ from lerobot.cameras import CameraConfig
 
 from lerobot.robots.config import RobotConfig
 
+
+@dataclass
+class MotorCalibration:
+    joint_name:str
+    min_position:float
+    max_position:float
 @RobotConfig.register_subclass("ros2_dual_follower")
 @dataclass
 class ROS2DualFollowerConfig(RobotConfig):
@@ -49,3 +55,65 @@ class ROS2DualFollowerConfig(RobotConfig):
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     joint_direction: list= field(default_factory=lambda: [-1, -1, 1, 1, 1, 1,-1, -1, 1, 1, 1, 1])
     max_relative_joint_move: float = 30.0
+    calibration = field(default_factory=lambda: [
+        MotorCalibration(
+            joint_name="left_arm_joint_1",
+            min_position=-160.0,
+            max_position=160.0,
+        ),
+        MotorCalibration(
+            joint_name="left_arm_joint_2",
+            min_position=0.0,
+            max_position=90.0,
+        ), 
+        MotorCalibration(
+            joint_name="left_arm_joint_3",
+            min_position=-60.0,
+            max_position=60.0,
+        ),
+        MotorCalibration(
+            joint_name="left_arm_joint_4",
+            min_position=0.0,
+            max_position=90.0,
+        ),
+        MotorCalibration(
+            joint_name="left_arm_joint_5",
+            min_position=-60.0,
+            max_position=60.0,
+        ),
+        MotorCalibration(
+            joint_name="left_arm_joint_6",
+            min_position=-90.0,
+            max_position=90.0,
+        ),
+        MotorCalibration(
+            joint_name="right_arm_joint_1",
+            min_position=-160.0,
+            max_position=160.0,
+        ),
+        MotorCalibration(
+            joint_name="right_arm_joint_2",
+            min_position=0.0,
+            max_position=90.0,
+        ),
+        MotorCalibration(
+            joint_name="right_arm_joint_3",
+            min_position=-60.0,
+            max_position=60.0,
+        ),
+        MotorCalibration(
+            joint_name="right_arm_joint_4",
+            min_position=0.0,
+            max_position=90.0,
+        ),
+        MotorCalibration(
+            joint_name="right_arm_joint_5",
+            min_position=-60.0,
+            max_position=60.0,
+        ),
+        MotorCalibration(
+            joint_name="right_arm_joint_6",
+            min_position=-90.0,
+            max_position=90.0,
+        ),
+    ])

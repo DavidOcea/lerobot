@@ -68,8 +68,16 @@ class ROS2DualRobotFollower(Robot):
         self.cameras = make_cameras_from_configs(config.cameras)
         self.joint_direction_map = {f"{self.observation_joint_names[i]}.pos": config.joint_direction[i] for i in range(len(self.observation_joint_names))}
       
+        # 将 calibration 列表转换为一个字典以便快速查找
+        # key: joint_name, value: MotorCalibration object
+        self.calibration_limits = {cal.joint_name: cal for cal in self.config.calibration}
+        # 增加一个检查，确保所有在 joint_names 中的关节都有对应的 calibration 设置
+        for joint_name in self.observation_joint_names:
+            if joint_name not in self.calibration_limits:
+                raise ValueError(f"Missing calibration data for joint '{joint_name}' in config.")
         ### WANDB MODIFICATION START ###
         # 2. 在初始化时启动 wandb run
+        '''
         try:
             wandb.init(
                 project="gpttest", 
@@ -86,6 +94,7 @@ class ROS2DualRobotFollower(Robot):
             print(f"Could not initialize Weights & Biases. Error: {e}")
             wandb.init(mode="disabled")
         ### WANDB MODIFICATION END ###
+        '''
     def _joint_state_callback(self, msg: JointState):
         # Prepare lists to hold the filtered data
         filtered_names = []
@@ -317,7 +326,47 @@ class ROS2DualRobotFollower(Robot):
                 # This error handling is crucial. It tells you if the received action is missing a joint.
                 raise ValueError(f"Action dictionary is missing a required joint: {e}. Provided joints: {list(action_pos.keys())}") from e
 
+        final_clamped_positions = []
+        warnings = {}
 
+        # 我们需要按顺序遍历关节，以保持 target_positions 列表的顺序
+        for i, joint_name in enumerate(self.observation_joint_names):
+            # 获取当前关节的目标位置
+            target_pos = target_positions[i]
+            
+            # 从我们预处理好的字典中查找限制
+            limits = self.calibration_limits[joint_name]
+            
+            # 执行钳位操作
+            clamped_pos = max(limits.min_position, min(target_pos, limits.max_position))
+            
+            # 如果发生了钳位，记录下来以便发出警告
+            if abs(clamped_pos - target_pos) > 1e-4:
+                warnings[joint_name] = {
+                    "original": target_pos,
+                    "clamped": clamped_pos,
+                    "limits": (limits.min_position, limits.max_position)
+                }
+            
+            final_clamped_positions.append(clamped_pos)
+        
+        # 如果有任何关节被限制了，打印一条总的警告信息
+        if warnings:
+            # 可以在这里使用 logging.warning 来代替 print
+            self._ros_node.get_logger().warn(
+                "One or more joint positions were clamped to their absolute limits:"
+            )
+            for joint, data in warnings.items():
+                self._ros_node.get_logger().warn(
+                    f"  - Joint '{joint}': commanded {data['original']:.4f}, "
+                    f"clamped to {data['clamped']:.4f} (limits: {data['limits']})",
+                    throttle_duration_sec=5 # 5秒内不重复打印相同的警告
+                )
+        
+        # 使用经过两层安全检查后的最终位置
+        final_target_positions = final_clamped_positions
+        # 同时更新 sorted_items 以便 wandb 记录正确的值
+        sorted_items = list(zip(self.observation_joint_names, final_target_positions))
 
         ### WANDB MODIFICATION START ###
         # 4. 在发送动作时，使用时间戳记录 action 数据
@@ -335,7 +384,14 @@ class ROS2DualRobotFollower(Robot):
         # Extract just the values from the sorted list
         #print(f"Sending action: {target_positions}")
         self.send_target_position(target_positions)
-        return action
+        # 首先，创建一个包含最终执行值的字典 (key: 'left_arm_joint_1', value: final_pos)
+        final_action = {
+            f"{name}.pos": pos 
+            for name, pos in zip(self.observation_joint_names, final_target_positions)
+        }
+        
+        self._ros_node.get_logger().info(f"Returning final clamped action: {final_action}")
+        return final_action
 
     def send_target_position(self, target_positions):
         """

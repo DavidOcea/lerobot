@@ -9,24 +9,31 @@ from builtin_interfaces.msg import Duration
 import threading
 
 class TeleopAligner(Node):
-    def __init__(self, joint_names):
+    def __init__(self, leader_joint_names,follower_joint_names):
         super().__init__('teleop_aligner')
-        self.joint_names = joint_names
+        self.leader_joint_names = leader_joint_names
+        self.follower_joint_names = follower_joint_names
+        self.follower_current_joints = None
         self.follower_current_joints = None
         self.lock = threading.Lock()
 
         # 1. 创建Action Client以发送对齐轨迹
-        self.traj_action_client = ActionClient(
+        self.right_arm_traj_action_client = ActionClient(
             self,
             FollowJointTrajectory,
-            '/right_arm_trajectory_controller/follow_joint_trajectory' # 确保这是你正确的Action名称
+            '/supre_robot_follower/right_arm_trajectory_controller/follow_joint_trajectory' # 确保这是你正确的Action名称
         )
 
+        self.left_arm_traj_action_client = ActionClient(
+            self,
+            FollowJointTrajectory,
+            '/supre_robot_follower/left_arm_trajectory_controller/follow_joint_trajectory' # 确保这是你正确的Action名称
+        )
         # 2. 创建Subscriber以获取follower的当前位置
         # 注意：使用JointState作为消息类型，因为dynamic_joint_states发布的是这个类型
         self.joint_state_sub = self.create_subscription(
             JointState,
-            '/dynamic_joint_states', # 确保这是你正确的关节状态话题
+            '/supre_robot_leader/joint_states', # 确保这是你正确的关节状态话题
             self.joint_state_callback,
             10
         )
@@ -35,46 +42,81 @@ class TeleopAligner(Node):
     def joint_state_callback(self, msg: JointState):
         with self.lock:
             # 只在第一次收到消息时存储关节位置
-            if self.follower_current_joints is None:
+            if self.leader_current_joints is None:
                 # 将收到的关节状态按我们期望的顺序排序
-                ordered_positions = [0.0] * len(self.joint_names)
-                for i, name in enumerate(self.joint_names):
+                ordered_positions = [0.0] * len(self.leader_joint_names)
+                for i, name in enumerate(self.leader_joint_names):
                     try:
                         idx = msg.name.index(name)
                         ordered_positions[i] = msg.position[idx]
                     except ValueError:
-                        self.get_logger().error(f"在/dynamic_joint_states中找不到关节'{name}'！")
+                        self.get_logger().error(f"在/supre_robot_leader/joint_states 中找不到关节'{name}'！")
+                        return # 如果缺少关节，则不更新
+                
+                self.leader_current_joints = ordered_positions
+                self.get_logger().info(f"成功获取到Follower的初始位置: {self.leader_current_joints}")
+        with self.lock:
+            # 只在第一次收到消息时存储关节位置
+            if self.follower_current_joints is None:
+                # 将收到的关节状态按我们期望的顺序排序
+                ordered_positions = [0.0] * len(self.follower_joint_names)
+                for i, name in enumerate(self.follower_joint_names):
+                    try:
+                        idx = msg.name.index(name)
+                        ordered_positions[i] = msg.position[idx]
+                    except ValueError:
+                        self.get_logger().error(f"在/supre_robot_leader/joint_states 中找不到关节'{name}'！")
                         return # 如果缺少关节，则不更新
                 
                 self.follower_current_joints = ordered_positions
                 self.get_logger().info(f"成功获取到Follower的初始位置: {self.follower_current_joints}")
 
-
     def align(self, leader_initial_joints, align_time_sec=5.0):
         self.get_logger().info("正在等待Follower的初始关节状态...")
         # 等待回调函数获取到初始位置
-        while self.follower_current_joints is None:
+        while self.follower_current_joints is None or self.leader_current_joints is None: 
             rclpy.spin_once(self, timeout_sec=0.1)
             if not rclpy.ok(): return False
 
         self.get_logger().info("正在等待Action Server连接...")
-        if not self.traj_action_client.wait_for_server(timeout_sec=5.0):
+        if not self.left_arm_traj_action_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error("Action Server连接超时！无法执行对齐。")
             return False
-
+        if not self.right_arm_traj_action_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error("Action Server连接超时！无法执行对齐。")
+            return False
+        left_arm_joint_num = 6
+        result = self.align_one_arm(self.follower_joint_names[0:left_arm_joint_num],
+                                    self.leader_current_joints[0:left_arm_joint_num],
+                                    self.follower_current_joints[0:left_arm_joint_num],
+                                    self.left_arm_traj_action_client,
+                                    align_time_sec)
+        if not result:
+            self.get_logger().error("左臂对齐失败！")
+            return False
+        result = self.align_one_arm(self.follower_joint_names[left_arm_joint_num:],
+                                    self.leader_current_joints[left_arm_joint_num:],
+                                    self.follower_current_joints[left_arm_joint_num:],
+                                    self.right_arm_traj_action_client,
+                                    align_time_sec)
+        if not result:
+            self.get_logger().warn("Failed to align one arm")
+            return False
+        return True
+    def align_one_arm(self, joint_names,leader_joints, follower_joints,traj_action_client,align_time_sec=5.0) -> bool:
         goal_msg = FollowJointTrajectory.Goal()
         trajectory = JointTrajectory()
-        trajectory.joint_names = self.joint_names
+        trajectory.joint_names = joint_names
 
         # 创建一个包含两个点的轨迹：起点(当前位置)和终点(leader位置)
-        # Point 1: 起始点 (当前位置，时间为0)
+        # Point 1: 起始点 (当前位置,时间为0)
         start_point = JointTrajectoryPoint()
-        start_point.positions = self.follower_current_joints
+        start_point.positions = follower_joints
         start_point.time_from_start = Duration(sec=0, nanosec=0)
 
-        # Point 2: 终点 (leader位置，在指定时间到达)
+        # Point 2: 终点 (leader位置,在指定时间到达)
         end_point = JointTrajectoryPoint()
-        end_point.positions = leader_initial_joints
+        end_point.positions = leader_joints
         end_point.time_from_start = Duration(sec=int(align_time_sec), nanosec=0)
 
         trajectory.points.append(start_point)
@@ -82,7 +124,7 @@ class TeleopAligner(Node):
         goal_msg.trajectory = trajectory
 
         self.get_logger().info(f"发送对齐目标，将在 {align_time_sec} 秒内完成...")
-        future = self.traj_action_client.send_goal_async(goal_msg)
+        future = traj_action_client.send_goal_async(goal_msg)
         
         rclpy.spin_until_future_complete(self, future)
         goal_handle = future.result()
@@ -104,14 +146,26 @@ class TeleopAligner(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    
-    # 你的机器人关节名称
-    follower_joint_names = [
-        'follower_right_arm_joint_1', 'follower_right_arm_joint_2', 'follower_right_arm_joint_3',
-        'follower_right_arm_joint_4', 'follower_right_arm_joint_5', 'follower_right_arm_joint_6',
+    leader_joint_name_prefix = "leader_"
+    follower_joint_name_prefix = "follower_"
+    observation_joint_names= [
+        'left_arm_joint_1',
+        'left_arm_joint_2',
+        'left_arm_joint_3',
+        'left_arm_joint_4',
+        'left_arm_joint_5',
+        'left_arm_joint_6',
+        'right_arm_joint_1',
+        'right_arm_joint_2',
+        'right_arm_joint_3',
+        'right_arm_joint_4',
+        'right_arm_joint_5',
+        'right_arm_joint_6',
     ]
-    
-    aligner = TeleopAligner(follower_joint_names)
+
+    leader_joint_names = [f"{leader_joint_name_prefix}{name}" for name in observation_joint_names]
+    follower_joint_names = [f"{follower_joint_name_prefix}{name}" for name in observation_joint_names]
+    aligner = TeleopAligner(leader_joint_names,follower_joint_names)
 
     # --- 这里是你的遥操作主逻辑 ---
     try:
