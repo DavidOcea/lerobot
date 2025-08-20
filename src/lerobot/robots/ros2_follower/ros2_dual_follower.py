@@ -36,6 +36,7 @@ from lerobot.robots.ros2_follower.config_ros2_dual_follower import ROS2DualFollo
 from lerobot.utils.shared_ros2_manager import SharedROS2Manager
 from functools import cached_property
 from ..utils import ensure_safe_goal_position
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 
 import wandb
 
@@ -179,8 +180,17 @@ class ROS2DualRobotFollower(Robot):
         # 主题名称遵循 ros2_control 的标准格式：/<控制器名称>/commands
         # 消息类型必须是 Float64MultiArray
         # QoS 配置文件的大小设为10，这是通用标准。
+
+        qos_profile_controller_compatible = QoSProfile(
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1  # 对于指令，通常只关心最新的
+        )
         topic_name = self.config.topic_joint_positions_left
-        self.left_arm_publisher_ = self._ros_node.create_publisher(Float64MultiArray, topic_name, 10)
+        self.left_arm_publisher_ = self._ros_node.create_publisher(Float64MultiArray, 
+                                                                   topic_name,
+                                                                   qos_profile=qos_profile_controller_compatible
+                                                                   )
 
 
         self._ros_node.get_logger().info('Waiting for left arm subscriber to connect...')
@@ -188,7 +198,10 @@ class ROS2DualRobotFollower(Robot):
             rclpy.spin_once(self._ros_node, timeout_sec=0.1) # 短暂spin来处理事件
 
         topic_name = self.config.topic_joint_positions_right
-        self.right_arm_publisher_ = self._ros_node.create_publisher(Float64MultiArray, topic_name, 10)
+        self.right_arm_publisher_ = self._ros_node.create_publisher(Float64MultiArray, 
+                                                                    topic_name, 
+                                                                    qos_profile=qos_profile_controller_compatible 
+                                                                    )
 
 
         self._ros_node.get_logger().info('Waiting for right arm subscriber to connect...')
