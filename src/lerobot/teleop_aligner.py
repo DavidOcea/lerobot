@@ -31,30 +31,22 @@ class TeleopAligner(Node):
         )
         # 2. 创建Subscriber以获取follower的当前位置
         # 注意：使用JointState作为消息类型，因为dynamic_joint_states发布的是这个类型
-        self.joint_state_sub = self.create_subscription(
+        self.leader_joint_state_sub = self.create_subscription(
             JointState,
             '/supre_robot_leader/joint_states', # 确保这是你正确的关节状态话题
-            self.joint_state_callback,
+            self.leader_joint_state_callback,
+            10
+        )
+        self.follower_joint_state_sub = self.create_subscription(
+            JointState,
+            '/supre_robot_follower/joint_states', # 确保这是你正确的关节状态话题
+            self.follower_joint_state_callback,
             10
         )
         self.get_logger().info("对齐器节点已启动。")
 
-    def joint_state_callback(self, msg: JointState):
-        with self.lock:
-            # 只在第一次收到消息时存储关节位置
-            if self.leader_current_joints is None:
-                # 将收到的关节状态按我们期望的顺序排序
-                ordered_positions = [0.0] * len(self.leader_joint_names)
-                for i, name in enumerate(self.leader_joint_names):
-                    try:
-                        idx = msg.name.index(name)
-                        ordered_positions[i] = msg.position[idx]
-                    except ValueError:
-                        self.get_logger().error(f"在/supre_robot_leader/joint_states 中找不到关节'{name}'！")
-                        return # 如果缺少关节，则不更新
-                
-                self.leader_current_joints = ordered_positions
-                self.get_logger().info(f"成功获取到Follower的初始位置: {self.leader_current_joints}")
+
+    def follower_joint_state_callback(self, msg: JointState):
         with self.lock:
             # 只在第一次收到消息时存储关节位置
             if self.follower_current_joints is None:
@@ -70,6 +62,22 @@ class TeleopAligner(Node):
                 
                 self.follower_current_joints = ordered_positions
                 self.get_logger().info(f"成功获取到Follower的初始位置: {self.follower_current_joints}")
+    def leader_joint_state_callback(self, msg: JointState):
+        with self.lock:
+            # 只在第一次收到消息时存储关节位置
+            if self.leader_current_joints is None:
+                # 将收到的关节状态按我们期望的顺序排序
+                ordered_positions = [0.0] * len(self.leader_joint_names)
+                for i, name in enumerate(self.leader_joint_names):
+                    try:
+                        idx = msg.name.index(name)
+                        ordered_positions[i] = msg.position[idx]
+                    except ValueError:
+                        self.get_logger().error(f"在/supre_robot_leader/joint_states 中找不到关节'{name}'！")
+                        return # 如果缺少关节，则不更新
+                
+                self.leader_current_joints = ordered_positions
+                self.get_logger().info(f"成功获取到Follower的初始位置: {self.leader_current_joints}")
 
     def align(self, leader_initial_joints, align_time_sec=5.0):
         self.get_logger().info("正在等待Follower的初始关节状态...")

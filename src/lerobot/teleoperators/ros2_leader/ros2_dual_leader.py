@@ -25,7 +25,7 @@ from ..teleoperator import Teleoperator
 from lerobot.teleoperators.ros2_leader.config_ros2_dual_leader import ROS2DualLeaderConfig 
 from lerobot.utils.shared_ros2_manager import SharedROS2Manager
 from functools import cached_property
-
+from lerobot.utils.monitor_utils import monitor_performance
 class ROS2DualRobotLeader(Teleoperator):
     """
     The "Leader" teleoperator, representing the right arm.
@@ -47,6 +47,8 @@ class ROS2DualRobotLeader(Teleoperator):
         # Verify that `joint_name_prefix` and `num_joints` in your config match the robot.
         self.joint_names = [f"{self.config.joint_name_prefix}{name}" for name in self.config.joint_names]
         self.observation_joint_names = self.config.joint_names
+    
+    @monitor_performance
     def _joint_state_callback(self, msg: JointState):
         # Prepare lists to hold the filtered data
         filtered_names = []
