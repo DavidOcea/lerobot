@@ -152,7 +152,7 @@ class ROS2DualRobotLeader(Teleoperator):
         self._ros_node.get_logger().info(f"get action: {action}")
         return action
 
-    def convert_gripper_position(joint_position: float) -> float:
+    def convert_gripper_position(observation_joint_name:str,joint_position: float) -> float:
         """
         将关节角度 (度) 线性映射到夹爪开合宽度 (毫米)。
     
@@ -162,9 +162,10 @@ class ROS2DualRobotLeader(Teleoperator):
         :param joint_position: 输入的关节角度 (单位: 度)。
         :return: 对应的夹爪开合宽度 (单位: 毫米)。
         """
+        joint_position = abs(joint_position)
         # 1. 定义映射范围常量，清晰明了
         JOINT_MIN_DEG = 0.0
-        JOINT_MAX_DEG = 90.0
+        JOINT_MAX_DEG = 60.0
         GRIPPER_MIN_MM = 0.0
         GRIPPER_MAX_MM = 0.04
     
