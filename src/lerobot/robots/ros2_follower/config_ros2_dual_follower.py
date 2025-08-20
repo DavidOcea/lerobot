@@ -63,8 +63,8 @@ class ROS2DualFollowerConfig(RobotConfig):
         ),
         MotorCalibration(
             joint_name="left_arm_joint_2",
-            min_position=0.0,
-            max_position=90.0,
+            min_position=-90.0,
+            max_position=0.0,
         ), 
         MotorCalibration(
             joint_name="left_arm_joint_3",
@@ -73,8 +73,8 @@ class ROS2DualFollowerConfig(RobotConfig):
         ),
         MotorCalibration(
             joint_name="left_arm_joint_4",
-            min_position=0.0,
-            max_position=90.0,
+            min_position=-90.0,
+            max_position=0.0,
         ),
         MotorCalibration(
             joint_name="left_arm_joint_5",
