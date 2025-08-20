@@ -152,7 +152,7 @@ class ROS2DualRobotLeader(Teleoperator):
         self._ros_node.get_logger().info(f"get action: {action}")
         return action
 
-    def convert_gripper_position(observation_joint_name:str,joint_position: float) -> float:
+    def convert_gripper_position(joint_position: float) -> float:
         """
         将关节角度 (度) 线性映射到夹爪开合宽度 (毫米)。
     
