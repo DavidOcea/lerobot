@@ -144,12 +144,46 @@ class ROS2DualRobotLeader(Teleoperator):
             joint_name = self.joint_names[i]
             observation_joint_name = self.observation_joint_names[i]
             action_value[observation_joint_name] = pos_map[joint_name]
+            if observation_joint_name=="left_arm_joint_7" or observation_joint_name=="right_arm_joint_7":
+                #convert to gripper position(0-90 to 0-40)
+                action_value[observation_joint_name] = self.convert_gripper_position(action_value[observation_joint_name])
         # The action for the follower is the position of the leader's joints.
         action = {f"{m}.pos":v for m,v in action_value.items()}
         self._ros_node.get_logger().info(f"get action: {action}")
         return action
 
-
+    def convert_gripper_position(joint_position: float) -> float:
+        """
+        将关节角度 (度) 线性映射到夹爪开合宽度 (毫米)。
+    
+        该函数会先将输入关节角度限制在定义的范围内 (0-90度)，
+        然后再执行线性转换。
+    
+        :param joint_position: 输入的关节角度 (单位: 度)。
+        :return: 对应的夹爪开合宽度 (单位: 毫米)。
+        """
+        # 1. 定义映射范围常量，清晰明了
+        JOINT_MIN_DEG = 0.0
+        JOINT_MAX_DEG = 90.0
+        GRIPPER_MIN_MM = 0.0
+        GRIPPER_MAX_MM = 0.04
+    
+        # 2. 纯 Python 实现的边界限制 (clamping)
+        #    先用 max 保证不低于最小值，再用 min 保证不高于最大值。
+        clamped_joint_pos = max(JOINT_MIN_DEG, min(joint_position, JOINT_MAX_DEG))
+    
+        # 3. 执行线性插值
+        input_range = JOINT_MAX_DEG - JOINT_MIN_DEG
+        output_range = GRIPPER_MAX_MM - GRIPPER_MIN_MM
+    
+        # 避免除以零
+        if input_range == 0:
+            return GRIPPER_MIN_MM
+    
+        scale = (clamped_joint_pos - JOINT_MIN_DEG) / input_range
+        gripper_position = GRIPPER_MIN_MM + (scale * output_range)
+    
+        return gripper_position
     def configure(self) -> None:
         pass
     @cached_property
