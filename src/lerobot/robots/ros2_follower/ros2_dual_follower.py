@@ -254,7 +254,7 @@ class ROS2DualRobotFollower(Robot):
         pos_map = dict(zip(state.name, state.position))
 
         action_value = {}
-        for i in range(self.config.num_joints):
+        for i in range(len(self.joint_names)):
             joint_name = self.joint_names[i]
             observation_joint_name = self.observation_joint_names[i]
             action_value[observation_joint_name] = pos_map[joint_name]    

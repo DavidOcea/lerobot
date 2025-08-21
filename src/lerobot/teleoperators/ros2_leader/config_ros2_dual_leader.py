@@ -25,7 +25,6 @@ class ROS2DualLeaderConfig(TeleoperatorConfig):
     """
 
     name: str = "ros2_dual_leader"
-    num_joints: int = 7  # Default to 7, adjust as needed
     topic_joint_states: str = "/supre_robot_leader/joint_states"
     joint_name_prefix: str = "leader_"
     joint_names: list[str] = field(default_factory=lambda:[
@@ -41,5 +40,4 @@ class ROS2DualLeaderConfig(TeleoperatorConfig):
         'right_arm_joint_4',
         'right_arm_joint_5',
         'right_arm_joint_6',
-        'right_arm_joint_7',        
     ])
