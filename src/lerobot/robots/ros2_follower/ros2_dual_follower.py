@@ -420,7 +420,7 @@ class ROS2DualRobotFollower(Robot):
             return
 
         # Determine the split point based on the number of joints in the left arm
-        num_left_joints = 6
+        num_left_joints = 7
         
         # Check if the received action has the correct total number of joints
         if len(target_positions) != len(self.observation_joint_names):
