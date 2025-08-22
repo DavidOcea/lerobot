@@ -167,7 +167,7 @@ class ROS2DualRobotLeader(Teleoperator):
         JOINT_MIN_DEG = 0.0
         JOINT_MAX_DEG = 60.0
         GRIPPER_MIN_MM = 0.0
-        GRIPPER_MAX_MM = 0.04
+        GRIPPER_MAX_MM = 1.0
     
         # 2. 纯 Python 实现的边界限制 (clamping)
         #    先用 max 保证不低于最小值，再用 min 保证不高于最大值。
