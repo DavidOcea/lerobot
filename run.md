@@ -2,7 +2,7 @@
 cd ~/workspace/supre_robot_control
 ./start_common_leader_follower.sh
 ## 2. 运行lerobot脚本
-cd ~/workspace/gitprj/lerobot_env/lerobot
+cd ~/workspace/gitprj/lerobot-env/lerobot
 运行下面脚本,lerobot命令可以自行更改
 
 ```bash
