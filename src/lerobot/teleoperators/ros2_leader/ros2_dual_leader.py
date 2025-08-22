@@ -173,6 +173,7 @@ class ROS2DualRobotLeader(Teleoperator):
         #    先用 max 保证不低于最小值，再用 min 保证不高于最大值。
         clamped_joint_pos = max(JOINT_MIN_DEG, min(joint_position, JOINT_MAX_DEG))
     
+        clamped_joint_pos = JOINT_MAX_DEG - clamped_joint_pos#逆向
         # 3. 执行线性插值
         input_range = JOINT_MAX_DEG - JOINT_MIN_DEG
         output_range = GRIPPER_MAX_MM - GRIPPER_MIN_MM
