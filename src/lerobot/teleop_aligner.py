@@ -79,7 +79,7 @@ class TeleopAligner(Node):
                 self.leader_current_joints = ordered_positions
                 self.get_logger().info(f"成功获取到Follower的初始位置: {self.leader_current_joints}")
 
-    def align(self, leader_initial_joints, align_time_sec=5.0):
+    def align(self, leader_initial_joints, left_arm_joint_num,align_time_sec=5.0):
         self.get_logger().info("正在等待Follower的初始关节状态...")
         # 等待回调函数获取到初始位置
         while self.follower_current_joints is None or self.leader_current_joints is None: 
@@ -93,7 +93,6 @@ class TeleopAligner(Node):
         if not self.right_arm_traj_action_client.wait_for_server(timeout_sec=5.0):
             self.get_logger().error("Action Server连接超时！无法执行对齐。")
             return False
-        left_arm_joint_num = 6
         result = self.align_one_arm(self.follower_joint_names[0:left_arm_joint_num],
                                     self.leader_current_joints[0:left_arm_joint_num],
                                     self.follower_current_joints[0:left_arm_joint_num],
@@ -108,7 +107,7 @@ class TeleopAligner(Node):
                                     self.right_arm_traj_action_client,
                                     align_time_sec)
         if not result:
-            self.get_logger().warn("Failed to align one arm")
+            self.get_logger().warn("右臂对齐失败！")
             return False
         return True
     def align_one_arm(self, joint_names,leader_joints, follower_joints,traj_action_client,align_time_sec=5.0) -> bool:
@@ -163,6 +162,7 @@ def main(args=None):
         'left_arm_joint_4',
         'left_arm_joint_5',
         'left_arm_joint_6',
+        'left_arm_joint_7',
         'right_arm_joint_1',
         'right_arm_joint_2',
         'right_arm_joint_3',
@@ -182,7 +182,7 @@ def main(args=None):
         leader_start_pos = [0.1, -0.5, 0.2, 0.8, 0.3, 0.0] 
         
         # 2. 执行对齐
-        if aligner.align(leader_start_pos, align_time_sec=6.0):
+        if aligner.align(leader_start_pos, 7, align_time_sec=6.0):
             # 3. 对齐成功后，在这里启动你的实时遥操作循环
             aligner.get_logger().info("========= 进入实时遥操作模式 =========")
             # a. 创建一个高频发布器 (例如，使用JointGroupPositionController的Topic)

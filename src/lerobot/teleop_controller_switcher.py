@@ -46,6 +46,7 @@ def main(args=None):
         'left_arm_joint_4',
         'left_arm_joint_5',
         'left_arm_joint_6',
+        'left_arm_joint_7',
         'right_arm_joint_1',
         'right_arm_joint_2',
         'right_arm_joint_3',
@@ -59,8 +60,8 @@ def main(args=None):
     aligner = TeleopAligner(leader_joint_names,follower_joint_names)
     switcher = ControllerSwitcher()
     
-    align_controllers = []
-    teleop_controllers = []
+    align_controllers = ['/supre_robot_follower/left_arm_trajectory_controller', '/supre_robot_follower/right_arm_trajectory_controller']
+    teleop_controllers = ['/supre_robot_follower/left_arm_controller','/supre_robot_follower/right_arm_controller']
     # --- 遥操作主逻辑 ---
     try:
         # 1. 切换到对齐模式 (激活轨迹控制器)
@@ -72,7 +73,7 @@ def main(args=None):
 
         # 2. 执行对齐
         leader_start_pos = [0.1, -0.5, 0.2, 0.8, 0.3, 0.0] 
-        if aligner.align(leader_start_pos, align_time_sec=6.0):
+        if aligner.align(leader_start_pos, 7, align_time_sec=6.0):
             
             # 3. 对齐成功，切换到实时遥操作模式
             if not switcher.switch(
