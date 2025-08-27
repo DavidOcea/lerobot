@@ -226,7 +226,7 @@ class ROS2DualRobotFollower(Robot):
         self.configure()
 
     def disconnect(self):
-        if self.is_connected and self._ros_node is not None:
+        if self._ros_node is not None:
             # Action client doesn't need explicit destruction like a publisher
             self._action_client = None
             # Tell the manager to remove our node. It will handle shutdown if we are the last one.

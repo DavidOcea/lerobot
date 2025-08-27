@@ -115,7 +115,7 @@ class ROS2DualRobotLeader(Teleoperator):
         print("Leader teleoperator connected.")
 
     def disconnect(self):
-        if self.is_connected and self._ros_node is not None:
+        if self._ros_node is not None:
             # 4. 通知共享管理器移除此节点
             # 管理器会在最后一个节点被移除时自动关闭执行器
             SharedROS2Manager.remove_node(self._ros_node)
