@@ -212,8 +212,8 @@ class ROS2DualRobotFollower(Robot):
         # The while loop now works because the shared executor is spinning in a background thread
         start_time = time.time()
         while self._joint_state is None:
-            if time.time() - start_time > 5: # Add a timeout
-                raise RuntimeError("Failed to receive joint state for follower within 5 seconds.")
+            if time.time() - start_time > 50: # Add a timeout
+                raise RuntimeError("Failed to receive joint state for follower within 50 seconds.")
             time.sleep(0.1)
         print("Follower robot connected.")
 

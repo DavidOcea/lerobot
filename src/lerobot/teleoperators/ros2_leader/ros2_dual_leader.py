@@ -109,8 +109,8 @@ class ROS2DualRobotLeader(Teleoperator):
         # 因为共享执行器已在后台运行，这个循环现在可以正常工作了
         start_time = time.time()
         while self._joint_state is None:
-            if time.time() - start_time > 5: # 增加5秒超时
-                raise RuntimeError("Failed to receive joint state for leader within 5 seconds.")
+            if time.time() - start_time > 50: # 增加5秒超时
+                raise RuntimeError("Failed to receive joint state for leader within 50 seconds.")
             time.sleep(0.1)
         print("Leader teleoperator connected.")
 
