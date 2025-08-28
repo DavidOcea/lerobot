@@ -301,7 +301,7 @@ class ROS2DualRobotFollower(Robot):
 
         action_pos = {key.removesuffix(".pos"): val for key, val in action.items()}
 
-        ensure_safe = True
+        ensure_safe = False
         if ensure_safe:
             # 1. --- GET CURRENT STATE (Now much cleaner!) ---
             present_positions_map = self.get_current_position()
