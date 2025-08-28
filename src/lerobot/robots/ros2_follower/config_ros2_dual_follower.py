@@ -36,6 +36,7 @@ class ROS2DualFollowerConfig(RobotConfig):
     topic_joint_positions_right: str = "/supre_robot_follower/right_arm_controller/commands"
     topic_joint_positions_left: str = "/supre_robot_follower/left_arm_controller/commands"
     joint_name_prefix:str = "follower_"
+    prometheus_port: int | None = 8000
     joint_names: list[str] = field(default_factory=lambda:[
         'left_arm_joint_1',
         'left_arm_joint_2',

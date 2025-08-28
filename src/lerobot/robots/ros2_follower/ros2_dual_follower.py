@@ -37,6 +37,7 @@ from lerobot.utils.shared_ros2_manager import SharedROS2Manager
 from functools import cached_property
 from ..utils import ensure_safe_goal_position
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from lerobot.utils.prometheus_manager import prometheus_manager
 
 import wandb
 
@@ -96,6 +97,10 @@ class ROS2DualRobotFollower(Robot):
             wandb.init(mode="disabled")
         ### WANDB MODIFICATION END ###
         '''
+        self.prometheus_port = getattr(config, 'prometheus_port', None)
+        self.joint_position_gauge = None
+        if self.prometheus_port is not None:
+            self.joint_position_gauge = prometheus_manager.get_gauge('joint_position')        
     def _joint_state_callback(self, msg: JointState):
         # Prepare lists to hold the filtered data
         filtered_names = []
@@ -224,6 +229,8 @@ class ROS2DualRobotFollower(Robot):
             cam.connect()
 
         self.configure()
+        if self.prometheus_port is not None:
+            prometheus_manager.start_server(self.prometheus_port)
 
     def disconnect(self):
         if self._ros_node is not None:
@@ -378,6 +385,15 @@ class ROS2DualRobotFollower(Robot):
         
         # 使用经过两层安全检查后的最终位置
         final_target_positions = final_clamped_positions
+
+        if self.joint_position_gauge:
+            for joint_name, position in zip(self.joint_names, final_target_positions):
+                # 使用 'leader' 作为 robot_name
+                self.joint_position_gauge.labels(
+                    robot_name='follower', 
+                    joint_name=joint_name
+                ).set(position)
+
         # 同时更新 sorted_items 以便 wandb 记录正确的值
         sorted_items = list(zip(self.observation_joint_names, final_target_positions))
 
@@ -403,7 +419,7 @@ class ROS2DualRobotFollower(Robot):
             for name, pos in zip(self.observation_joint_names, final_target_positions)
         }
         
-        self._ros_node.get_logger().info(f"Returning final clamped action: {final_action}")
+        #self._ros_node.get_logger().info(f"Returning final clamped action: {final_action}")
         return final_action
 
     def send_target_position(self, target_positions):
@@ -438,13 +454,13 @@ class ROS2DualRobotFollower(Robot):
         left_msg = Float64MultiArray()
         left_msg.data = left_positions
         result = self.left_arm_publisher_.publish(left_msg)
-        self._ros_node.get_logger().info(f'Published to left arm: {left_msg.data} result: {result}')
+        #self._ros_node.get_logger().info(f'Published to left arm: {left_msg.data} result: {result}')
 
         # Create and publish the message for the right arm
         right_msg = Float64MultiArray()
         right_msg.data = right_positions
         result = self.right_arm_publisher_.publish(right_msg)
-        self._ros_node.get_logger().info(f'Published to right arm: {right_msg.data} result: {result}')
+        #self._ros_node.get_logger().info(f'Published to right arm: {right_msg.data} result: {result}')
 
     def send_target_trajectory(self, target_positions: list[Any],action_client:ActionClient):
         # --- NEW ACTION CLIENT LOGIC ---
@@ -463,7 +479,7 @@ class ROS2DualRobotFollower(Robot):
         
         goal_msg.trajectory = traj
         
-        self._ros_node.get_logger().info('Sending goal to action server...')
+        #self._ros_node.get_logger().info('Sending goal to action server...')
         
         # Send the goal asynchronously.
         # In a teleop loop, we don't wait for the result. We send a new goal

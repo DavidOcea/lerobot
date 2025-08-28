@@ -26,7 +26,8 @@ from lerobot.teleoperators.ros2_leader.config_ros2_dual_leader import ROS2DualLe
 from lerobot.utils.shared_ros2_manager import SharedROS2Manager
 from functools import cached_property
 from lerobot.utils.monitor_utils import monitor_performance
-class ROS2DualRobotLeader(Teleoperator):
+from lerobot.utils.prometheus_manager import prometheus_manager
+class  ROS2DualRobotLeader(Teleoperator):
     """
     The "Leader" teleoperator, representing the right arm.
     It reads its own joint states and provides them as actions for the follower.
@@ -48,7 +49,13 @@ class ROS2DualRobotLeader(Teleoperator):
         self.joint_names = [f"{self.config.joint_name_prefix}{name}" for name in self.config.joint_names]
         self.observation_joint_names = self.config.joint_names
     
-    @monitor_performance
+        self.prometheus_port = getattr(config, 'prometheus_port', None)
+        self.joint_position_gauge = None
+        if self.prometheus_port is not None:
+            # 从管理器获取共享的 Gauge 对象
+            self.joint_position_gauge = prometheus_manager.get_gauge('joint_position')
+
+    #@monitor_performance
     def _joint_state_callback(self, msg: JointState):
         # Prepare lists to hold the filtered data
         filtered_names = []
@@ -114,6 +121,9 @@ class ROS2DualRobotLeader(Teleoperator):
             time.sleep(0.1)
         print("Leader teleoperator connected.")
 
+        if self.prometheus_port is not None:
+            prometheus_manager.start_server(self.prometheus_port)
+
     def disconnect(self):
         if self._ros_node is not None:
             # 4. 通知共享管理器移除此节点
@@ -144,12 +154,20 @@ class ROS2DualRobotLeader(Teleoperator):
             joint_name = self.joint_names[i]
             observation_joint_name = self.observation_joint_names[i]
             action_value[observation_joint_name] = pos_map[joint_name]
+
+            if self.joint_position_gauge:
+                    # 使用 'leader' 作为 robot_name
+                self.joint_position_gauge.labels(
+                    robot_name='leader', 
+                    joint_name=joint_name
+                ).set(pos_map[joint_name])
+
             if observation_joint_name=="left_arm_joint_7" or observation_joint_name=="right_arm_joint_7":
                 #convert to gripper position(0-90 to 0-40)
                 action_value[observation_joint_name] = self.convert_gripper_position(action_value[observation_joint_name])
         # The action for the follower is the position of the leader's joints.
         action = {f"{m}.pos":v for m,v in action_value.items()}
-        self._ros_node.get_logger().info(f"get action: {action}")
+        #self._ros_node.get_logger().info(f"get action: {action}")
         return action
 
     def convert_gripper_position(self,joint_position: float) -> float:

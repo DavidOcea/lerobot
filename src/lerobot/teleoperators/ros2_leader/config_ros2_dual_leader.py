@@ -27,6 +27,7 @@ class ROS2DualLeaderConfig(TeleoperatorConfig):
     name: str = "ros2_dual_leader"
     topic_joint_states: str = "/supre_robot_leader/joint_states"
     joint_name_prefix: str = "leader_"
+    prometheus_port: int | None = 8000
     joint_names: list[str] = field(default_factory=lambda:[
         'left_arm_joint_1',
         'left_arm_joint_2',
