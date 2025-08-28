@@ -1,3 +1,4 @@
+source ~/miniconda3/etc/profile.d/conda.sh
 source ./setup_env.sh
 python -m lerobot.teleoperate \
 --robot.type=ros2_dual_follower \
