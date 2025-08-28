@@ -94,6 +94,8 @@ all_topics_found=false
 # 假设你的环境在 ros2_env conda环境中
 echo "正在激活Conda环境以使用ROS2命令..."
 source ~/miniconda3/etc/profile.d/conda.sh # 根据你的路径修改
+source /opt/ros/humble/setup.bash
+
 conda activate ros2_env
 
 while [ $elapsed_time -lt $WAIT_TIMEOUT ]; do
