@@ -9,9 +9,16 @@ services:
     ports:
       - "9090:9090"
     volumes:
+      # 1. 配置文件 (保持不变)
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      # 2. 【新增】数据存储目录
+      - ./prometheus-data:/prometheus
+    # 3. 【新增】设置用户权限，避免Linux下的权限问题
+    user: "${UID:-1000}:${GID:-1000}"
+    # 4. 【新增】明确告诉Prometheus数据存储路径
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
 
   # Grafana 服务定义 (修改部分)
   grafana:

@@ -64,7 +64,7 @@ case $choice in
         CONTROLLER_PID=$!
         
         # ⚠️ 【重要】请根据你的Controller实际情况修改这里的Topic列表！
-        EXPECTED_TOPICS=("/joint_states" "/controller_manager/robot_description")
+        EXPECTED_TOPICS=("/supre_robot_follower/left_arm_controller/commands" "/supre_robot_follower/right_arm_controller/commands" "supre_robot_leader/joint_states")
         ;;
     2)
         # --- 任务2: 启动双臂自主动作 ---
@@ -76,7 +76,7 @@ case $choice in
         CONTROLLER_PID=$!
         
         # ⚠️ 【重要】请根据你的Controller实际情况修改这里的Topic列表！
-        EXPECTED_TOPICS=("/joint_trajectory_controller/joint_trajectory" "/joint_states")
+        EXPECTED_TOPICS=("/supre_robot_follower/left_arm_controller/commands" "/supre_robot_follower/right_arm_controller/commands")
         ;;
     *)
         echo "无效选项，退出。"
