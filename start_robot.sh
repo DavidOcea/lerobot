@@ -102,7 +102,8 @@ while [ $elapsed_time -lt $WAIT_TIMEOUT ]; do
     found_count=0
     # 优化：只调用一次 ros2 topic list，提高效率
     current_topics=$(ros2 topic list)
-
+    echo "当前ROS2 Topics:"
+    echo "$current_topics"
     for topic in "${EXPECTED_TOPICS[@]}"; do
         # 使用 -w 选项进行全词匹配，避免 /joint_states 匹配到 /joint_states_extra 等
         if echo "$current_topics" | grep -q -w "$topic"; then
