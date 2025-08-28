@@ -166,6 +166,7 @@ if [ "$choice" -eq 1 ]; then
 else
     cd ~/workspace/supre_robot_control
     # 无需再次 conda activate，因为当前shell环境已经激活
+    export LD_PRELOAD=/usr/lib/aarch64-linux-gnu/libstdc++.so.6 python    
     python ./test_dual_arm.py
 fi
 
