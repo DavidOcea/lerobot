@@ -7,6 +7,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from sensor_msgs.msg import JointState
 from builtin_interfaces.msg import Duration
 import threading
+from action_msgs.msg import GoalStatus
 
 class TeleopAligner(Node):
     def __init__(self, leader_joint_names,follower_joint_names):
@@ -140,15 +141,25 @@ class TeleopAligner(Node):
             self.get_logger().error("对齐目标被拒绝！")
             return False
 
-        result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, result_future)
+        get_result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self, get_result_future)
         
-        result = result_future.result()
-        if result.error_code == result.SUCCESSFUL:
-            self.get_logger().info("对齐成功！准备进入遥操作模式。")
-            return True
+        # 从 future 中获取 _GetResult_Response 对象
+        result_response = get_result_future.result()
+        
+        # 【关键修复点】
+        if result_response.status == GoalStatus.STATUS_SUCCEEDED:
+            # 访问嵌套的 .result 对象来获取 error_code
+            final_result = result_response.result
+            if final_result.error_code == FollowJointTrajectory.Result.SUCCESSFUL:
+                self.get_logger().info("轨迹执行成功！")
+                return True
+            else:
+                # 虽然Action状态是SUCCEEDED，但控制器内部可能报告了错误
+                self.get_logger().warn(f"轨迹执行完成，但有错误码: {final_result.error_code} - {final_result.error_string}")
+                return False # 或者根据你的逻辑返回True
         else:
-            self.get_logger().error(f"对齐失败，错误码: {result.error_code}")
+            self.get_logger().error(f"轨迹执行失败，最终状态: {result_response.status}")
             return False
 
 def main(args=None):
