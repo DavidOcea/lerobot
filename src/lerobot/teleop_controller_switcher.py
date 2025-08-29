@@ -67,26 +67,33 @@ def main(args=None):
     try:
         # 1. 切换到对齐模式 (激活轨迹控制器)
         if not switcher.switch(
-            activate_controllers= align_controllers,
             deactivate_controllers= teleop_controllers
         ):
-            print("无法切换到对齐模式！")
-            aligner.get_logger().error("无法切换到对齐模式！")
-            raise RuntimeError("无法切换到对齐模式！")
+            aligner.get_logger().error("无法停止arm controller！")
+            raise RuntimeError("无法停止arm controller！")
 
+        if not switcher.switch(
+            activate_controllers= align_controllers,
+        ):
+            aligner.get_logger().error("无法启动trajectory controller！")
+            raise RuntimeError("无法启动trajectory controller！")
+        
         # 2. 执行对齐
         leader_start_pos = [0.1, -0.5, 0.2, 0.8, 0.3, 0.0] 
         if aligner.align(leader_start_pos, 7, align_time_sec=6.0):
             
             # 3. 对齐成功，切换到实时遥操作模式
             if not switcher.switch(
-                activate_controllers=teleop_controllers,
                 deactivate_controllers=align_controllers
             ):  
-                 print("无法切换到遥操作模式！")
-                 aligner.get_logger().error("无法切换到遥操作模式！")
-                 raise RuntimeError("无法切换到遥操作模式！")
-            
+                 aligner.get_logger().error("无法停止trajectory controller！")
+                 raise RuntimeError("无法停止trajectory controller！")
+
+            if not switcher.switch(
+                activate_controllers=teleop_controllers,
+            ):  
+                 aligner.get_logger().error("无法启动arm controller！")
+                 raise RuntimeError("无法启动arm controller！")            
             # 4. 在这里启动你的高频遥操作Publisher和循环
             aligner.get_logger().info("========= 进入实时遥操作模式 =========")
             print("========= 进入实时遥操作模式 =========")
