@@ -69,6 +69,7 @@ def main(args=None):
             activate_controllers= align_controllers,
             deactivate_controllers= teleop_controllers
         ):
+            aligner.get_logger().error("无法切换到对齐模式！")
             raise RuntimeError("无法切换到对齐模式！")
 
         # 2. 执行对齐
@@ -80,6 +81,7 @@ def main(args=None):
                 activate_controllers=teleop_controllers,
                 deactivate_controllers=align_controllers
             ):
+                 aligner.get_logger().error("无法切换到遥操作模式！")
                  raise RuntimeError("无法切换到遥操作模式！")
             
             # 4. 在这里启动你的高频遥操作Publisher和循环
@@ -89,6 +91,7 @@ def main(args=None):
             pass
 
     except (KeyboardInterrupt, RuntimeError) as e:
+        print(e)
         aligner.get_logger().error(f"程序终止: {e}")
     finally:
         # 清理
