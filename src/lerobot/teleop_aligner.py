@@ -78,10 +78,10 @@ class TeleopAligner(Node):
                         return # 如果缺少关节，则不更新
                 
                 self.leader_current_joints = ordered_positions
-                self.get_logger().info(f"成功获取到Follower的初始位置: {self.leader_current_joints}")
+                self.get_logger().info(f"成功获取到Leader的初始位置: {self.leader_current_joints}")
 
     def align(self, leader_initial_joints, left_arm_joint_num,align_time_sec=5.0):
-        self.get_logger().info("正在等待Follower的初始关节状态...")
+        self.get_logger().info("正在等待Follower和Leader的初始关节状态...")
         # 等待回调函数获取到初始位置
         while self.follower_current_joints is None or self.leader_current_joints is None: 
             rclpy.spin_once(self, timeout_sec=0.1)
