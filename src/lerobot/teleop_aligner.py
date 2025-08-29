@@ -13,7 +13,7 @@ class TeleopAligner(Node):
         super().__init__('teleop_aligner')
         self.leader_joint_names = leader_joint_names
         self.follower_joint_names = follower_joint_names
-        self.follower_current_joints = None
+        self.leader_current_joints = None
         self.follower_current_joints = None
         self.lock = threading.Lock()
 
