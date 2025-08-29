@@ -67,13 +67,15 @@ def main(args=None):
     try:
         # 1. 切换到对齐模式 (激活轨迹控制器)
         if not switcher.switch(
-            deactivate_controllers= teleop_controllers
+            deactivate_controllers= teleop_controllers,
+            activate_controllers= [],
         ):
             aligner.get_logger().error("无法停止arm controller！")
             raise RuntimeError("无法停止arm controller！")
 
         if not switcher.switch(
             activate_controllers= align_controllers,
+            deactivate_controllers=[],
         ):
             aligner.get_logger().error("无法启动trajectory controller！")
             raise RuntimeError("无法启动trajectory controller！")
@@ -84,6 +86,7 @@ def main(args=None):
             
             # 3. 对齐成功，切换到实时遥操作模式
             if not switcher.switch(
+                activate_controllers=[],
                 deactivate_controllers=align_controllers
             ):  
                  aligner.get_logger().error("无法停止trajectory controller！")
@@ -91,6 +94,7 @@ def main(args=None):
 
             if not switcher.switch(
                 activate_controllers=teleop_controllers,
+                deactivate_controllers=[],
             ):  
                  aligner.get_logger().error("无法启动arm controller！")
                  raise RuntimeError("无法启动arm controller！")            
