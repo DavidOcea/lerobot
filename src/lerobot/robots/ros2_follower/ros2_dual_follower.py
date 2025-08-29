@@ -391,7 +391,8 @@ class ROS2DualRobotFollower(Robot):
                 # 使用 'leader' 作为 robot_name
                 self.joint_position_gauge.labels(
                     robot_name='follower', 
-                    joint_name=joint_name
+                    joint_name=joint_name,
+                    joint_id=self.observation_joint_names[self.joint_names.index(joint_name)]
                 ).set(position)
 
         # 同时更新 sorted_items 以便 wandb 记录正确的值

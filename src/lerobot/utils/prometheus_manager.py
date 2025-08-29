@@ -26,7 +26,7 @@ class PrometheusManager:
             self._gauges['joint_position'] = Gauge(
                 'robot_joint_position_radians',
                 'Current position of a robot joint in radians',
-                ['robot_name', 'joint_name']  # 标签列表
+                ['robot_name', 'joint_name','joint_id']  # 标签列表
             )
         # 你可以在这里添加更多的全局指标，例如 'joint_velocity', 'motor_temperature' 等
         # if 'joint_velocity' not in self._gauges:

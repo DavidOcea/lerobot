@@ -159,7 +159,8 @@ class  ROS2DualRobotLeader(Teleoperator):
                     # 使用 'leader' 作为 robot_name
                 self.joint_position_gauge.labels(
                     robot_name='leader', 
-                    joint_name=joint_name
+                    joint_name=joint_name,
+                    joint_id=observation_joint_name
                 ).set(pos_map[joint_name])
 
             if observation_joint_name=="left_arm_joint_7" or observation_joint_name=="right_arm_joint_7":
