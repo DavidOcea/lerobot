@@ -60,8 +60,8 @@ def main(args=None):
     aligner = TeleopAligner(leader_joint_names,follower_joint_names)
     switcher = ControllerSwitcher()
     
-    align_controllers = ['/supre_robot_follower/left_arm_trajectory_controller', '/supre_robot_follower/right_arm_trajectory_controller']
-    teleop_controllers = ['/supre_robot_follower/left_arm_controller','/supre_robot_follower/right_arm_controller']
+    align_controllers = ['left_arm_trajectory_controller', 'right_arm_trajectory_controller']
+    teleop_controllers = ['left_arm_controller','right_arm_controller']
     # --- 遥操作主逻辑 ---
     print("========= 进入对齐模式 =========")
     try:
