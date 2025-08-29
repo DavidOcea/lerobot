@@ -2,7 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from controller_manager_msgs.srv import SwitchController
-from .teleop_aligner import TeleopAligner
+from lerobot.teleop_aligner import TeleopAligner
 class ControllerSwitcher(Node):
     def __init__(self):
         # 创建一个独立的、临时的节点来调用服务
