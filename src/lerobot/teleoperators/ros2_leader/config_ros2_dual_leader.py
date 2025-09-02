@@ -42,4 +42,5 @@ class ROS2DualLeaderConfig(TeleoperatorConfig):
         'right_arm_joint_4',
         'right_arm_joint_5',
         'right_arm_joint_6',
+        'right_arm_joint_7',
     ])
