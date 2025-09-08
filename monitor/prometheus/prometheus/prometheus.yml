@@ -17,4 +17,4 @@ scrape_configs:
     # 我们将在这里定义抓取的目标 (target)
     # 这个目标就是你运行 Python 脚本的宿主机
     static_configs:
-      - targets: ["host.docker.internal:8000"]
+      - targets: ["192.168.2.57:8000"]
