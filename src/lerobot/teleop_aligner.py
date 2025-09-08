@@ -180,6 +180,7 @@ def main(args=None):
         'right_arm_joint_4',
         'right_arm_joint_5',
         'right_arm_joint_6',
+        'right_arm_joint_7',
     ]
 
     leader_joint_names = [f"{leader_joint_name_prefix}{name}" for name in observation_joint_names]
