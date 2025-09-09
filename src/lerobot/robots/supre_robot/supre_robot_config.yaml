@@ -1,0 +1,66 @@
+# robot_config.yaml
+
+# 定义机器人所有关节的官方顺序。上层控制程序将严格按照这个顺序来读写数据。
+joint_order:
+  - left_arm_joint_1
+  - left_arm_joint_2
+  - left_arm_joint_3
+  - left_arm_joint_4
+  - left_arm_joint_5
+  - left_arm_joint_6
+  - left_arm_joint_7   # Gripper joint
+  - right_arm_joint_1
+  - right_arm_joint_2
+  - right_arm_joint_3
+  - right_arm_joint_4
+  - right_arm_joint_5
+  - right_arm_joint_6
+  - right_arm_joint_7  # Gripper joint
+
+# 定义所有硬件接口的实例
+hardware_interfaces:
+  # 左臂电机控制器
+  - name: left_arm_motors
+    type: EyouMotorHardware  # 这个名字必须与管理器中的映射匹配
+    config:
+      can_device_index: 0
+      can_baud_rate: "1M"
+      joints:
+        - { name: left_arm_joint_1, node_id: 1 }
+        - { name: left_arm_joint_2, node_id: 2 }
+        - { name: left_arm_joint_3, node_id: 3 }
+        - { name: left_arm_joint_4, node_id: 4 }
+        - { name: left_arm_joint_5, node_id: 5 }
+        - { name: left_arm_joint_6, node_id: 6 }
+
+  # 左臂夹爪控制器
+  - name: left_gripper
+    type: JodellGripperHardware
+    config:
+      device: "/dev/ttyUSB0" # <-- 注意修改为你的实际设备
+      joints:
+        - name: left_arm_joint_7
+          parameters: { slave_id: 1 }
+
+  # 右臂电机控制器
+  - name: right_arm_motors
+    type: EyouMotorHardware
+    config:
+      can_device_index: 1 # <-- 假设右臂在不同的CAN总线上
+      can_baud_rate: "1M"
+      joints:
+        - { name: right_arm_joint_1, node_id: 11 }
+        - { name: right_arm_joint_2, node_id: 12 }
+        - { name: right_arm_joint_3, node_id: 13 }
+        - { name: right_arm_joint_4, node_id: 14 }
+        - { name: right_arm_joint_5, node_id: 15 }
+        - { name: right_arm_joint_6, node_id: 16 }
+
+  # 右臂夹爪控制器
+  - name: right_gripper
+    type: JodellGripperHardware
+    config:
+      device: "/dev/ttyUSB1" # <-- 注意修改为你的实际设备
+      joints:
+        - name: right_arm_joint_7
+          parameters: { slave_id: 2 }
