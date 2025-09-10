@@ -2,8 +2,8 @@ import time
 import math
 from typing import List, Dict, Any, Tuple, Optional
 
-# 导入更新后的 eumotor_py 绑定
-import eumotor_py 
+# 导入更新后的 eu_motor_py 绑定
+import eu_motor_py 
 
 class EyouMotorHardware:
     """
@@ -16,9 +16,9 @@ class EyouMotorHardware:
 
     def __init__(self):
         """构造函数。初始化内部状态存储。"""
-        self.can_manager_: Optional[eumotor_py.CanNetworkManager] = None
-        self.feedback_manager_: Optional[eumotor_py.MotorFeedbackManager] = None
-        self.motor_nodes_: List[eumotor_py.EuMotorNode] = []
+        self.can_manager_: Optional[eu_motor_py.CanNetworkManager] = None
+        self.feedback_manager_: Optional[eu_motor_py.MotorFeedbackManager] = None
+        self.motor_nodes_: List[eu_motor_py.EuMotorNode] = []
         self.joint_names_: List[str] = []
         
         # --- 恢复内部状态和指令存储 ---
@@ -43,9 +43,9 @@ class EyouMotorHardware:
             baud_rate_str = self._config["can_baud_rate"]
             
             baud_rate_map = {
-                "1M": eumotor_py.Baudrate.BPS_1M,
-                "500K": eumotor_py.Baudrate.BPS_500K,
-                "250K": eumotor_py.Baudrate.BPS_250K,
+                "1M": eu_motor_py.Baudrate.BPS_1M,
+                "500K": eu_motor_py.Baudrate.BPS_500K,
+                "250K": eu_motor_py.Baudrate.BPS_250K,
             }
             if baud_rate_str not in baud_rate_map:
                 print(f"Error: Invalid baud rate '{baud_rate_str}'")
@@ -61,8 +61,8 @@ class EyouMotorHardware:
             self.hw_commands_positions_ = [0.0] * num_joints
             self.hw_start_enabled_ = [True] * num_joints
 
-            self.can_manager_ = eumotor_py.CanNetworkManager()
-            self.can_manager_.init_device(eumotor_py.DeviceType.Canable, can_device_index, can_baud_rate)
+            self.can_manager_ = eu_motor_py.CanNetworkManager()
+            self.can_manager_.init_device(eu_motor_py.DeviceType.Canable, can_device_index, can_baud_rate)
             print("CAN device initialized successfully.")
 
             self.motor_nodes_ = []
@@ -73,7 +73,7 @@ class EyouMotorHardware:
                 self.joint_names_.append(joint_name)
                 
                 print(f"Initializing motor for joint '{joint_name}' with Node ID {node_id}")
-                motor = eumotor_py.EuMotorNode(can_device_index, node_id)
+                motor = eu_motor_py.EuMotorNode(can_device_index, node_id)
                 self.motor_nodes_.append(motor)
 
                 if "start_enabled" in joint_info and joint_info["start_enabled"].lower() == "false":
@@ -124,7 +124,7 @@ class EyouMotorHardware:
                                 motor.start_error_feedback_tpdo(1, 255, 60)]):
                          print(f"Warning: Failed to configure disabled joint {joint_name}")
             
-            self.feedback_manager_ = eumotor_py.MotorFeedbackManager.get_instance()
+            self.feedback_manager_ = eu_motor_py.MotorFeedbackManager.get_instance()
             self.feedback_manager_.register_callback()
             print("Global feedback callback registered.")
 
