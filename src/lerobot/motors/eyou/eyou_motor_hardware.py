@@ -202,32 +202,31 @@ class EyouMotorHardware:
 # --- 主程序：演示如何使用混合模式的硬件接口 ---
 if __name__ == "__main__":
     robot_config = {
-        "can_device_index": 0,
+        "can_device_type": "Canable",
+        "can_device_index": 1,
         "can_baud_rate": "1M",
         "joints": [
-            {"name": "joint1", "node_id": 1},
-            {"name": "joint2", "node_id": 2},
+            {"name": "right_arm_joint_2", "node_id": 12},
+            {"name": "right_arm_joint_4", "node_id": 14},
         ]
     }
 
     robot = EyouMotorHardware()
+
     if not robot.init(robot_config):
         print("Failed to initialize robot hardware. Exiting.")
         exit(1)
 
     try:
-        # 3. 激活硬件
         if not robot.activate():
             print("Failed to activate robot hardware. Exiting.")
             exit(1)
         
-        # 主循环仍然可以有自己的状态变量，通过 read() 的返回值来更新
-        # 初始值可以从 robot 对象的内部状态获取
-        current_positions = list(robot.hw_states_positions_)
-        current_velocities = list(robot.hw_states_velocities_)
-        target_positions = list(robot.hw_commands_positions_)
+        initial_positions = list(robot.hw_commands_positions_)
+        print(f"\n--- Starting Control Loop (Press Ctrl+C to exit) ---")
+        print(f"Initial positions: {[f'{p:.2f}' for p in initial_positions]}")
         
-        print("\n--- Starting Control Loop (Press Ctrl+C to exit) ---")
+        target_positions = list(initial_positions)
         
         control_frequency = 100
         control_period = 1.0 / control_frequency
@@ -236,24 +235,32 @@ if __name__ == "__main__":
         while True:
             loop_start = time.perf_counter()
             
-            # a. Read: 调用 read() 更新主循环中的局部变量
             current_positions, current_velocities = robot.read()
             
-            if int(time.time() * 10) % 10 == 0:
+            if int(loop_start * 10) % 10 == 0:
                 pos_str = ", ".join([f"{p:7.2f}" for p in current_positions])
                 vel_str = ", ".join([f"{v:7.2f}" for v in current_velocities])
                 print(f"Time: {time.time() - start_loop_time:5.2f}s | Pos: [{pos_str}] | Vel: [{vel_str}]")
 
             # b. Controller Logic: 计算新的目标位置
             elapsed_time = time.time() - start_loop_time
-            amplitude = 45.0
-            frequency = 0.25
+            
+            amplitude = 5.0
+            frequency = 0.2
             
             for i in range(len(target_positions)):
-                phase = i * (math.pi / 3)
-                target_positions[i] = amplitude * math.sin(2 * math.pi * frequency * elapsed_time + phase)
+                phase = i * (math.pi / 2)
+                
+                # --- 核心修改：确保偏移量非负 ---
+                # 1. 创建一个在 [0, 1] 范围内振荡的归一化值
+                normalized_oscillation = (math.sin(2 * math.pi * frequency * elapsed_time + phase) + 1) / 2
+                
+                # 2. 计算始终为正的偏移量
+                offset = amplitude * normalized_oscillation
+                
+                # 3. 将偏移量加到初始位置上
+                target_positions[i] = initial_positions[i] + offset
 
-            # c. Write: 将计算出的新指令作为参数传递给 write()
             robot.write(target_positions)
             
             loop_end = time.perf_counter()
@@ -264,6 +271,8 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\nCtrl+C pressed. Shutting down.")
     except Exception as e:
+        import traceback
         print(f"\nAn unexpected error occurred: {e}")
+        traceback.print_exc()
     finally:
         robot.deactivate()
