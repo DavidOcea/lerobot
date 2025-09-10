@@ -23,7 +23,7 @@ hardware_interfaces:
   - name: arm_motors
     type: EyouMotorHardware  # 这个名字必须与管理器中的映射匹配
     config:
-      can_device_index: 1
+      can_device_index: 0
       can_baud_rate: "1M"
       joints:
         - { name: left_arm_joint_1, node_id: 21 }
@@ -32,26 +32,11 @@ hardware_interfaces:
         - { name: left_arm_joint_4, node_id: 24 }
         - { name: left_arm_joint_5, node_id: 25 }
         - { name: left_arm_joint_6, node_id: 26 }
+        - { name: left_arm_joint_6, node_id: 27 }        
         - { name: right_arm_joint_1, node_id: 11 }
         - { name: right_arm_joint_2, node_id: 12 }
         - { name: right_arm_joint_3, node_id: 13 }
         - { name: right_arm_joint_4, node_id: 14 }
         - { name: right_arm_joint_5, node_id: 15 }
         - { name: right_arm_joint_6, node_id: 16 }
-  # 左臂夹爪控制器
-  - name: left_gripper
-    type: JodellGripperHardware
-    config:
-      device: "/dev/ttyTHS1" # <-- 注意修改为你的实际设备
-      joints:
-        - name: left_arm_joint_7
-          parameters: { slave_id: 27 }
-
-  # 右臂夹爪控制器
-  - name: right_gripper
-    type: JodellGripperHardware
-    config:
-      device: "/dev/ttyTHS2" # <-- 注意修改为你的实际设备
-      joints:
-        - name: right_arm_joint_7
-          parameters: { slave_id: 17 }
+        - { name: right_arm_joint_6, node_id: 17 }

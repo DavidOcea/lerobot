@@ -135,7 +135,7 @@ class EyouMotorHardware:
         print("Activation successful.")
         return True
 
-    def read(self) -> Tuple[List[float], List[float]]:
+    def read(self) -> list[float | None]:
         """
         更新内部状态并返回一份新的状态拷贝。
         
@@ -149,7 +149,7 @@ class EyouMotorHardware:
                 self.hw_states_velocities_[i] = feedback.velocity_dps
         
         # 返回内部状态的拷贝，防止外部代码意外修改
-        return list(self.hw_states_positions_), list(self.hw_states_velocities_)
+        return list(self.hw_states_positions_)
 
     def write(self, commands_positions: List[float]):
         """
