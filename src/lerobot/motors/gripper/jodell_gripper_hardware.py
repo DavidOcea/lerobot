@@ -202,12 +202,12 @@ class JodellGripperHardware:
 # --- 使用示例 (与第一个版本相同) ---
 if __name__ == "__main__":
     gripper_config = {
-        "device": "/dev/ttyUSB0",  # <-- !!! 修改这里 !!!
+        "device": "/dev/ttyTHS2",  # <-- !!! 修改这里 !!!
         "baud_rate": 115200,
-        "default_speed_percent": 80,
-        "default_torque_percent": 60,
+        "default_speed_percent": 100,
+        "default_torque_percent": 100,
         "joints": [
-            {"name": "gripper_finger_joint_1", "parameters": {"slave_id": 1}},
+            {"name": "right_arm_joint_7", "parameters": {"slave_id": 17}},
         ]
     }
 
