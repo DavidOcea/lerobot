@@ -141,14 +141,8 @@ class SupreRobotFollower(Robot):
         positions = self._hardware_manager.read()
         
         return {self.observation_joint_names[i]: positions[i] for i in range(len(self.observation_joint_names))}
-    def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
-        """向机器人发送动作指令。"""
-        if not self.is_connected:
-            raise RuntimeError("Robot is not connected.")
-                    
-        if not self.is_connected:
-            raise RuntimeError("Follower robot is not connected.")
 
+    def _prepare_and_clamp_action(self, action: dict[str, Any]) -> Tuple[List[float], Dict[str, Any]]:
         if action is None:
             raise ValueError("Action dictionary must contain 'joint_positions'.")
         # modify the action by joint_direction_map
@@ -266,19 +260,28 @@ class SupreRobotFollower(Robot):
         #wandb.log(log_data)
         ### WANDB MODIFICATION END ###
 
-        # Extract just the values from the sorted list
-        #print(f"Sending action: {target_positions}")
-        self.send_target_position(final_target_positions)
         # 首先，创建一个包含最终执行值的字典 (key: 'left_arm_joint_1', value: final_pos)
         final_action = {
             f"{name}.pos": pos 
             for name, pos in zip(self.observation_joint_names, final_target_positions)
         }
         
-        #self._ros_node.get_logger().info(f"Returning final clamped action: {final_action}")
-        return final_action
-        
+        return final_clamped_positions, final_action    
+    def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
+        """向机器人发送动作指令。"""
+        if not self.is_connected:
+            raise RuntimeError("Follower robot is not connected.")
 
+        # 1. 调用辅助方法来完成所有的计算和安全检查
+        final_target_positions, final_action_dict = self._prepare_and_clamp_action(action)
+
+        # 2. 将计算结果发送到硬件
+        self.send_target_position(final_target_positions)
+
+        
+        #self._ros_node.get_logger().info(f"Returning final clamped action: {final_action}")
+        return final_action_dict
+        
     def send_target_position(self, target_positions: list[float]) -> None:
         """将目标位置发送给机器人。"""
         self._hardware_manager.write(target_positions)
@@ -308,4 +311,54 @@ class SupreRobotFollower(Robot):
 
     @property
     def _motors_ft(self) -> dict[str, type]:
-        return {f"{motor}.pos": float for motor in self.observation_joint_names}            
+        return {f"{motor}.pos": float for motor in self.observation_joint_names}   
+        
+    def execute_trajectory(self, goal_action: dict[str, Any], duration: float = 1.0) -> None:
+        """
+        通过线性插值，在给定的时间内平滑地将机器人移动到目标位置。
+        这是一个阻塞式方法，直到轨迹完成。
+
+        :param goal_action: 包含最终目标关节位置的字典。
+        :param duration: 完成移动所需的总时间（秒）。
+        """
+        if not self.is_connected:
+            raise RuntimeError("Cannot execute trajectory while disconnected.")
+            
+        if duration <= 0:
+            self.send_action(goal_action)
+            return
+
+        # --- 1. 获取轨迹的起点和终点 (无硬件副作用) ---
+        
+        # 起点: 机器人的当前位置
+        start_positions_map = self.get_current_position()
+        start_positions = np.array([start_positions_map[name] for name in self.observation_joint_names])
+        
+        # 终点: 调用辅助方法计算最终钳位后的目标位置，但 *不发送*
+        final_target_positions, _ = self._prepare_and_clamp_action(goal_action)
+        end_positions = np.array(final_target_positions)
+
+        # --- 2. 计算插值参数 ---
+        control_period = 1.0 / self.config.control_frequency
+        num_steps = int(duration / control_period)
+        if num_steps < 2:
+            self.send_target_position(end_positions.tolist())
+            time.sleep(duration)
+            return
+
+        # --- 3. 执行高频插值控制循环 ---
+        # print(f"Executing trajectory over {duration:.2f}s in {num_steps} steps.")
+        
+        for i in range(num_steps):
+            step_start_time = time.perf_counter()
+            
+            alpha = (i + 1) / num_steps
+            interpolated_positions = start_positions + alpha * (end_positions - start_positions)
+            
+            # 直接调用最底层的发送方法，跳过 send_action 的重复检查
+            self.send_target_position(interpolated_positions.tolist())
+            
+            elapsed_time = time.perf_counter() - step_start_time
+            sleep_time = control_period - elapsed_time
+            if sleep_time > 0:
+                time.sleep(sleep_time)
