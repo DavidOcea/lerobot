@@ -13,20 +13,14 @@ def create_orin_mjpeg_pipeline(
     """
     return (
         f"v4l2src device={device_path} ! "
-        # 1. 明确请求 MJPEG 格式的压缩流
         f"image/jpeg, width={capture_width}, height={capture_height}, framerate={framerate}/1 ! "
         
-        # 2. 使用 Orin 的硬件 JPEG 解码器 (NVJPEG)
-        #    如果 gst-inspect-1.0 nvjpegdec 找不到，可以尝试用 jpegdec
+        # <<< 核心修改：在这里添加一个 queue 元素 >>>
+        "queue ! "
+        
         "nvjpegdec ! "
-        
-        # 3. 使用硬件视频转换器将解码后的帧转为 BGRx
         "nvvidconv ! "
-        
-        # 4. 定义输出给 OpenCV 的格式 (移除 memory:NVMM 以提高兼容性)
         f"video/x-raw, format={output_format} ! "
-        
-        # 5. 连接到 appsink
         "appsink drop=true"
     )
 
