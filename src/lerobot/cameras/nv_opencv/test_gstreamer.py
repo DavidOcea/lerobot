@@ -15,15 +15,14 @@ def create_orin_mjpeg_pipeline(
         f"v4l2src device={device_path} ! "
         f"image/jpeg, width={capture_width}, height={capture_height}, framerate={framerate}/1 ! "
         
-        # <<< 核心修改：在这里添加一个 queue 元素 >>>
-        "queue ! "
+        # <<< 核心修改：在解码前加入 jpegparse >>>
+        "jpegparse ! "
         
         "nvjpegdec ! "
         "nvvidconv ! "
-        f"video/x-raw, format={output_format} ! "
+        f"video/x-raw, format=BGRx ! "
         "appsink drop=true"
     )
-
 
 # --- 主程序 ---
 
