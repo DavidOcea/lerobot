@@ -42,12 +42,13 @@ def create_software_jpeg_pipeline():
     )
 
 # 1. 创建硬件加速的 GStreamer 管道
-orin_pipeline = create_software_jpeg_pipeline(
-    device_path="/dev/video0", # 确认这是你的摄像头设备
-    capture_width=640,
-    capture_height=480,
-    framerate=30
-)
+#orin_pipeline = create_orin_mjpeg_pipeline(
+#    device_path="/dev/video0", # 确认这是你的摄像头设备
+#    capture_width=640,
+#    capture_height=480,
+#    framerate=30
+#)
+orin_pipeline = create_software_jpeg_pipeline()
 print("Using GStreamer pipeline:\n", orin_pipeline)
 
 # 2. 创建配置对象，这次传入 gstreamer_pipeline
