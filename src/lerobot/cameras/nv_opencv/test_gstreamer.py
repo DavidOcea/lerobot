@@ -2,7 +2,7 @@ from lerobot.cameras.nv_opencv.camera_opencv import OpenCVCamera
 from lerobot.cameras.nv_opencv.configuration_opencv import OpenCVCameraConfig, ColorMode
 
 def create_orin_mjpeg_pipeline(
-    device_path="/dev/video0",
+    device_path="/dev/video2",
     capture_width=640,
     capture_height=480,
     framerate=30,
