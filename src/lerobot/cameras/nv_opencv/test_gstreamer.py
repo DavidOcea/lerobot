@@ -70,8 +70,32 @@ def create_software_jpeg_pipeline():
         "appsink drop=true"
     )
 
+def create_kitchen_sink_pipeline(
+    device_path="/dev/video0",
+    capture_width=640,
+    capture_height=480,
+    framerate=30,
+    output_format="BGR",
+):
+    """
+    The final attempt pipeline, combining all known robustness tricks.
+    """
+    return (
+        # Use dmabuf mode for better memory sharing potential
+        f"v4l2src device={device_path} io-mode=2 ! " 
+        f"image/jpeg, width={capture_width}, height={capture_height}, framerate={framerate}/1 ! "
+        # A queue to buffer the raw camera output
+        "queue ! "
+        "jpegparse ! "
+        "nvjpegdec ! "
+        # A second queue after hardware decoding
+        "queue ! "
+        "nvvidconv ! "
+        f"video/x-raw, format={output_format} ! "
+        "appsink drop=true"
+    )
 # 1. 创建硬件加速的 GStreamer 管道
-orin_pipeline = create_orin_hybrid_pipeline(
+orin_pipeline = create_kitchen_sink_pipeline(
     device_path="/dev/video0", # 确认这是你的摄像头设备
     capture_width=640,
     capture_height=480,
