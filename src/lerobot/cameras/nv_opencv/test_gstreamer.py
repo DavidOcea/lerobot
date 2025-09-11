@@ -34,7 +34,7 @@ def create_orin_mjpeg_pipeline(
 # --- 主程序 ---
 
 # 1. 创建硬件加速的 GStreamer 管道
-orin_pipeline = create_orin_hw_accel_pipeline(
+orin_pipeline = create_orin_mjpeg_pipeline(
     device_path="/dev/video0", # 确认这是你的摄像头设备
     capture_width=640,
     capture_height=480,
