@@ -24,6 +24,35 @@ def create_orin_mjpeg_pipeline(
         "appsink drop=true"
     )
 
+def create_orin_hybrid_pipeline(
+    device_path="/dev/video0",
+    capture_width=640,
+    capture_height=480,
+    framerate=30,
+    output_format="BGR", # OpenCV appsink 更喜欢 BGR
+):
+    """
+    最终的、推荐的硬件加速管道。
+    它使用 nvjpegdec 进行硬件解码，然后用 nvvidconv 将结果安全地
+    转换回 CPU 内存，以实现最佳的性能和兼容性。
+    """
+    return (
+        f"v4l2src device={device_path} ! "
+        f"image/jpeg, width={capture_width}, height={capture_height}, framerate={framerate}/1 ! "
+        "jpegparse ! "
+        
+        # 1. 使用硬件解码器，它会输出到 NVMM 内存
+        "nvjpegdec ! "
+        
+        # 2. 使用硬件转换器，它会从 NVMM 内存读取，并输出到 CPU 内存
+        "nvvidconv ! "
+        
+        # 3. 指定输出格式为 BGR，并确保它在 CPU 内存中（默认行为）
+        f"video/x-raw, format={output_format} ! "
+        
+        # 4. 连接到 appsink
+        "appsink drop=true"
+    )
 # --- 主程序 ---
 def create_software_jpeg_pipeline():
     """Uses a software JPEG decoder to isolate the nvjpegdec plugin."""
@@ -41,14 +70,14 @@ def create_software_jpeg_pipeline():
         "appsink drop=true"
     )
 
-# 1. 创建硬件加速的 GStreamer 管道
-#orin_pipeline = create_orin_mjpeg_pipeline(
-#    device_path="/dev/video0", # 确认这是你的摄像头设备
-#    capture_width=640,
-#    capture_height=480,
-#    framerate=30
-#)
-orin_pipeline = create_software_jpeg_pipeline()
+ 1. 创建硬件加速的 GStreamer 管道
+orin_pipeline = create_orin_hybrid_pipeline(
+    device_path="/dev/video0", # 确认这是你的摄像头设备
+    capture_width=640,
+    capture_height=480,
+    framerate=30
+)
+#orin_pipeline = create_software_jpeg_pipeline()
 print("Using GStreamer pipeline:\n", orin_pipeline)
 
 # 2. 创建配置对象，这次传入 gstreamer_pipeline
