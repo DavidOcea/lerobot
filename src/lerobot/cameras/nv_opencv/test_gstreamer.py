@@ -25,9 +25,24 @@ def create_orin_mjpeg_pipeline(
     )
 
 # --- 主程序 ---
+def create_software_jpeg_pipeline():
+    """Uses a software JPEG decoder to isolate the nvjpegdec plugin."""
+    return (
+        "v4l2src device=/dev/video0 ! "
+        "image/jpeg, width=640, height=480, framerate=30/1 ! "
+        "jpegparse ! "
+        
+        # <<< USE THE SOFTWARE DECODER >>>
+        "jpegdec ! "
+        
+        # nvvidconv is still useful for color conversion, even if not hardware accelerated
+        "videoconvert ! " # Use generic videoconvert, not nvvidconv
+        "video/x-raw, format=BGR ! "
+        "appsink drop=true"
+    )
 
 # 1. 创建硬件加速的 GStreamer 管道
-orin_pipeline = create_orin_mjpeg_pipeline(
+orin_pipeline = create_software_jpeg_pipeline(
     device_path="/dev/video0", # 确认这是你的摄像头设备
     capture_width=640,
     capture_height=480,
