@@ -46,7 +46,8 @@ config_hw = OpenCVCameraConfig(
     width=640,
     height=480,
     fps=30,
-    color_mode=ColorMode.BGR # GStreamer 管道输出 BGR，所以这里设为 BGR
+    color_mode=ColorMode.BGR, # GStreamer 管道输出 BGR，所以这里设为 BGR
+    index_or_path=0,
 )
 
 # 3. 创建并使用相机实例
