@@ -4,7 +4,7 @@ from .supre_robot_hardware_manager import SupreRobotHardwareManager # 导入我�
 
 def main():
     # 1. 初始化管理器
-    robot_manager = SupreRobotHardwareManager(config_path="robot_config.yaml")
+    robot_manager = SupreRobotHardwareManager(config_path="supre_robot_config.yaml")
     if not robot_manager.init():
         print("Failed to initialize robot hardware manager. Exiting.")
         return
