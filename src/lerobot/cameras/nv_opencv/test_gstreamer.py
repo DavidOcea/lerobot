@@ -70,7 +70,7 @@ def create_software_jpeg_pipeline():
         "appsink drop=true"
     )
 
- 1. 创建硬件加速的 GStreamer 管道
+# 1. 创建硬件加速的 GStreamer 管道
 orin_pipeline = create_orin_hybrid_pipeline(
     device_path="/dev/video0", # 确认这是你的摄像头设备
     capture_width=640,
