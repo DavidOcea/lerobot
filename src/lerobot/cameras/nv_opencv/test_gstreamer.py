@@ -1,32 +1,35 @@
 from lerobot.cameras.nv_opencv.camera_opencv import OpenCVCamera
 from lerobot.cameras.nv_opencv.configuration_opencv import OpenCVCameraConfig, ColorMode
 
-def create_orin_hw_accel_pipeline(
+def create_orin_mjpeg_pipeline(
     device_path="/dev/video0",
     capture_width=640,
     capture_height=480,
     framerate=30,
-    output_format="BGRx", # OpenCV 在 appsrc 中通常期望 BGR 格式
+    output_format="BGRx",
 ):
     """
-    一个辅助函数，用于为 Jetson Orin 生成硬件加速的 GStreamer 捕获管道。
+    为输出 MJPEG 的 USB 摄像头生成一个硬件加速的 GStreamer 管道。
     """
     return (
         f"v4l2src device={device_path} ! "
-        # 1. 定义从摄像头捕获的原始格式、分辨率和帧率
-        f"video/x-raw, width={capture_width}, height={capture_height}, framerate={framerate}/1 ! "
+        # 1. 明确请求 MJPEG 格式的压缩流
+        f"image/jpeg, width={capture_width}, height={capture_height}, framerate={framerate}/1 ! "
         
-        # 2. 使用 Orin 的硬件视频转换器 (VIC - Video Image Compositor)
-        #    它高效地处理颜色空间转换和缩放，并把数据保持在NVIDIA内存中。
+        # 2. 使用 Orin 的硬件 JPEG 解码器 (NVJPEG)
+        #    如果 gst-inspect-1.0 nvjpegdec 找不到，可以尝试用 jpegdec
+        "nvjpegdec ! "
+        
+        # 3. 使用硬件视频转换器将解码后的帧转为 BGRx
         "nvvidconv ! "
         
-        # 3. 定义输出给 OpenCV 的格式
-        #    memory:NVMM 尽可能地避免了昂贵的 CPU 内存拷贝
-        f"video/x-raw(memory:NVMM), format={output_format} ! "
+        # 4. 定义输出给 OpenCV 的格式 (移除 memory:NVMM 以提高兼容性)
+        f"video/x-raw, format={output_format} ! "
         
-        # 4. 将 GStreamer 的输出连接到 OpenCV 的 "app sink"
+        # 5. 连接到 appsink
         "appsink drop=true"
     )
+
 
 # --- 主程序 ---
 
