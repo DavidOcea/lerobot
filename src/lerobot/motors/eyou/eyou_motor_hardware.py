@@ -235,12 +235,11 @@ if __name__ == "__main__":
         while True:
             loop_start = time.perf_counter()
             
-            current_positions, current_velocities = robot.read()
+            current_positions = robot.read()
             
             if int(loop_start * 10) % 10 == 0:
                 pos_str = ", ".join([f"{p:7.2f}" for p in current_positions])
-                vel_str = ", ".join([f"{v:7.2f}" for v in current_velocities])
-                print(f"Time: {time.time() - start_loop_time:5.2f}s | Pos: [{pos_str}] | Vel: [{vel_str}]")
+                print(f"Time: {time.time() - start_loop_time:5.2f}s | Pos: [{pos_str}] ")
 
             # b. Controller Logic: 计算新的目标位置
             elapsed_time = time.time() - start_loop_time
