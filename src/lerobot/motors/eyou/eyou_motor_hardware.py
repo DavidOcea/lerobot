@@ -144,7 +144,7 @@ class EyouMotorHardware:
         for i, motor in enumerate(self.motor_nodes_):
             feedback = motor.get_latest_feedback()
             
-            if feedback.last_update_time.timestamp() > datetime.timedelta(0):
+            if feedback.last_update_time > datetime.timedelta(0):
                 self.hw_states_positions_[i] = feedback.position_deg
                 self.hw_states_velocities_[i] = feedback.velocity_dps
         
