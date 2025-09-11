@@ -234,7 +234,7 @@ if __name__ == "__main__":
         print("\nSending command: Open gripper(s)")
         open_commands = [1.0] * num_grippers
         gripper_hardware.write(open_commands)
-        time.sleep(2) 
+        time.sleep(10) 
         current_positions = gripper_hardware.read()
         print(f"Positions after opening: {current_positions}")
 
@@ -242,7 +242,7 @@ if __name__ == "__main__":
         print("\nSending command: Close gripper(s)")
         close_commands = [0.0] * num_grippers
         gripper_hardware.write(close_commands)
-        time.sleep(2)
+        time.sleep(10)
         current_positions = gripper_hardware.read()
         print(f"Positions after closing: {current_positions}")
         
@@ -250,7 +250,7 @@ if __name__ == "__main__":
         print("\nSending command: Move to half position")
         half_open_commands = [0.5] * num_grippers
         gripper_hardware.write(half_open_commands)
-        time.sleep(2)
+        time.sleep(10)
         current_positions = gripper_hardware.read()
         print(f"Positions at half: {current_positions}")
 
