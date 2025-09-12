@@ -15,7 +15,6 @@ from lerobot.robots.supre_robot import SupreRobotHardwareManager
 # from gripper_hardware import JodellGripperHardware # Manager will import these
 from ..teleoperator import Teleoperator
 from .supre_robot_leader_config import SupreRobotLeaderConfig
-from ..utils import ensure_safe_goal_position
 from functools import cached_property
 from lerobot.utils.prometheus_manager import prometheus_manager
 
