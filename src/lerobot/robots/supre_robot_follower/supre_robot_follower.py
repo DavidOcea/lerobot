@@ -18,8 +18,12 @@ from .supre_robot_follower_config import SupreRobotFollowerConfig
 from ..utils import ensure_safe_goal_position
 from functools import cached_property
 from lerobot.utils.prometheus_manager import prometheus_manager
+import logging
+
+logger = logging.getLogger(__name__)
 
 # 2. 实现 Robot 接口
+
 class SupreRobotFollower(Robot):
     """
     A LeRobot-compatible class for the dual-arm robot controlled by
@@ -130,8 +134,13 @@ class SupreRobotFollower(Robot):
         
         positions = self._hardware_manager.read()
         
-        return {f"{self.observation_joint_names[i]}.pos": positions[i] for i in range(len(self.observation_joint_names))}
+        obs_dict = {f"{self.observation_joint_names[i]}.pos": positions[i] for i in range(len(self.observation_joint_names))}
 
+        for cam_key, cam in self.cameras.items():
+            start = time.perf_counter()
+            obs_dict[cam_key] = cam.async_read()
+            dt_ms = (time.perf_counter() - start) * 1e3
+            logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
 
     def get_current_position(self) -> dict[str, float]:
         """获取机器人的当前位置。"""

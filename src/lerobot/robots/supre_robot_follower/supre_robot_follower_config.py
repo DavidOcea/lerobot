@@ -13,6 +13,7 @@ class MotorCalibration:
 
 _DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "supre_robot_config.yaml"
 
+@RobotConfig.register_subclass("supre_robot_follower")
 @dataclass
 class SupreRobotFollowerConfig(RobotConfig):
     """Configuration for the SupreRobot."""

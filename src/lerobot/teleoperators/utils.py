@@ -72,6 +72,10 @@ def make_teleoperator_from_config(config: TeleoperatorConfig) -> Teleoperator:
     elif config.type == "ros2_dual_leader":
         from .ros2_leader import ROS2DualRobotLeader
 
-        return ROS2DualRobotLeader(config)      
+        return ROS2DualRobotLeader(config)    
+    elif config.type == "supre_robot_leader":
+        from .supre_robot_leader import SupreRobotLeader
+        
+        return SupreRobotLeader(config)
     else:
         raise ValueError(config.type)

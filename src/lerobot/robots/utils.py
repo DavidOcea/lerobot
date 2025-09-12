@@ -68,7 +68,11 @@ def make_robot_from_config(config: RobotConfig) -> Robot:
     elif config.type == "ros2_dual_follower":
         from .ros2_follower import ROS2DualRobotFollower
 
-        return ROS2DualRobotFollower(config)        
+        return ROS2DualRobotFollower(config)    
+    elif config.type == "supre_robot_follower":
+        from .supre_robot_follower import SupreRobotFollower
+        
+        return SupreRobotFollower(config)
     elif config.type == "mock_robot":
         from tests.mocks.mock_robot import MockRobot
 

@@ -27,7 +27,7 @@ class SupreRobotLeader(Teleoperator):
     """
     # 设置 LeRobot 要求的类属性
     config_class = SupreRobotLeaderConfig
-    name = "supre_robot_follower"
+    name = "supre_robot_leader"
 
     def __init__(self, config: SupreRobotLeaderConfig):
         super().__init__(config)

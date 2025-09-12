@@ -624,7 +624,11 @@ def make_robot_config(robot_type: str, **kwargs) -> RobotConfig:
     elif robot_type == "ros2_dual_follower":
         from lerobot.robots.ros2_follower import ROS2DualFollowerConfig
 
-        return ROS2DualFollowerConfig(**kwargs)    
+        return ROS2DualFollowerConfig(**kwargs)   
+    elif robot_type == "supre_robot_follower":
+        from lerobot.robots.supre_robot_follower import SupreRobotFollowerConfig
+
+        return SupreRobotFollowerConfig(**kwargs) 
     else:
         raise ValueError(f"Robot type '{robot_type}' is not available.")
 
