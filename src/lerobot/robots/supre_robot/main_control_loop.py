@@ -1,6 +1,9 @@
 import time
 import math
 from supre_robot_hardware_manager import SupreRobotHardwareManager # 导入我们的管理器
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 def main():
     # 1. 初始化管理器
@@ -66,7 +69,7 @@ def main():
     except KeyboardInterrupt:
         print("\nCtrl+C pressed. Shutting down.")
     except Exception as e:
-        print(f"\nAn unexpected error occurred: {e}")
+        logging.exception("An error occurred in the control loop")
     finally:
         # 4. 确保在退出时停用硬件
         robot_manager.deactivate()
