@@ -247,12 +247,6 @@ class SupreRobotFollower(Robot):
             logger.warning(
                 "One or more joint positions were clamped to their absolute limits:"
             )
-            for joint, data in warnings.items():
-                logger.warning(
-                    f"  - Joint '{joint}': commanded {data['original']:.4f}, "
-                    f"clamped to {data['clamped']:.4f} (limits: {data['limits']})",
-                    throttle_duration_sec=5 # 5秒内不重复打印相同的警告
-                )
         
         # 使用经过两层安全检查后的最终位置
         final_target_positions = final_clamped_positions
