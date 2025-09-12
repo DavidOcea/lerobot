@@ -102,7 +102,13 @@ def create_kitchen_sink_pipeline(
 #    framerate=30,
 #    output_format="RGB",
 #)
-orin_pipeline = create_software_jpeg_pipeline()
+#orin_pipeline = create_software_jpeg_pipeline()
+orin_pipeline =(
+     "v4l2src device=/dev/video0 ! "
+     "image/jpeg, width=640, height=480, framerate=30/1 ! "
+     "jpegparse ! nvjpegdec ! nvvidconv ! "
+     "video/x-raw, format=BGR ! appsink drop=true"
+)
 print("Using GStreamer pipeline:\n", orin_pipeline)
 
 # 2. 创建配置对象，这次传入 gstreamer_pipeline
