@@ -175,5 +175,5 @@ class SupreRobotHardwareManager:
         for instance, commands in hw_commands.items():
             # JodellGripperHardware.write() 接受 None 值，而 EyouMotorHardware 需要一个完整的浮点数列表。
             # 我们的分发逻辑保证了 Eyou 的列表是完整的。
-            #instance.write(commands)
             print(f"Sending command to {instance.__class__.__name__}: {commands}")
+            instance.write(commands)
