@@ -136,8 +136,8 @@ class EyouMotorHardware:
                 if self.hw_start_enabled_[i]:
                     print(f"Enabling motor for joint {joint_name}...")
                     if not all([motor.clear_fault(),
-                                motor.configure_csp_mode(),
-                                motor.start_auto_feedback(0, 255, 10),
+                                motor.configure_csp_mode(0, False),
+                                motor.start_auto_feedback(0, 255, 20),
                                 motor.start_error_feedback_tpdo(1, 255, 60)]):
                         print(f"Error: Failed to configure enabled joint {joint_name}")
                         return False
@@ -145,7 +145,7 @@ class EyouMotorHardware:
                     print(f"Skipping activation for joint {joint_name} as it is disabled.")
                     motor.disable()
                     if not all([motor.clear_fault(),
-                                motor.start_auto_feedback(0, 255, 10),
+                                motor.start_auto_feedback(0, 255, 20),
                                 motor.start_error_feedback_tpdo(1, 255, 60)]):
                          print(f"Warning: Failed to configure disabled joint {joint_name}")
             
@@ -191,14 +191,14 @@ class EyouMotorHardware:
         # 2. 从内部指令变量读取数据并发送
         for i, motor in enumerate(self.motor_nodes_):
             if self.hw_start_enabled_[i]:
-                motor.send_csp_target_position(self.hw_commands_positions_[i])
+                motor.send_csp_target_position(self.hw_commands_positions_[i],False)
                 any_motor_enabled = True
 
-        if any_motor_enabled:
-            for i, motor in enumerate(self.motor_nodes_):
-                if self.hw_start_enabled_[i]:
-                    motor.send_sync()
-                    break
+        #if any_motor_enabled:
+        #    for i, motor in enumerate(self.motor_nodes_):
+        #        if self.hw_start_enabled_[i]:
+        #            motor.send_sync()
+        #            break
         
         # 3. 性能日志
         end_time = time.perf_counter()
