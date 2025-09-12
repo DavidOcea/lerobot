@@ -48,7 +48,7 @@ def main():
             # 让左右臂的6个关节做正弦运动
             for i in [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12]:
                 phase = i * (math.pi / 4)
-                target_positions[i] = amplitude * math.sin(2 * math.pi * frequency * elapsed_time + phase)
+                target_positions[i] = math.abs(amplitude * math.sin(2 * math.pi * frequency * elapsed_time + phase))
             
             # 让夹爪在 0.2 和 0.8 之间开合
             gripper_pos = 0.5 + 0.3 * math.sin(2 * math.pi * 0.5 * elapsed_time)
