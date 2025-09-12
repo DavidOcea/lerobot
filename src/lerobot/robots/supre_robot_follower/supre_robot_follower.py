@@ -19,6 +19,8 @@ from ..utils import ensure_safe_goal_position
 from functools import cached_property
 from lerobot.utils.prometheus_manager import prometheus_manager
 import logging
+from lerobot.cameras.utils import make_cameras_from_configs
+
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,17 @@ class SupreRobotFollower(Robot):
             
         except (FileNotFoundError, KeyError) as e:
             raise ValueError(f"Failed to load joint_order from '{config.config_path}': {e}")
+
+        self.cameras = make_cameras_from_configs(config.cameras)
+        self.joint_direction_map = {f"{self.observation_joint_names[i]}.pos": config.joint_direction[i] for i in range(len(self.observation_joint_names))}
+      
+        # 将 calibration 列表转换为一个字典以便快速查找
+        # key: joint_name, value: MotorCalibration object
+        self.calibration_limits = {cal.joint_name: cal for cal in self.config.calibration}
+        # 增加一个检查，确保所有在 joint_names 中的关节都有对应的 calibration 设置
+        for joint_name in self.observation_joint_names:
+            if joint_name not in self.calibration_limits:
+                raise ValueError(f"Missing calibration data for joint '{joint_name}' in config.")
 
         self.prometheus_port = getattr(config, 'prometheus_port', None)
         self.joint_position_gauge = None
