@@ -43,6 +43,9 @@ hardware_interfaces:
     type: JodellGripperHardware
     config:
       device: "/dev/ttyTHS1" # <-- 注意修改为你的实际设备
+      baud_rate": 115200
+      default_speed_percent: 100
+      default_torque_percent: 100      
       joints:
         - name: left_arm_joint_7
           parameters: { slave_id: 27 }
@@ -52,6 +55,9 @@ hardware_interfaces:
     type: JodellGripperHardware
     config:
       device: "/dev/ttyTHS2" # <-- 注意修改为你的实际设备
+      baud_rate": 115200
+      default_speed_percent: 100
+      default_torque_percent: 100
       joints:
         - name: right_arm_joint_7
           parameters: { slave_id: 17 }
