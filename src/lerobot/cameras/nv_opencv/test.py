@@ -3,7 +3,7 @@ import cv2
 # 定义 GStreamer 管道字符串，从摄像头捕获并转换为 BGR 格式，最后发送到 appsink
 gst_str = (
     "v4l2src device=/dev/video0 ! "
-    "video/x-raw,width=1280,height=720,framerate=30/1,format=YUY2 ! "
+    "video/x-raw,width=640,height=480,framerate=30/1,format=YUYV ! "
     "nvvidconv ! video/x-raw,format=BGRx ! "  # 使用 nvvidconv 进行硬件加速的色彩空间转换（BGRx）
     "videoconvert ! video/x-raw,format=BGR ! "  # 转换为 OpenCV 常用的 BGR 格式
     "appsink drop=true"  # 将视频流发送到 appsink，drop=true 表示在缓冲区满时丢弃旧帧
