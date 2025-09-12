@@ -1,4 +1,3 @@
- 
 import cv2
 
 # 定义 GStreamer 管道字符串，从摄像头捕获并转换为 BGR 格式，最后发送到 appsink
