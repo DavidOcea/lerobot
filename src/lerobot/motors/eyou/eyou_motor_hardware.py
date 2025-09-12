@@ -191,7 +191,7 @@ class EyouMotorHardware:
         # 2. 从内部指令变量读取数据并发送
         for i, motor in enumerate(self.motor_nodes_):
             if self.hw_start_enabled_[i]:
-                motor.send_csp_target_position(self.hw_commands_positions_[i],False)
+                motor.send_csp_target_position(self.hw_commands_positions_[i],0, False)
                 any_motor_enabled = True
 
         #if any_motor_enabled:
