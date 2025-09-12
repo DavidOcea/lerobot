@@ -203,3 +203,11 @@ class SupreRobotLeader(Teleoperator):
     def send_feedback(self, feedback: dict[str, float]) -> None:
         # TODO(rcadene, aliberts): Implement force feedback
         raise NotImplementedError
+    
+    @cached_property
+    def action_features(self) -> dict[str, type]:
+        return self._motors_ft    
+    
+    @property
+    def _motors_ft(self) -> dict[str, type]:
+        return {f"{motor}.pos": float for motor in self.observation_joint_names}    
