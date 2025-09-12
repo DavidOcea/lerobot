@@ -117,7 +117,7 @@ class SupreRobotHardwareManager:
             instance.deactivate()
         print("All hardware deactivated.")
 
-    def read(self) -> Tuple[List[float], List[float]]:
+    def read(self) ->  List[float]:
         """
         从所有硬件读取数据，并聚合成全局状态向量。
         """
@@ -135,15 +135,15 @@ class SupreRobotHardwareManager:
             # 根据硬件类型适配不同的返回值
             if isinstance(instance, EyouMotorHardware):
                 # EyouMotorHardware.read() -> Tuple[List[float], List[float]]
-                self.positions[global_index] = result[0][hw_index]
-                self.velocities[global_index] = result[1][hw_index]
+                self.positions[global_index] = result[hw_index]
+                self.velocities[global_index] = 0.0
             elif isinstance(instance, JodellGripperHardware):
                 # JodellGripperHardware.read() -> list[float | None]
                 pos = result[hw_index]
                 self.positions[global_index] = pos if pos is not None else self.positions[global_index] # 保持旧值如果读取失败
                 self.velocities[global_index] = 0.0 # 夹爪没有速度反馈
         
-        return list(self.positions), list(self.velocities)
+        return list(self.positions)
 
     def write(self, command_positions: List[float]):
         """
