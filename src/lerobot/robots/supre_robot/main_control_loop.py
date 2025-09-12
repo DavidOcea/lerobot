@@ -1,6 +1,6 @@
 import time
 import math
-from .supre_robot_hardware_manager import SupreRobotHardwareManager # 导入我们的管理器
+from supre_robot_hardware_manager import SupreRobotHardwareManager # 导入我们的管理器
 
 def main():
     # 1. 初始化管理器
