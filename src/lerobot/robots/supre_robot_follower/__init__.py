@@ -1,1 +1,2 @@
 from .supre_robot_follower import SupreRobotFollower
+from .supre_robot_follower_config import SupreRobotFollowerConfig
