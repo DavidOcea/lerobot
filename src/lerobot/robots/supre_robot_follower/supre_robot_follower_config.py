@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-
+from pathlib import Path
 from lerobot.cameras import CameraConfig
 
 from lerobot.robots.config import RobotConfig
@@ -9,11 +9,14 @@ class MotorCalibration:
     joint_name:str
     min_position:float
     max_position:float
-    
+
+
+_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "supre_robot_config.yaml"
+
 @dataclass
 class SupreRobotFollowerConfig(RobotConfig):
     """Configuration for the SupreRobot."""
-    config_path: str = "robot_config.yaml"
+    config_path: str = _DEFAULT_CONFIG_PATH
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     joint_direction: list= field(default_factory=lambda: [-1, -1, 1, 1, 1, -1,1, -1, -1, 1, 1, 1, -1,1])
     max_relative_joint_move: float = 30.0
