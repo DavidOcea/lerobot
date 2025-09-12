@@ -244,11 +244,11 @@ class SupreRobotFollower(Robot):
         # 如果有任何关节被限制了，打印一条总的警告信息
         if warnings:
             # 可以在这里使用 logging.warning 来代替 print
-            self._ros_node.get_logger().warn(
+            logger.warning(
                 "One or more joint positions were clamped to their absolute limits:"
             )
             for joint, data in warnings.items():
-                self._ros_node.get_logger().warn(
+                logger.warning(
                     f"  - Joint '{joint}': commanded {data['original']:.4f}, "
                     f"clamped to {data['clamped']:.4f} (limits: {data['limits']})",
                     throttle_duration_sec=5 # 5秒内不重复打印相同的警告
@@ -301,7 +301,6 @@ class SupreRobotFollower(Robot):
         self.send_target_position(final_target_positions)
 
         
-        #self._ros_node.get_logger().info(f"Returning final clamped action: {final_action}")
         return final_action_dict
         
     def send_target_position(self, target_positions: list[float]) -> None:
