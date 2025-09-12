@@ -1,35 +1,67 @@
 import cv2
+import argparse
 
-# 定义 GStreamer 管道字符串，从摄像头捕获并转换为 BGR 格式，最后发送到 appsink
-gst_str = (
-    "v4l2src device=/dev/video0 ! "
-    "video/x-raw,width=640,height=480,framerate=30/1,format=YUYV ! "
-    "nvvidconv ! video/x-raw,format=BGRx ! "  # 使用 nvvidconv 进行硬件加速的色彩空间转换（BGRx）
-    "videoconvert ! video/x-raw,format=BGR ! "  # 转换为 OpenCV 常用的 BGR 格式
-    "appsink drop=true"  # 将视频流发送到 appsink，drop=true 表示在缓冲区满时丢弃旧帧
-)
+def main():
+    # 1. 创建命令行参数解析器
+    parser = argparse.ArgumentParser(
+        description="使用 OpenCV 从指定的摄像头捕获并显示视频流。"
+    )
+    
+    # 2. 添加 'index' 参数
+    parser.add_argument(
+        'index', 
+        type=int, 
+        nargs='?', 
+        default=0,
+        help="要使用的摄像头索引 (例如, 0, 1, 2, ...)。默认为 0。"
+    )
+    
+    args = parser.parse_args()
+    camera_index = args.index
 
-cap = cv2.VideoCapture(0)  # 以 GStreamer 模式打开视频捕获对象
+    print(f"尝试打开摄像头索引: {camera_index}")
 
-if not cap.isOpened():
-    print("错误: 无法打开摄像头.")
-    exit()
+    # 3. 使用整数索引直接打开摄像头
+    # OpenCV 将使用系统默认的后端 (如 V4L2)
+    cap = cv2.VideoCapture(camera_index)
 
-try:
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("错误: 无法读取帧.")
-            break
+    # 检查摄像头是否成功打开
+    if not cap.isOpened():
+        print(f"错误: 无法打开摄像头索引 {camera_index}。")
+        print("请检查:")
+        print(f"  - 摄像头是否正确连接。")
+        print(f"  - 索引 {camera_index} 是否正确。")
+        print("  - 摄像头是否被其他程序占用。")
+        exit()
 
-        # 在此处添加你的图像处理代码
-        # 例如：灰度化、边缘检测、目标检测等
-        # processed_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    try:
+        window_title = f'USB Camera (Index: {camera_index})'
+        print("摄像头已成功打开。按 'q' 键退出。")
 
-        cv2.imshow('USB Camera', frame)
+        while True:
+            # 读取一帧
+            ret, frame = cap.read()
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-finally:
-    cap.release()
-    cv2.destroyAllWindows()
+            # 如果 ret 为 False，表示读取失败 (例如，摄像头被拔出)
+            if not ret:
+                print("错误: 无法读取帧。视频流可能已结束。")
+                break
+
+            # 在此处可以添加你的图像处理代码
+            # ...
+
+            # 显示帧
+            cv2.imshow(window_title, frame)
+
+            # 按 'q' 键退出循环
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                print("检测到 'q' 键按下，正在退出...")
+                break
+    finally:
+        # 确保资源被释放
+        print("正在释放资源...")
+        cap.release()
+        cv2.destroyAllWindows()
+
+if __name__ == '__main__':
+    main()
