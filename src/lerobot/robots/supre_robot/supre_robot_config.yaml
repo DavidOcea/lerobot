@@ -26,18 +26,18 @@ hardware_interfaces:
       can_device_index: 1
       can_baud_rate: "1M"
       joints:
-        - { name: left_arm_joint_1, node_id: 21 }
-        - { name: left_arm_joint_2, node_id: 22 }
-        - { name: left_arm_joint_3, node_id: 23 }
-        - { name: left_arm_joint_4, node_id: 24 }
-        - { name: left_arm_joint_5, node_id: 25 }
-        - { name: left_arm_joint_6, node_id: 26 }
-        - { name: right_arm_joint_1, node_id: 11 }
-        - { name: right_arm_joint_2, node_id: 12 }
-        - { name: right_arm_joint_3, node_id: 13 }
-        - { name: right_arm_joint_4, node_id: 14 }
-        - { name: right_arm_joint_5, node_id: 15 }
-        - { name: right_arm_joint_6, node_id: 16 }
+        - { name: left_arm_joint_1, parameters: { node_id: 21 } }
+        - { name: left_arm_joint_2, parameters: { node_id: 22 } }
+        - { name: left_arm_joint_3, parameters: { node_id: 23 } }
+        - { name: left_arm_joint_4, parameters: { node_id: 24 } }
+        - { name: left_arm_joint_5, parameters: { node_id: 25 } }
+        - { name: left_arm_joint_6, parameters: { node_id: 26 } }
+        - { name: right_arm_joint_1, parameters: { node_id: 11 } }
+        - { name: right_arm_joint_2, parameters: { node_id: 12 } }
+        - { name: right_arm_joint_3, parameters: { node_id: 13 } }
+        - { name: right_arm_joint_4, parameters: { node_id: 14 } }
+        - { name: right_arm_joint_5, parameters: { node_id: 15 } }
+        - { name: right_arm_joint_6, parameters: { node_id: 16 } }
   # 左臂夹爪控制器
   - name: left_gripper
     type: JodellGripperHardware
