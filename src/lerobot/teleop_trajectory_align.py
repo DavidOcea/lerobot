@@ -125,7 +125,7 @@ def main(cfg: TeleoperateTrajectoryConfig):
         teleop.connect()
         logging.info("Connecting to robot (follower)...")
         robot.connect()
-        
+        time.sleep(3.0)
         # Run the main control loop
         logging.info("Starting align...")
         teleop_trajectory(teleop, robot,trajectory_duration=cfg.trajectory_duration)
@@ -142,6 +142,7 @@ def main(cfg: TeleoperateTrajectoryConfig):
         if robot.is_connected:
             robot.disconnect()
         logging.info("Shutdown complete.")
+    time.sleep(5.0)
 
 
 if __name__ == "__main__":
