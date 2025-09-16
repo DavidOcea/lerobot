@@ -1,3 +1,4 @@
+cd ~/workspace/gitprj/lerobot-env/lerobot
 source ~/miniconda3/etc/profile.d/conda.sh
 source ./setup_binding_env.sh
 python ./src/lerobot/teleop_trajectory_align.py \
