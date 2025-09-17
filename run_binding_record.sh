@@ -1,6 +1,9 @@
 ## 1. 启动ros2 controller
 source ~/miniconda3/etc/profile.d/conda.sh
 source ./setup_binding_env.sh
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+
 # 构建配置文件的绝对路径
 CONFIG_FILE_PATH="$SCRIPT_DIR/src/lerobot/teleoperators/supre_robot_leader/trunk_teleoperate.yaml"
 
