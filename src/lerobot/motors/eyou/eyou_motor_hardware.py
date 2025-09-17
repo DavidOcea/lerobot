@@ -192,7 +192,7 @@ class EyouMotorHardware:
         for i, motor in enumerate(self.motor_nodes_):
             if self.hw_start_enabled_[i]:
                 result = motor.send_csp_target_position(self.hw_commands_positions_[i],0, False)
-                if not result:
+                if result != 0:
                     print(f"Error: Failed to send command to joint {self.joint_names_[i]}")
                 any_motor_enabled = True
 
