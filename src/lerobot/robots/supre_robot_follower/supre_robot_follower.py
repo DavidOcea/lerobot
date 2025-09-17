@@ -109,6 +109,9 @@ class SupreRobotFollower(Robot):
             if calibrate:
                 self.calibrate()
 
+            for cam in self.cameras.values():
+                cam.connect()
+
         except Exception as e:
             print(f"Failed to connect: {e}")
             self._hardware_manager = None
@@ -156,6 +159,7 @@ class SupreRobotFollower(Robot):
             obs_dict[cam_key] = cam.async_read()
             dt_ms = (time.perf_counter() - start) * 1e3
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
+        return obs_dict
 
     def get_current_position(self) -> dict[str, float]:
         """获取机器人的当前位置。"""
