@@ -191,7 +191,9 @@ class EyouMotorHardware:
         # 2. 从内部指令变量读取数据并发送
         for i, motor in enumerate(self.motor_nodes_):
             if self.hw_start_enabled_[i]:
-                motor.send_csp_target_position(self.hw_commands_positions_[i],0, False)
+                result = motor.send_csp_target_position(self.hw_commands_positions_[i],0, False)
+                if not result:
+                    print(f"Error: Failed to send command to joint {self.joint_names_[i]}")
                 any_motor_enabled = True
 
         #if any_motor_enabled:
