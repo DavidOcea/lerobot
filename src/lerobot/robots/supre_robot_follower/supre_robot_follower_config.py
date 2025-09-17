@@ -29,7 +29,7 @@ class SupreRobotFollowerConfig(RobotConfig):
             min_position=-160.0,
             max_position=160.0,
         ),
-        MotorCalibra`1tion(
+        MotorCalibration(
             joint_name="left_arm_joint_2",
             min_position=-90.0,
             max_position=0.0,
