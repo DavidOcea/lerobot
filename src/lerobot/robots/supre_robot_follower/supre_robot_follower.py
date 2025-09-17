@@ -51,7 +51,7 @@ class SupreRobotFollower(Robot):
             self.observation_joint_names = self._joint_order
             
         except (FileNotFoundError, KeyError) as e:
-            raise ValueError(f"Failed to load joint_order from '{config.config_path}': {e}")
+            raise ValueError(f"Failed to load joint_order from '{config.joint_config_path}': {e}")
 
         self.cameras = make_cameras_from_configs(config.cameras)
         self.joint_direction_map = {f"{self.observation_joint_names[i]}.pos": config.joint_direction[i] for i in range(len(self.observation_joint_names))}

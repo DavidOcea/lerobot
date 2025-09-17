@@ -44,7 +44,7 @@ class SupreRobotLeader(Teleoperator):
             self.observation_joint_names = self._joint_order
             
         except (FileNotFoundError, KeyError) as e:
-            raise ValueError(f"Failed to load joint_order from '{config.config_path}': {e}")
+            raise ValueError(f"Failed to load joint_order from '{config.joint_config_path}': {e}")
         
         self.prometheus_port = getattr(config, 'prometheus_port', None)
         self.joint_position_gauge = None
