@@ -15,7 +15,7 @@ teleop:
 
   # Path to the joint configuration file for the leader robot.
   # Corresponds to: SupreRobotLeaderConfig.joint_config_path
-  joint_config_path: "trunk_config_supre_robot_joint.yaml"
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
 
 
 # ===============================================
@@ -28,7 +28,7 @@ robot:
 
   # Path to the joint configuration file for the follower robot.
   # Corresponds to: SupreRobotFollowerConfig.joint_config_path
-  joint_config_path: "trunk_config_supre_robot_joint.yaml"
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
 
   # Dictionary of camera configurations.
   # Corresponds to: cameras: dict[str, CameraConfig]

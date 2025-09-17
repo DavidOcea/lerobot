@@ -36,6 +36,7 @@ class SupreRobotLeader(Teleoperator):
         
         # 为了让 observation_features 和 action_features 可以在 connect() 之前被调用，
         # 我们需要提前加载关节顺序。
+        config.joint_config_path = str(Path(__file__).resolve().parent/config.joint_config_file)
         try:
             with open(config.joint_config_path, 'r') as f:
                 robot_yaml_config = yaml.safe_load(f)

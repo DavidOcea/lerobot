@@ -17,7 +17,7 @@ _DEFAULT_JOINT_CONFIG_PATH = "config_supre_robot_joint.yaml"
 @dataclass
 class SupreRobotFollowerConfig(RobotConfig):
     """Configuration for the SupreRobot."""
-    joint_config_path: str = str(Path(__file__).resolve().parent /_DEFAULT_JOINT_CONFIG_PATH)
+    joint_config_file: str = _DEFAULT_JOINT_CONFIG_PATH
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     joint_direction: list= field(default_factory=lambda: [-1, -1, 1, 1, 1, -1,1, -1, -1, 1, 1, 1, -1,1])
     max_relative_joint_move: float = 30.0

@@ -2,4 +2,4 @@
 type: supre_robot_leader
 
 # Path to the joint configuration file for the leader robot.
-joint_config_path: "trunk_config_supre_robot_joint.yaml"
+joint_config_file: "trunk_config_supre_robot_joint.yaml"
