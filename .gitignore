@@ -174,3 +174,4 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 monitor/prometheus/grafana-data
+monitor/prometheus/prometheus-data/
