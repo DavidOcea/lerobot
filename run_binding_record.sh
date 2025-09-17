@@ -13,10 +13,10 @@ python ./src/lerobot/teleop_trajectory_align.py \
     --config_path="$CONFIG_FILE_PATH"
 
 python -m lerobot.record \
-    --robot.type=ros2_dual_follower \
-    --robot.id=eyou_follower \
-    --teleop.type=ros2_dual_leader \
-    --teleop.id=eyou_leader \
+    --robot.type=supre_robot_follower \
+    --robot.id=supre_robot_follower \
+    --teleop.type=supre_robot_leader \
+    --teleop.id=supre_robot_leader \
     --robot.cameras="{head_cam: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, right_wrist_cam: {type: opencv, index_or_path: 2, width: 640, height: 480, fps: 30}, left_wrist_cam: {type: opencv, index_or_path: 4, width: 640, height: 480, fps: 30}}" \
     --dataset.single_task="Grasp the workpiece and put it in the appropriate position." \
     --dataset.repo_id=supdata/dataset_0917_1 \
