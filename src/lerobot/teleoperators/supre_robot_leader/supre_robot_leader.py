@@ -63,7 +63,7 @@ class SupreRobotLeader(Teleoperator):
             print("Robot is already connected.")
             return
 
-        print(f"Connecting to {self.name} using config '{self.config.config_path}'...")
+        print(f"Connecting to {self.name} using config '{self.config.joint_config_path}'...")
         self._hardware_manager = SupreRobotHardwareManager(config_path=self.config.joint_config_path)
         
         try:
