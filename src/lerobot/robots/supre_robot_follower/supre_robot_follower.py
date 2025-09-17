@@ -44,7 +44,7 @@ class SupreRobotFollower(Robot):
         # 为了让 observation_features 和 action_features 可以在 connect() 之前被调用，
         # 我们需要提前加载关节顺序。
         try:
-            with open(config.config_path, 'r') as f:
+            with open(config.joint_config_path, 'r') as f:
                 robot_yaml_config = yaml.safe_load(f)
             self._joint_order = robot_yaml_config["joint_order"]
             self.num_joints = len(self._joint_order)

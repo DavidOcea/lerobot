@@ -4,10 +4,10 @@ from lerobot.cameras import CameraConfig
 
 from lerobot.teleoperators.config import TeleoperatorConfig
 
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "supre_robot_config.yaml"
+_DEFAULT_JOINT_CONFIG_PATH = "config_supre_robot_joint.yaml"
     
 @TeleoperatorConfig.register_subclass("supre_robot_leader")
 @dataclass
 class SupreRobotLeaderConfig(TeleoperatorConfig):
     """Configuration for the SupreRobot."""
-    config_path: str = _DEFAULT_CONFIG_PATH
+    joint_config_path: str = str(Path(__file__).resolve().parent /_DEFAULT_JOINT_CONFIG_PATH)

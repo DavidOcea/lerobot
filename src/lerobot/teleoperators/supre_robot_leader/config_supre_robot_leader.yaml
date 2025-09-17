@@ -1,0 +1,5 @@
+# Specifies which subclass of TeleoperatorConfig to use.
+type: supre_robot_leader
+
+# Path to the joint configuration file for the leader robot.
+joint_config_path: "config_supre_robot_joint.yaml"

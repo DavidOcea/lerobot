@@ -11,13 +11,13 @@ class MotorCalibration:
     max_position:float
 
 
-_DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "supre_robot_config.yaml"
+_DEFAULT_JOINT_CONFIG_PATH = "config_supre_robot_joint.yaml"
 
 @RobotConfig.register_subclass("supre_robot_follower")
 @dataclass
 class SupreRobotFollowerConfig(RobotConfig):
     """Configuration for the SupreRobot."""
-    config_path: str = _DEFAULT_CONFIG_PATH
+    joint_config_path: str = str(Path(__file__).resolve().parent /_DEFAULT_JOINT_CONFIG_PATH)
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     joint_direction: list= field(default_factory=lambda: [-1, -1, 1, 1, 1, -1,1, -1, -1, 1, 1, 1, -1,1])
     max_relative_joint_move: float = 30.0
@@ -29,7 +29,7 @@ class SupreRobotFollowerConfig(RobotConfig):
             min_position=-160.0,
             max_position=160.0,
         ),
-        MotorCalibration(
+        MotorCalibra`1tion(
             joint_name="left_arm_joint_2",
             min_position=-90.0,
             max_position=0.0,
