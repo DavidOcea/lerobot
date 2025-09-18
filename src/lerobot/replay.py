@@ -58,6 +58,7 @@ from lerobot.robots import (  # noqa: F401
     so100_follower,
     so101_follower,
     ros2_follower,
+    supre_robot_follower
 )
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import (
