@@ -15,21 +15,6 @@ teleop:
   # Path to the joint configuration file for the leader robot.
   joint_config_path: "config_supre_robot_joint.yaml"
 
-
-# ===============================================
-# Robot (Follower) Configuration
-# ===============================================
-robot:
-  # [IMPORTANT] Specifies which subclass of RobotConfig to use.
-  # This matches the name in `@RobotConfig.register_subclass("supre_robot_follower")`
-  type: supre_robot_follower
-
-  # Path to the joint configuration file for the follower robot.
-  joint_config_path: "config_supre_robot_joint.yaml"
-
-  # Dictionary of camera configurations.
-  cameras: {}
-
   # Direction multipliers for each joint.
   joint_direction:
     - -1
@@ -46,6 +31,19 @@ robot:
     - 1
     - -1
     - 1
+# ===============================================
+# Robot (Follower) Configuration
+# ===============================================
+robot:
+  # [IMPORTANT] Specifies which subclass of RobotConfig to use.
+  # This matches the name in `@RobotConfig.register_subclass("supre_robot_follower")`
+  type: supre_robot_follower
+
+  # Path to the joint configuration file for the follower robot.
+  joint_config_path: "config_supre_robot_joint.yaml"
+
+  # Dictionary of camera configurations.
+  cameras: {}
 
   # Maximum relative joint movement in degrees per control step.
   max_relative_joint_move: 30.0

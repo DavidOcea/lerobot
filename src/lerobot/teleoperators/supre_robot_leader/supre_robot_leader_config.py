@@ -11,3 +11,4 @@ _DEFAULT_JOINT_CONFIG_PATH = "config_supre_robot_joint.yaml"
 class SupreRobotLeaderConfig(TeleoperatorConfig):
     """Configuration for the SupreRobot."""
     joint_config_file: str = _DEFAULT_JOINT_CONFIG_PATH
+    joint_direction: list= field(default_factory=lambda: [-1, -1, 1, 1, 1, -1,1, -1, -1, 1, 1, 1, -1,1])

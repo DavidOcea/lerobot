@@ -26,23 +26,6 @@ joint_config_path: "config_supre_robot_joint.yaml"
 #     device_id: 1
 cameras: {}
 
-# Direction multipliers for each joint.
-# Corresponds to: joint_direction: list
-joint_direction:
-  - -1
-  - -1
-  - 1
-  - 1
-  - 1
-  - -1
-  - 1
-  - -1
-  - -1
-  - 1
-  - 1
-  - 1
-  - -1
-  - 1
 
 # Maximum relative joint movement in degrees per control step.
 # Corresponds to: max_relative_joint_move: float

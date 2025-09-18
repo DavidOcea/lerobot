@@ -56,7 +56,6 @@ class SupreRobotFollower(Robot):
             raise ValueError(f"Failed to load joint_order from '{config.joint_config_path}': {e}")
 
         self.cameras = make_cameras_from_configs(config.cameras)
-        self.joint_direction_map = {f"{self.observation_joint_names[i]}.pos": config.joint_direction[i] for i in range(len(self.observation_joint_names))}
       
         # 将 calibration 列表转换为一个字典以便快速查找
         # key: joint_name, value: MotorCalibration object
@@ -173,8 +172,6 @@ class SupreRobotFollower(Robot):
     def _prepare_and_clamp_action(self, action: dict[str, Any]) -> Tuple[List[float], Dict[str, Any]]:
         if action is None:
             raise ValueError("Action dictionary must contain 'joint_positions'.")
-        # modify the action by joint_direction_map
-        action = {key: val * self.joint_direction_map[key] for key, val in action.items()}
 
         action_pos = {key.removesuffix(".pos"): val for key, val in action.items()}
 

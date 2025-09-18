@@ -46,7 +46,7 @@ class SupreRobotLeader(Teleoperator):
             
         except (FileNotFoundError, KeyError) as e:
             raise ValueError(f"Failed to load joint_order from '{config.joint_config_path}': {e}")
-        
+        self.joint_direction_map = {f"{self.observation_joint_names[i]}.pos": config.joint_direction[i] for i in range(len(self.observation_joint_names))}        
         self.prometheus_port = getattr(config, 'prometheus_port', None)
         self.joint_position_gauge = None
         if self.prometheus_port is not None:
@@ -143,6 +143,8 @@ class SupreRobotLeader(Teleoperator):
                 action_value[observation_joint_name] = self.convert_gripper_position(action_value[observation_joint_name])
         # The action for the follower is the position of the leader's joints.
         action = {f"{m}.pos":v for m,v in action_value.items()}
+                # modify the action by joint_direction_map
+        action = {key: val * self.joint_direction_map[key] for key, val in action.items()}
         #self._ros_node.get_logger().info(f"get action: {action}")
         return action
 

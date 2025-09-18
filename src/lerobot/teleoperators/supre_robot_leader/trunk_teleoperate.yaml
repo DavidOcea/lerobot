@@ -17,23 +17,6 @@ teleop:
   # Corresponds to: SupreRobotLeaderConfig.joint_config_path
   joint_config_file: "trunk_config_supre_robot_joint.yaml"
 
-
-# ===============================================
-# Robot (Follower) Configuration
-# ===============================================
-robot:
-  # Specifies which subclass of RobotConfig to use.
-  # This matches the name in `@RobotConfig.register_subclass("supre_robot_follower")`
-  type: supre_robot_follower
-
-  # Path to the joint configuration file for the follower robot.
-  # Corresponds to: SupreRobotFollowerConfig.joint_config_path
-  joint_config_file: "trunk_config_supre_robot_joint.yaml"
-
-  # Dictionary of camera configurations.
-  # Corresponds to: cameras: dict[str, CameraConfig]
-  cameras: {}
-
   # Direction multipliers for each joint.
   # Corresponds to: joint_direction: list
   joint_direction:
@@ -53,6 +36,23 @@ robot:
     - 1
     - 1
     - 1
+# ===============================================
+# Robot (Follower) Configuration
+# ===============================================
+robot:
+  # Specifies which subclass of RobotConfig to use.
+  # This matches the name in `@RobotConfig.register_subclass("supre_robot_follower")`
+  type: supre_robot_follower
+
+  # Path to the joint configuration file for the follower robot.
+  # Corresponds to: SupreRobotFollowerConfig.joint_config_path
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
+
+  # Dictionary of camera configurations.
+  # Corresponds to: cameras: dict[str, CameraConfig]
+  cameras: {}
+
+
 
   # Maximum relative joint movement in degrees per control step.
   # Corresponds to: max_relative_joint_move: float
