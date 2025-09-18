@@ -293,7 +293,7 @@ class SupreRobotFollower(Robot):
         """向机器人发送动作指令。"""
         if not self.is_connected:
             raise RuntimeError("Follower robot is not connected.")
-
+        logger.debug(f"Sending action: {action}")
         # 1. 调用辅助方法来完成所有的计算和安全检查
         final_target_positions, final_action_dict = self._prepare_and_clamp_action(action)
 
