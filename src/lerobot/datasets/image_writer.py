@@ -155,6 +155,7 @@ class AsyncImageWriter:
     def wait_until_done(self):
         print(f"Waiting for image writer to finish,queue size: {self.queue.qsize()}")
         self.queue.join()
+        print("Image writer finished.")
 
     def stop(self):
         if self._stopped:
