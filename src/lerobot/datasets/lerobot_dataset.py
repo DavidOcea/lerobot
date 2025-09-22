@@ -71,6 +71,7 @@ from lerobot.datasets.video_utils import (
     encode_video_frames,
     get_safe_default_codec,
     get_video_info,
+    encode_video_frames_gst,
 )
 
 CODEBASE_VERSION = "v2.1"
@@ -955,7 +956,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             img_dir = self._get_image_file_path(
                 episode_index=episode_index, image_key=key, frame_index=0
             ).parent
-            encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
+            encode_video_frames_gst(img_dir, video_path, self.fps, overwrite=True)
 
         return video_paths
 
