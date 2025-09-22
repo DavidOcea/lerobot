@@ -855,7 +855,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         ep_stats = compute_episode_stats(episode_buffer, self.features)
 
         if len(self.meta.video_keys) > 0:
-            video_paths = self.encode_episode_videos_gst(episode_index)
+            video_paths = self.encode_episode_videos(episode_index)
             for key in self.meta.video_keys:
                 episode_buffer[key] = video_paths[key]
 
@@ -959,7 +959,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
             img_dir = self._get_image_file_path(
                 episode_index=episode_index, image_key=key, frame_index=0
             ).parent
-            encode_video_frames_gst(img_dir, video_path, self.fps, overwrite=True)
+            encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
 
         return video_paths
 
