@@ -461,7 +461,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # Unused attributes
         self.image_writer = None
         self.episode_buffer = None
-
+        self.num_parallel_workers = 2
+  
         self.root.mkdir(exist_ok=True, parents=True)
 
         # Load metadata
