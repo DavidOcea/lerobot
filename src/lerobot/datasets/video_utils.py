@@ -491,7 +491,7 @@ def encode_video_frames_gst(
     video_path.parent.mkdir(parents=True, exist_ok=True)
 
     # 查找输入图片文件，用于获取尺寸
-    input_files = sorted(glob.glob(str(imgs_dir / "frame_[0-9][0-9][0-9][0-9][0-9][0-9].png")))
+    input_files = sorted(glob.glob(str(imgs_dir / "frame_[0-9][0-9][0-9][0-9][0-9][0-9].jpeg")))
     if not input_files:
         raise FileNotFoundError(f"在目录 {imgs_dir} 中未找到匹配 'frame_xxxxxx.png' 格式的图片。")
 
@@ -512,10 +512,10 @@ def encode_video_frames_gst(
         warnings.warn("参数 'log_level' 被忽略。GStreamer 的日志级别由 GST_DEBUG 等环境变量控制。")
 
     # 4. 构建 GStreamer 命令行字符串
-    location = os.path.join(str(imgs_dir), "frame_%06d.png")
+    location = os.path.join(str(imgs_dir), "frame_%06d.jpeg")
     
     # 根据用户提供的命令设置码率
-    bitrate = 250000  # 250 kbps
+    bitrate = 5000000  # 5000 kbps
 
     encoder_opts = [f"bitrate={bitrate}"]
     if g is not None:
@@ -524,19 +524,33 @@ def encode_video_frames_gst(
     encoder_opts_str = " ".join(encoder_opts)
 
     # 为了清晰和安全，使用 f-string 构建命令，并对可能包含空格的路径和参数进行引用
+    #command = (
+    #    f'gst-launch-1.0 -e '
+    #    f'multifilesrc location="{location}" ! '
+    #    f'"image/png,width={width},height={height},framerate={fps}/1" ! '
+    #    f'pngdec ! '
+    #    f'videoconvert ! '
+    #    f'nvvidconv ! '
+    #    f'"video/x-raw(memory:NVMM),format=NV12" ! '
+    #    f'nvv4l2h264enc {encoder_opts_str} ! '
+    #    f'h264parse ! '
+    #    f'mp4mux ! '
+    #    f'filesink location="{str(video_path)}"'
+    #)
+
     command = (
-        f'gst-launch-1.0 -e '
-        f'multifilesrc location="{location}" ! '
-        f'"image/png,width={width},height={height},framerate={fps}/1" ! '
-        f'pngdec ! '
-        f'videoconvert ! '
-        f'nvvidconv ! '
-        f'"video/x-raw(memory:NVMM),format=NV12" ! '
-        f'nvv4l2h264enc {encoder_opts_str} ! '
-        f'h264parse ! '
-        f'mp4mux ! '
-        f'filesink location="{str(video_path)}"'
-    )
+    f'gst-launch-1.0 -e '
+    f'multifilesrc location="{location}" ! '  # 确保这里的 location 指向的是 JPEG 文件, 例如 "image_%04d.jpg"
+    f'"image/jpeg,width={width},height={height},framerate={fps}/1" ! '  # 关键修改 1: 从 image/png 改为 image/jpeg
+    f'jpegdec ! '  # 关键修改 2: 从 pngdec 改为 jpegdec
+    f'videoconvert ! '
+    f'nvvidconv ! '
+    f'"video/x-raw(memory:NVMM),format=NV12" ! '
+    f'nvv4l2h264enc {encoder_opts_str} ! '
+    f'h264parse ! '
+    f'mp4mux ! '
+    f'filesink location="{str(video_path)}"'
+    )    
 
     # 5. 执行 GStreamer 命令
     logging.info(f"正在执行 GStreamer 命令:\n{command}")
