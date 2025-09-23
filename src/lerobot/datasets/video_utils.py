@@ -538,20 +538,34 @@ def encode_video_frames_gst(
     #    f'filesink location="{str(video_path)}"'
     #)
 
-    command = (
-    f'gst-launch-1.0 -e '
-    f'multifilesrc location="{location}" ! '  # 确保这里的 location 指向的是 JPEG 文件, 例如 "image_%04d.jpg"
-    f'"image/jpeg,width={width},height={height},framerate={fps}/1" ! '  # 关键修改 1: 从 image/png 改为 image/jpeg
-    f'jpegdec ! '  # 关键修改 2: 从 pngdec 改为 jpegdec
-    f'videoconvert ! '
-    f'nvvidconv ! '
-    f'"video/x-raw(memory:NVMM),format=NV12" ! '
-    f'nvv4l2h264enc {encoder_opts_str} ! '
-    f'h264parse ! '
-    f'mp4mux ! '
-    f'filesink location="{str(video_path)}"'
-    )    
+    #command = (
+    #f'gst-launch-1.0 -e '
+    #f'multifilesrc location="{location}" ! '  # 确保这里的 location 指向的是 JPEG 文件, 例如 "image_%04d.jpg"
+    #f'"image/jpeg,width={width},height={height},framerate={fps}/1" ! '  # 关键修改 1: 从 image/png 改为 image/jpeg
+    #f'jpegdec ! '  # 关键修改 2: 从 pngdec 改为 jpegdec
+    #f'videoconvert ! '
+    #f'nvvidconv ! '
+    #f'"video/x-raw(memory:NVMM),format=NV12 ! '
+    #f'nvv4l2h264enc {encoder_opts_str} ! '
+    #f'h264parse ! '
+    #f'mp4mux ! '
+    #f'filesink location="{str(video_path)}"'
+    #)    
 
+    command = (
+        f'gst-launch-1.0 -e '
+        f'multifilesrc location="{location}" ! '
+        f'"image/jpeg,width={width},height={height},framerate={fps}/1" ! '
+        # 1. 使用硬件JPEG解码器
+        f'nvjpegdec ! ' 
+        # 2. 直接连接到硬件编码器。
+        #    nvjpegdec 直接输出到 NVMM 内存，nvv4l2h264enc 可以直接消费 NVMM 内存。
+        #    因此，中间的 videoconvert 和 nvvidconv 可以被移除，实现了零拷贝。
+        f'nvv4l2h264enc {encoder_opts_str} ! '
+        f'h264parse ! '
+        f'mp4mux ! '
+        f'filesink location="{str(video_path)}"'
+    )
     # 5. 执行 GStreamer 命令
     logging.info(f"正在执行 GStreamer 命令:\n{command}")
     try:
