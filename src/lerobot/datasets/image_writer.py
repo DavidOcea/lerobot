@@ -76,7 +76,20 @@ def write_image(image: np.ndarray | PIL.Image.Image, fpath: Path):
             img = image
         else:
             raise TypeError(f"Unsupported image type: {type(image)}")
-        img.save(fpath)
+        
+        # 检查文件扩展名，以决定是否应用质量参数
+        file_extension = fpath.suffix.lower()
+        jpeg_quality = 95
+        save_kwargs = {}
+        if file_extension in ['.jpg', '.jpeg']:
+            save_kwargs['quality'] = jpeg_quality
+            # 还可以添加其他优化参数
+            save_kwargs['optimize'] = True
+            # subsampling=0 可以禁用色度子采样，保留更多颜色细节，但文件会更大
+            # save_kwargs['subsampling'] = 0 
+        
+        # 使用关键字参数解包来传递参数
+        img.save(fpath, **save_kwargs)
     except Exception as e:
         print(f"Error writing image {fpath}: {e}")
 

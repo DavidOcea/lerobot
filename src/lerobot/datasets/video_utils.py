@@ -575,3 +575,111 @@ def encode_video_frames_gst(
     # 6. 最终检查，确保视频文件已生成且不为空
     if not video_path.exists() or video_path.stat().st_size == 0:
         raise OSError(f"视频编码失败。输出文件未创建或为空: {video_path}")
+    
+def encode_video_frames_gst_png(
+    imgs_dir: Path | str,
+    video_path: Path | str,
+    fps: int,
+    vcodec: str = "libsvtav1",
+    pix_fmt: str = "yuv420p",
+    g: int | None = 2,
+    crf: int | None = 30,
+    fast_decode: int = 0,
+    # 注意: 为了移除此函数对 `av` 库的依赖，
+    # 原有的默认值 `av.logging.ERROR` 已被其对应的整数值 32 替代。
+    log_level: int | None = 32,
+    overwrite: bool = False,
+) -> None:
+    """
+    使用 GStreamer 管道将一系列图像编码为视频文件。
+
+    此实现使用 `gst-launch-1.0` 命令行工具执行硬件加速的 H.264 编码，
+    旨在替代原有的基于 PyAV 的实现，以解决库不兼容的问题。
+
+    关于参数的说明:
+    - `vcodec`, `pix_fmt`, `crf`, `fast_decode`, `log_level` 等参数未在
+      GStreamer 管道中使用，将被忽略。如果它们被设置为非默认值，将发出警告。
+    - 视频编码器硬编码为 `nvv4l2h264enc` (NVIDIA H.264 硬件编码器)。
+    - 视频质量由固定的码率 (250 kbps) 控制。
+    - `g` (GOP 大小) 参数被映射到编码器的 `idrinterval` 属性 (关键帧间隔)。
+    """
+    video_path = Path(video_path)
+    imgs_dir = Path(imgs_dir)
+
+    # 1. 执行前检查
+    if video_path.exists() and not overwrite:
+        raise FileExistsError(f"输出文件 {video_path} 已存在。请使用 overwrite=True 进行覆盖。")
+    # 确保输出目录存在
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 查找输入图片文件，用于获取尺寸
+    input_files = sorted(glob.glob(str(imgs_dir / "frame_[0-9][0-9][0-9][0-9][0-9][0-9].png")))
+    if not input_files:
+        raise FileNotFoundError(f"在目录 {imgs_dir} 中未找到匹配 'frame_xxxxxx.png' 格式的图片。")
+
+    # 2. 从第一张图片获取视频帧的宽度和高度
+    with Image.open(input_files[0]) as img:
+        width, height = img.size
+
+    # 3. 对被忽略的参数发出警告
+    if vcodec not in ["h264", "nvv4l2h264enc", "h264_v4l2m2m"]:
+        warnings.warn(f"参数 'vcodec' (值为: '{vcodec}') 被忽略。GStreamer 管道将使用 'nvv4l2h264enc'。")
+    if pix_fmt not in ["yuv420p", "nv12"]:
+        warnings.warn(f"参数 'pix_fmt' (值为: '{pix_fmt}') 被忽略。GStreamer 管道使用 NV12 格式，兼容 yuv420p。")
+    if crf is not None and crf != 30:
+        warnings.warn("参数 'crf' 被忽略。GStreamer 管道使用固定的码率进行质量控制。")
+    if fast_decode != 0:
+        warnings.warn("参数 'fast_decode' 被忽略，因为它不适用于此 GStreamer 管道。")
+    if log_level is not None:
+        warnings.warn("参数 'log_level' 被忽略。GStreamer 的日志级别由 GST_DEBUG 等环境变量控制。")
+
+    # 4. 构建 GStreamer 命令行字符串
+    location = os.path.join(str(imgs_dir), "frame_%06d.png")
+    
+    # 根据用户提供的命令设置码率
+    bitrate = 5000000  # 5000 kbps
+
+    encoder_opts = [f"bitrate={bitrate}"]
+    if g is not None:
+        # 将 GOP size (g) 映射到关键帧间隔 (idrinterval)
+        encoder_opts.append(f"idrinterval={g}")
+    encoder_opts_str = " ".join(encoder_opts)
+
+    ##为了清晰和安全，使用 f-string 构建命令，并对可能包含空格的路径和参数进行引用
+    command = (
+        f'gst-launch-1.0 -e '
+        f'multifilesrc location="{location}" ! '
+        f'"image/png,width={width},height={height},framerate={fps}/1" ! '
+        f'pngdec ! '
+        f'videoconvert ! '
+        f'nvvidconv ! '
+        f'"video/x-raw(memory:NVMM),format=NV12" ! '
+        f'nvv4l2h264enc {encoder_opts_str} ! '
+        f'h264parse ! '
+        f'mp4mux ! '
+        f'filesink location="{str(video_path)}"'
+    )
+
+    # 5. 执行 GStreamer 命令
+    logging.info(f"正在执行 GStreamer 命令:\n{command}")
+    try:
+        subprocess.run(
+            command, shell=True, check=True, capture_output=True, text=True, encoding='utf-8'
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "命令 'gst-launch-1.0' 未找到。"
+            "请确保 GStreamer 已正确安装并已添加到系统的 PATH 环境变量中。"
+        )
+    except subprocess.CalledProcessError as e:
+        error_message = (
+            f"GStreamer 管道执行失败，退出码: {e.returncode}。\n"
+            f"执行的命令: {e.cmd}\n\n"
+            f"--- STDOUT ---\n{e.stdout}\n\n"
+            f"--- STDERR ---\n{e.stderr}"
+        )
+        raise RuntimeError(error_message) from e
+    
+    # 6. 最终检查，确保视频文件已生成且不为空
+    if not video_path.exists() or video_path.stat().st_size == 0:
+        raise OSError(f"视频编码失败。输出文件未创建或为空: {video_path}")
