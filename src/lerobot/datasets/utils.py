@@ -54,7 +54,8 @@ TASKS_PATH = "meta/tasks.jsonl"
 
 DEFAULT_VIDEO_PATH = "videos/chunk-{episode_chunk:03d}/{video_key}/episode_{episode_index:06d}.mp4"
 DEFAULT_PARQUET_PATH = "data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet"
-DEFAULT_IMAGE_PATH = "images/{image_key}/episode_{episode_index:06d}/frame_{frame_index:06d}.jpeg"
+DEFAULT_IMAGE_PATH = "images/{image_key}/episode_{episode_index:06d}/frame_{frame_index:06d}.png"
+DEFAULT_IMAGE_PATH_GST = "images/{image_key}/episode_{episode_index:06d}/frame_{frame_index:06d}.jpeg"
 
 DATASET_CARD_TEMPLATE = """
 ---

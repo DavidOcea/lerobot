@@ -38,6 +38,7 @@ from lerobot.datasets.image_writer import AsyncImageWriter, write_image
 from lerobot.datasets.utils import (
     DEFAULT_FEATURES,
     DEFAULT_IMAGE_PATH,
+    DEFAULT_IMAGE_PATH_GST,
     INFO_PATH,
     TASKS_PATH,
     _validate_feature_names,
@@ -462,7 +463,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.image_writer = None
         self.episode_buffer = None
         self.num_parallel_workers = 2
-  
+        self.gst_encoding = os.environ.get("GST_ENCODING", "0").lower() in ["1", "true", "yes"]
+
         self.root.mkdir(exist_ok=True, parents=True)
 
         # Load metadata
@@ -757,6 +759,10 @@ class LeRobotDataset(torch.utils.data.Dataset):
         fpath = DEFAULT_IMAGE_PATH.format(
             image_key=image_key, episode_index=episode_index, frame_index=frame_index
         )
+        if self.gst_encoding:
+            fpath = DEFAULT_IMAGE_PATH_GST.format(
+                image_key=image_key, episode_index=episode_index, frame_index=frame_index
+            )
         return self.root / fpath
 
     def _save_image(self, image: torch.Tensor | np.ndarray | PIL.Image.Image, fpath: Path) -> None:
@@ -855,7 +861,10 @@ class LeRobotDataset(torch.utils.data.Dataset):
         ep_stats = compute_episode_stats(episode_buffer, self.features)
 
         if len(self.meta.video_keys) > 0:
-            video_paths = self.encode_episode_videos_gst(episode_index)
+            if not self.gst_encoding:
+                video_paths = self.encode_episode_videos(episode_index)
+            else:
+                video_paths = self.encode_episode_videos_gst(episode_index)
             for key in self.meta.video_keys:
                 episode_buffer[key] = video_paths[key]
 
@@ -1063,6 +1072,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # TODO(aliberts, rcadene, alexander-soare): Merge this with OnlineBuffer/DataBuffer
         obj.episode_buffer = obj.create_episode_buffer()
         obj.num_parallel_workers = 2
+        obj.gst_encoding = os.environ.get("GST_ENCODING", "0").lower() in ["1", "true", "yes"]
         obj.episodes = None
         obj.hf_dataset = obj.create_hf_dataset()
         obj.image_transforms = None
