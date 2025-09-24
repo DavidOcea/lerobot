@@ -1027,7 +1027,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 video_path = future_to_video[future]
                 try:
                     # future.result() will re-raise any exception that occurred in the child process.
-                    future.result()
+                    future.result(timeout=300)
                     print(f"✅ Successfully encoded: {video_path}")
                 except Exception as exc:
                     print(f"❌ Failed to encode {video_path}: {exc}")
