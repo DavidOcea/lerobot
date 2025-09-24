@@ -463,7 +463,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # Unused attributes
         self.image_writer = None
         self.episode_buffer = None
-        self.num_parallel_workers = 2
+        self.num_parallel_workers = 1
         self.gst_encoding = os.environ.get("GST_ENCODING", "0").lower() in ["1", "true", "yes"]
 
         self.root.mkdir(exist_ok=True, parents=True)
@@ -1072,7 +1072,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
         # TODO(aliberts, rcadene, alexander-soare): Merge this with OnlineBuffer/DataBuffer
         obj.episode_buffer = obj.create_episode_buffer()
-        obj.num_parallel_workers = 2
+        obj.num_parallel_workers = 1
         obj.gst_encoding = os.environ.get("GST_ENCODING", "0").lower() in ["1", "true", "yes"]
         obj.episodes = None
         obj.hf_dataset = obj.create_hf_dataset()
