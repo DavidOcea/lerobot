@@ -15,18 +15,18 @@ CUDA_VISIBLE_DEVICES=1 nohup python -m lerobot.scripts.train \
   --policy.push_to_hub=false  >  1025_act_2.log 2>&1 &
 
 # pretrain 
-CUDA_VISIBLE_DEVICES=0 nohup python -m lerobot.scripts.train \
+CUDA_VISIBLE_DEVICES=1 nohup python -m lerobot.scripts.train \
   --dataset.root=/home/smai/dc_dir/dataset/dataset_1017a18 \
   --dataset.repo_id=dataset_1017a18 \
-  --policy.path=/home/smai/dc_dir/models/act_1016_1/pretrained_model \
+  --policy.path=/home/smai/dc_dir/lerobot_0901_pybullet/outputs/train/act_1023_2/checkpoints/100000/pretrained_model \
   --batch_size=16 \
   --steps=100000 \
   --save_freq=50000 \
-  --output_dir=outputs/train/act_1027_1 \
-  --job_name=act_1027_1 \
+  --output_dir=outputs/train/act_1028_2 \
+  --job_name=act_1028_2 \
   --policy.device=cuda \
   --wandb.enable=false \
-  --policy.push_to_hub=false  >  1027_act_1.log 2>&1 &
+  --policy.push_to_hub=false  >  1028_act_2.log 2>&1 &
 
 smolvla | diffusion
  可能需要加上 export TOKENIZERS_PARALLELISM=true ｜ false 
@@ -89,7 +89,7 @@ CUDA_VISIBLE_DEVICES=0 nohup python -m lerobot.scripts.train \
 # pybullet
 python -m lerobot.record \
     --robot.type=sim_robot \
-    --policy.path=/home/smai/workspace/dc_dir/lerobot_0901_pybullet/outputs/train/diff_0918_1/checkpoints/last/pretrained_model \
+    --policy.path=/home/smai/dc_dir/lerobot_0901_pybullet/outputs/train/act_1026_4/checkpoints/last/pretrained_model \
     --dataset.repo_id=supredata/eval_dataset_0902 \
     --dataset.single_task="Grasp the workpiece and put it in the appropriate position." \
     --dataset.episode_time_s=150 \

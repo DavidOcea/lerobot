@@ -36,9 +36,9 @@ def sim_robot_cameras_config() -> dict[str, CameraConfig]:
 @dataclass
 class SimRobotConfig(RobotConfig):
     # 仿真环境参数
-    headless: bool = False
+    headless: bool = True
     is_manual: bool = False
-    urdf_path: str = "/home/zzj/dc_space/lerobot-main-250612/sim_lerobot_example/sim_example/rf2502_new_3/urdf/rf2502_new_3.urdf"
+    urdf_path: str = "/home/smai/dc_dir/tools/rf2502_new_3/urdf/rf2502_new_3.urdf"
     
     # 相机配置
     cameras: dict[str, CameraConfig] = field(default_factory=sim_robot_cameras_config)

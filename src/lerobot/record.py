@@ -85,6 +85,7 @@ from lerobot.robots import (  # noqa: F401
     make_robot_from_config,
     so100_follower,
     so101_follower,
+    sim_robot,
 )
 from lerobot.teleoperators import (  # noqa: F401
     Teleoperator,
@@ -246,6 +247,7 @@ def record_loop(
                 task=single_task,
                 robot_type=robot.robot_type,
             )
+            # import pdb; pdb.set_trace()
             action = {key: action_values[i].item() for i, key in enumerate(robot.action_features)}
         elif policy is None and isinstance(teleop, Teleoperator):
             action = teleop.get_action()

@@ -80,7 +80,7 @@ class Simulator:
         )
 
         # 加载场景物体（保持用户定义）
-        self.objects = self._load_objects()
+        # self.objects = self._load_objects()
         self.is_manual = is_manual
         self.cube_hight = 0.5  # 从_load_objects中提取为类属性
 

@@ -175,7 +175,7 @@ class PreTrainedPolicy(nn.Module, HubMixin, abc.ABC):
         # 针对 模型结构不完全匹配的情况; 对其由于state层数改变
         #=====
         load_pi0fast_base = False
-        not_use_state_but_with_old_weight = True
+        not_use_state_but_with_old_weight = False
         if not_use_state_but_with_old_weight:
             # import pdb; pdb.set_trace()
             state_dict = load_file(model_file)

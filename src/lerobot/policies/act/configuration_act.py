@@ -91,10 +91,11 @@ class ACTConfig(PreTrainedConfig):
     """
     # import pdb; pdb.set_trace()
     # 增加一个cfg用来控制是否用state
-    use_state: bool = False
+    use_state: bool = True
     # 使用state_dropout
     state_dropout = 0.0
-    head_dropout = 0.7
+    head_dropout = 0.0
+    use_robot_position = False
     
     # Input / output structure.
     n_obs_steps: int = 1
