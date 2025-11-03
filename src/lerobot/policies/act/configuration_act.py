@@ -96,6 +96,8 @@ class ACTConfig(PreTrainedConfig):
     state_dropout = 0.0
     head_dropout = 0.0
     use_robot_position = False
+    # img和position 进行交叉注意力
+    img_cross_atten = False
     
     # Input / output structure.
     n_obs_steps: int = 1
