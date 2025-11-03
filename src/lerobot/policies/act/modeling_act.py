@@ -636,7 +636,7 @@ class ACT(nn.Module):
 
                 # 2. 处理图像特征并进行双向交叉注意力
                 if self.config.image_features and self.config.img_cross_atten:
-                    print("use corss img atten")
+                    # print("use corss img atten")
                     # 收集所有相机特征
                     all_cam_features = []
                     for img in batch["observation.images"]:
@@ -697,7 +697,7 @@ class ACT(nn.Module):
             )
 
         if self.config.image_features and not self.config.img_cross_atten:
-            print("no cross attention image !")
+            # print("no cross attention image !")
             # For a list of images, the H and W may vary but H*W is constant.
             # NOTE: If modifying this section, verify on MPS devices that
             # gradients remain stable (no explosions or NaNs).

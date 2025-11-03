@@ -93,11 +93,11 @@ class ACTConfig(PreTrainedConfig):
     # 增加一个cfg用来控制是否用state
     use_state: bool = True
     # 使用state_dropout
-    state_dropout = 0.0
-    head_dropout = 0.0
-    use_robot_position = False
+    state_dropout: float = 0.0
+    head_dropout: float = 0.0
+    use_robot_position: bool = False
     # img和position 进行交叉注意力
-    img_cross_atten = False
+    img_cross_atten: bool = False
     
     # Input / output structure.
     n_obs_steps: int = 1
