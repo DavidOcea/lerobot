@@ -478,8 +478,9 @@ class ACT(nn.Module):
                 self.encoder_robot_state_input_proj = nn.Linear(
                     self.config.robot_state_feature.shape[0], config.dim_model
                 )
-                if self.state_dropout:
-                    self.encoder_dropout = nn.Dropout(p=self.state_dropout)
+
+            if self.state_dropout:
+                self.encoder_dropout = nn.Dropout(p=self.state_dropout)
 
         if self.config.env_state_feature:
             self.encoder_env_state_input_proj = nn.Linear(
@@ -631,7 +632,10 @@ class ACT(nn.Module):
                 # print("joint_positions: ",joint_positions)
                 # 展平位置特征并投影
                 flat_positions = joint_positions.flatten(1)  # (B, joint_count*3)
-                pos_embed = self.encoder_joint_pos_input_proj(flat_positions)  # (B, D)
+                if self.state_dropout and self.training:
+                    pos_embed = self.encoder_dropout(self.encoder_joint_pos_input_proj(flat_positions))  # (B, D)
+                else:
+                    pos_embed = self.encoder_joint_pos_input_proj(flat_positions)  # (B, D)
                 encoder_in_tokens.append(pos_embed)  # 暂存原始位置嵌入
 
                 # 2. 处理图像特征并进行双向交叉注意力
