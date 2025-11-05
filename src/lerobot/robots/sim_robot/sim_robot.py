@@ -12,6 +12,7 @@ from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 from lerobot.robots import Robot
 from .config_sim_robot import SimRobotConfig
+from ..utils import ensure_safe_goal_position
 
 logger = logging.getLogger(__name__)
 
@@ -26,14 +27,26 @@ class SimRobot(Robot):
         self._is_calibrated = True  # 仿真环境默认已校准
         self.simulator = None
 
-        # 关节名称映射（与仿真环境一致）
+        # 为了对应真机修改
         self.joint_names = [
+            "shoulder_roll_left", "shoulder_lift_left", "elbow_roll_left", 
+            "elbow_flex_left", "wrist_roll_left", "gripper_flex_left", "gripper_left",
             "shoulder_roll_right", "shoulder_lift_right", "elbow_roll_right", 
-            "elbow_flex_right", "wrist_roll_right", "gripper_flex_right",
-            "gripper_right_1", "gripper_right_2", "shoulder_roll_left",
-            "shoulder_lift_left", "elbow_roll_left", "elbow_flex_left",
-            "wrist_roll_left", "gripper_flex_left", "gripper_left_1", "gripper_left_2"
+            "elbow_flex_right", "wrist_roll_right", "gripper_flex_right", "gripper_right",
+            "body_roll", "waist_flex"
         ]
+
+        self.robot2sim = {
+            "left_arm_joint_1": "shoulder_roll_left", "left_arm_joint_2":"shoulder_lift_left",
+            "left_arm_joint_3": "elbow_roll_left", "left_arm_joint_4": "elbow_flex_left",
+            "left_arm_joint_5": "wrist_roll_left", "left_arm_joint_6": "gripper_flex_left",
+            "left_arm_joint_7": "gripper_left",
+            "right_arm_joint_1": "shoulder_roll_right", "right_arm_joint_2":"shoulder_lift_right",
+            "right_arm_joint_3": "elbow_roll_right", "right_arm_joint_4": "elbow_flex_right",
+            "right_arm_joint_5": "wrist_roll_right", "right_arm_joint_6": "gripper_flex_right",
+            "right_arm_joint_7": "gripper_right",
+            "trunk_joint_1":"body_roll", "trunk_joint_2":"waist_flex"
+        }
 
         # 相机配置（从config转换）
         self.cameras = make_cameras_from_configs(config.cameras)
@@ -83,7 +96,6 @@ class SimRobot(Robot):
         from .simulator import Simulator  # 导入用户提供的仿真器类
         return Simulator(
             headless=self.config.headless,
-            is_manual=self.config.is_manual
         )
 
     @property
@@ -108,9 +120,12 @@ class SimRobot(Robot):
         # 获取关节状态
         joint_positions, _ = self.simulator.get_joint_states()
         obs_dict = {
-            f"{name}.pos": joint_positions[i]
+            f"{name}.pos": math.degrees(joint_positions[i])
+            # f"{name}.pos": joint_positions[i]
             for i, name in enumerate(self.joint_names)
         }
+        # print("obs_action: ", obs_dict)
+        print("obs_action rad: ", joint_positions)
 
         # 获取相机图像
         images = self.simulator.get_camera_images()
@@ -123,15 +138,54 @@ class SimRobot(Robot):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected")
 
-        # 转换动作格式（从字典到数组）
-        action_array = np.array([
-            action[f"{name}.pos"] for name in self.joint_names
-        ])
+        # import pdb; pdb.set_trace()
+        # 机器人关节名称和仿真名称映射
+        if "left_arm_joint_1.pos" in action:
+            new_action = {}
+            for key, val in action.items():
+                name = self.robot2sim[key.split(".")[0]]
+                new_action[f"{name}.pos"] = val
+            action = new_action
+        
+        # import pdb; pdb.set_trace()
+        goal_pos = {key.removesuffix(".pos"): val for key, val in action.items() if key.endswith(".pos")}
+        # Cap goal position when too far away from present position.
+        # /!\ Slower fps expected due to reading from the follower.
+        if self.config.max_relative_target is not None:
+            joint_positions, _ = self.simulator.get_joint_states()
+            present_pos = {
+                f"{name}": math.degrees(joint_positions[i])
+                # f"{name}.pos": joint_positions[i]
+                for i, name in enumerate(self.joint_names)
+            }
+            goal_present_pos = {key: (g_pos, present_pos[key]) for key, g_pos in goal_pos.items()}
+            goal_pos = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
+            action_array = np.array([
+                math.radians(goal_pos[name]) for name in self.joint_names
+            ])
+            print("using actiong:", np.array([
+                goal_pos[name] for name in self.joint_names
+            ]))
 
+        else:
+            # 转换动作格式（从字典到数组）
+            action_array = np.array([
+                math.radians(action[f"{name}.pos"]) for name in self.joint_names
+                # action[f"{name}.pos"] for name in self.joint_names
+            ])
+
+            print("using actiong:", np.array([
+                action[f"{name}.pos"] for name in self.joint_names
+            ]))
+        # import pdb; pdb.set_trace()
         # 执行仿真步骤
-        _, _, done, _ = self.simulator.step(action_array)
-        if done:
-            logger.info("Simulation episode completed")
+        # _, _, done, _ = self.simulator.step(action_array)
+        next_obs = self.simulator.step(action_array)
+        # if done:
+        #     logger.info("Simulation episode completed")
+        logger.info("Simulation episode completed")
+       
+        # print("using act rad:",action_array)
 
         return action
 
