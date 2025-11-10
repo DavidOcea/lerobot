@@ -377,6 +377,13 @@ class ACT(nn.Module):
         super().__init__()
         self.config = config
 
+        # 新增：存储注意力权重和图像特征（如果怕增加耗时可以仅推理时用，目前支持边训练边输出）
+        self.attention_weights = []  # 交叉注意力权重 (pos_to_img)
+        self.image_features = []     # 图像特征图（无注意力时用）
+        self.feature_map_size = []   # 特征图尺寸 (h, w)
+        self.original_img_size = []  # 原始图像尺寸 (H, W)
+        self.original_img = []
+
         if self.config.use_robot_position and self.config.robot_state_feature:
             # 初始化FK计算器
             self.fk = ForwardKinematics()
@@ -553,6 +560,12 @@ class ACT(nn.Module):
         else:
             batch_size = batch["observation.environment_state"].shape[0]
 
+        # 记录原始图像尺寸（假设输入图像已预处理，这里取第一个相机的尺寸）
+        if "observation.images" in batch and len(self.original_img_size) == 0 and not self.training:
+            self.original_img_size = [(b_img.shape[2], b_img.shape[3]) for b_img in batch["observation.images"]]
+            self.original_img = [b_img for b_img in batch["observation.images"]]
+
+        
         # Prepare the latent for input to the transformer encoder.
         if self.config.use_vae and "action" in batch and self.training:
             # Prepare the input to the VAE encoder: [cls, *joint_space_configuration, *action_sequence].
@@ -678,6 +691,10 @@ class ACT(nn.Module):
                         pos_embed_fused = self.pos_img_fusion(
                             torch.cat([pos_embed_expanded.squeeze(0), pos_attended.squeeze(0)], dim=1)
                         )  # (B, D)
+
+                        if not self.training:
+                            self.attention_weights.append(img_feat_fused.detach())  # (H*W,b c)
+                            self.feature_map_size.append((cam_feat.shape[2], cam_feat.shape[3]))  # (h, w)
                         
                         # 更新编码器输入
                         fused_features.append((img_feat_fused, img_pos_flat))
@@ -709,6 +726,9 @@ class ACT(nn.Module):
                 cam_features = self.backbone(img)["feature_map"]
                 cam_pos_embed = self.encoder_cam_feat_pos_embed(cam_features).to(dtype=cam_features.dtype)
                 cam_features = self.encoder_img_feat_input_proj(cam_features)
+                if not self.training:
+                    self.image_features.append(cam_features.detach())  # 保存特征图 one hot
+                    self.feature_map_size.append((cam_features.shape[2], cam_features.shape[3]))  # (h, w)
 
                 # Rearrange features to (sequence, batch, dim).
                 cam_features = einops.rearrange(cam_features, "b c h w -> (h w) b c")

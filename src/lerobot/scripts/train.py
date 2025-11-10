@@ -51,7 +51,8 @@ from lerobot.utils.utils import (
     init_logging,
 )
 from lerobot.utils.wandb_utils import WandBLogger
-
+from lerobot.utils.heatmap_utils import generate_attention_heatmap, generate_activation_heatmap
+import numpy as np
 
 def update_policy(
     train_metrics: MetricsTracker,
@@ -244,6 +245,47 @@ def train(cfg: TrainPipelineConfig):
             update_last_checkpoint(checkpoint_dir)
             if wandb_logger:
                 wandb_logger.log_policy(checkpoint_dir)
+            
+            # import pdb; pdb.set_trace()
+            # 存储热力图
+            if cfg.save_heat_map:
+
+                policy.eval()
+                evl_batch = {
+                    'observation.images': [b_img[-1].unsqueeze(0) for key, b_img in batch.items() if "observation.images" in key],
+                    'observation.state': batch['observation.state'][-1].unsqueeze(0),
+                    'action_is_pad': batch['action_is_pad'][-1].unsqueeze(0),
+                    'action': batch['action'][-1].unsqueeze(0),
+                        }
+                with torch.no_grad():
+                    actions, _ = policy.model(evl_batch)
+
+                if len(policy.model.original_img) == 0:
+                    print("没有进行热力图信息推理，请确保参数正确！！")
+
+                # idx = 0
+                # for key, val in batch.items():
+                #     if "observation.images" in key:
+                #         original_img = np.transpose(val[-1].cpu(), (1,2,0)) #  取每个batch最后一张图; c h w -> h w c
+
+                #         if cfg.policy.img_cross_atten:
+                #             heatmap, original_np = generate_attention_heatmap(policy.model, original_img, idx)
+                #         else:
+                #             heatmap, original_np = generate_activation_heatmap(policy.model, original_img, idx)
+                #         heatmap.save(str(checkpoint_dir) + "/" + key + "_step_" + str(step) + "_result_heatmap.jpg")
+                #         original_np.save(str(checkpoint_dir) + "/" + key + "_step_" + str(step) + "_original_img.jpg")
+                #         idx += 1
+                
+                # for idx, imgs in enumerate(policy.model.original_img):
+                for idx, imgs in enumerate(evl_batch["observation.images"]):
+                    original_img = np.transpose(imgs[-1].cpu(), (1,2,0)) #  取每个batch最后一张图; c h w -> h w c
+                    if cfg.policy.img_cross_atten:
+                        heatmap, original_np = generate_attention_heatmap(policy.model, original_img, idx)
+                    else:
+                        heatmap, original_np = generate_activation_heatmap(policy.model, original_img, idx)
+                    heatmap.save(str(checkpoint_dir) + "/" + str(idx) + "_step_" + str(step) + "_result_heatmap.jpg")
+                    # original_np.save(str(checkpoint_dir) + "/" + str(idx) + "_step_" + str(step) + "_original_img.jpg")
+
 
         if cfg.env and is_eval_step:
             step_id = get_step_identifier(step, cfg.steps)
