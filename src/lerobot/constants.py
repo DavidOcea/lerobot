@@ -24,6 +24,12 @@ OBS_IMAGES = "observation.images"
 ACTION = "action"
 REWARD = "next.reward"
 
+OBS_LANGUAGE = OBS_STATE + ".language"
+OBS_LANGUAGE_TOKENS = OBS_LANGUAGE + ".tokens"
+OBS_LANGUAGE_ATTENTION_MASK = OBS_LANGUAGE + ".attention_mask"
+# openpi
+OPENPI_ATTENTION_MASK_VALUE = -2.3819763e38
+
 ROBOTS = "robots"
 ROBOT_TYPE = "robot_type"
 TELEOPERATORS = "teleoperators"

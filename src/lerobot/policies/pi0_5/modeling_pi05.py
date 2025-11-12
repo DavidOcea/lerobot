@@ -29,26 +29,30 @@ from lerobot.utils.import_utils import _transformers_available
 
 # Conditional import for type checking and lazy loading
 if TYPE_CHECKING or _transformers_available:
+    print("use transformer")
     from transformers.models.auto import CONFIG_MAPPING
     from transformers.models.gemma import modeling_gemma
     from transformers.models.gemma.modeling_gemma import GemmaForCausalLM
     from transformers.models.paligemma.modeling_paligemma import PaliGemmaForConditionalGeneration
 else:
+    print("not use transformer")
     CONFIG_MAPPING = None
     modeling_gemma = None
     GemmaForCausalLM = None
     PaliGemmaForConditionalGeneration = None
 
 from lerobot.configs.policies import PreTrainedConfig
-from lerobot.policies.pi05.configuration_pi05 import PI05Config
+from lerobot.policies.pi0_5.configuration_pi05 import PI05Config
 from lerobot.policies.pretrained import PreTrainedPolicy, T
-# from lerobot.utils.constants import (
+
 from lerobot.constants import (
     ACTION,
     OBS_LANGUAGE_ATTENTION_MASK,
     OBS_LANGUAGE_TOKENS,
     OPENPI_ATTENTION_MASK_VALUE,
+    OBS_STATE
 )
+from transformers import AutoTokenizer
 
 
 def get_safe_dtype(target_dtype, device_type):
@@ -220,6 +224,8 @@ def compute_layer_complete(
     for i, hidden_states in enumerate(inputs_embeds):
         layer = models[i].layers[layer_idx]
         hidden_states, gate = layer.input_layernorm(hidden_states, cond=adarms_cond[i])  # noqa: PLW2901
+        # import pdb; pdb.set_trace()
+        # hidden_states, gate = layer.input_layernorm(hidden_states)  # noqa: PLW2901
         gates.append(gate)
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, layer.self_attn.head_dim)
@@ -317,6 +323,7 @@ def get_gemma_config(variant: str) -> GemmaConfig:  # see openpi `gemma.py: get_
     else:
         raise ValueError(f"Unknown variant: {variant}")
 
+# from lerobot.policies.pi0.paligemma_with_expert import PaliGemmaWithExpertModel
 
 class PaliGemmaWithExpertModel(
     nn.Module
@@ -410,6 +417,7 @@ class PaliGemmaWithExpertModel(
         use_cache: bool | None = None,
         adarms_cond: list[torch.Tensor] | None = None,
     ):
+        
         if adarms_cond is None:
             adarms_cond = [None, None]
         if inputs_embeds[1] is None:
@@ -830,6 +838,7 @@ class PI05Policy(PreTrainedPolicy):
     def __init__(
         self,
         config: PI05Config,
+        dataset_stats: dict[str, dict[str, Tensor]] | None = None,
     ):
         """
         Args:
@@ -838,6 +847,8 @@ class PI05Policy(PreTrainedPolicy):
         super().__init__(config)
         config.validate_features()
         self.config = config
+
+        self.language_tokenizer = AutoTokenizer.from_pretrained("/home/smai/dc_dir/models/paligemma-3b-pt-224")
 
         # Initialize the core PI05 model
         self.model = PI05Pytorch(config)
@@ -1036,6 +1047,26 @@ class PI05Policy(PreTrainedPolicy):
             ACTION: deque(maxlen=self.config.n_action_steps),
         }
 
+    def prepare_language(self, batch) -> tuple[Tensor, Tensor]:
+        """Tokenize the text input"""
+        device = batch[OBS_STATE].device
+        tasks = batch["task"]
+
+        # PaliGemma prompt has to end with a new line
+        tasks = [task if task.endswith("\n") else f"{task}\n" for task in tasks]
+
+        tokenized_prompt = self.language_tokenizer.__call__(
+            tasks,
+            padding="max_length",
+            padding_side="right",
+            max_length=self.config.tokenizer_max_length,
+            return_tensors="pt",
+        )
+        lang_tokens = tokenized_prompt["input_ids"].to(device=device)
+        lang_masks = tokenized_prompt["attention_mask"].to(device=device, dtype=torch.bool)
+
+        return lang_tokens, lang_masks
+    
     def _preprocess_images(self, batch: dict[str, Tensor]) -> tuple[list[Tensor], list[Tensor]]:
         """Preprocess images for the model.
 
@@ -1127,7 +1158,8 @@ class PI05Policy(PreTrainedPolicy):
 
         # Prepare inputs
         images, img_masks = self._preprocess_images(batch)
-        tokens, masks = batch[f"{OBS_LANGUAGE_TOKENS}"], batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
+        # tokens, masks = batch[f"{OBS_LANGUAGE_TOKENS}"], batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
+        tokens, masks = self.prepare_language(batch)
 
         # Sample actions using the model (no separate state needed for PI05)
         actions = self.model.sample_actions(images, img_masks, tokens, masks)
@@ -1143,8 +1175,9 @@ class PI05Policy(PreTrainedPolicy):
 
         # Prepare inputs
         images, img_masks = self._preprocess_images(batch)
-        tokens, masks = batch[f"{OBS_LANGUAGE_TOKENS}"], batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
-
+        # tokens, masks = batch[f"{OBS_LANGUAGE_TOKENS}"], batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
+        tokens, masks = self.prepare_language(batch)
+        
         actions = self.prepare_action(batch)
 
         # Compute loss (no separate state needed for PI05)

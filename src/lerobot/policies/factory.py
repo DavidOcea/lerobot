@@ -34,6 +34,7 @@ from lerobot.policies.sac.reward_model.configuration_classifier import RewardCla
 from lerobot.policies.smolvla.configuration_smolvla import SmolVLAConfig
 from lerobot.policies.tdmpc.configuration_tdmpc import TDMPCConfig
 from lerobot.policies.vqbet.configuration_vqbet import VQBeTConfig
+from lerobot.policies.pi0_5.configuration_pi05 import PI05Config
 
 
 def get_policy_class(name: str) -> PreTrainedPolicy:
@@ -62,6 +63,11 @@ def get_policy_class(name: str) -> PreTrainedPolicy:
         from lerobot.policies.pi0fast.modeling_pi0fast import PI0FASTPolicy
 
         return PI0FASTPolicy
+    
+    elif name == "pi05":
+        from lerobot.policies.pi0_5.modeling_pi05 import PI05Policy
+        return PI05Policy
+
     elif name == "sac":
         from lerobot.policies.sac.modeling_sac import SACPolicy
 
@@ -89,6 +95,8 @@ def make_policy_config(policy_type: str, **kwargs) -> PreTrainedConfig:
         return VQBeTConfig(**kwargs)
     elif policy_type == "pi0":
         return PI0Config(**kwargs)
+    elif policy_type == "pi05":
+        return PI05Config(**kwargs)
     elif policy_type == "pi0fast":
         return PI0FASTConfig(**kwargs)
     elif policy_type == "sac":
