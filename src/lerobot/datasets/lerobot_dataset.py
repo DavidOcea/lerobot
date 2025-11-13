@@ -73,6 +73,11 @@ from lerobot.datasets.video_utils import (
     get_video_info,
 )
 
+from lerobot.datasets.customer_transforms import CustomerImageTransforms
+from PIL import Image
+import torchvision.transforms as transforms
+
+
 CODEBASE_VERSION = "v2.1"
 
 
@@ -341,6 +346,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         download_videos: bool = True,
         video_backend: str | None = None,
         batch_encoding_size: int = 1,
+        customer_transforms: bool = False,
+        customer_transforms_cfg: dict = {}
     ):
         """
         2 modes are available for instantiating this class, depending on 2 different use cases:
@@ -457,12 +464,18 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.delta_indices = None
         self.batch_encoding_size = batch_encoding_size
         self.episodes_since_last_encoding = 0
+        self.customer_transforms = customer_transforms
 
         # Unused attributes
         self.image_writer = None
         self.episode_buffer = None
 
         self.root.mkdir(exist_ok=True, parents=True)
+        
+        # customer transformer
+        if self.customer_transforms:
+            self.customer_transforms = CustomerImageTransforms(customer_transforms_cfg)
+            self.transform = transforms.ToTensor()
 
         # Load metadata
         self.meta = LeRobotDatasetMetadata(
@@ -724,6 +737,18 @@ class LeRobotDataset(torch.utils.data.Dataset):
             image_keys = self.meta.camera_keys
             for cam in image_keys:
                 item[cam] = self.image_transforms(item[cam])
+
+        if self.customer_transforms:
+            # print("customer_transfomers")
+            image_keys = self.meta.camera_keys
+            for cam in image_keys:
+                # import pdb; pdb.set_trace()
+                cam_img = np.transpose(item[cam].cpu().numpy(),(1,2,0))*255   #c h w -> h w c 去归一化（在_query_videos decoder 中/255归一化了）
+                cam_img = Image.fromarray(np.uint8(cam_img)) 
+                # cam_img.save("orcam"+".jpg")
+                cam_img = self.customer_transforms(cam_img)
+                # cam_img.save("cam"+".jpg")
+                item[cam] = self.transform(cam_img)   # h w c -> c h w 并自动归一化 transforms.ToTensor() 自动将像素值从 [0, 255] 缩放到 [0.0, 1.0]（浮点类型）
 
         # Add task as a string
         task_idx = item["task_index"].item()

@@ -746,7 +746,8 @@ class PI0FlowMatching(nn.Module):
             use_cache=False,
             fill_kv_cache=False,
         )
-        suffix_out = suffix_out[:, -self.config.n_action_steps :]
+        # suffix_out = suffix_out[:, -self.config.n_action_steps :]
+        suffix_out = suffix_out[0][:, -self.config.n_action_steps :]
         # Original openpi code, upcast attention output
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self.action_out_proj(suffix_out)

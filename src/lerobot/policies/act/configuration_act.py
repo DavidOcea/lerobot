@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import NormalizationMode
 from lerobot.optim.optimizers import AdamWConfig
-
+from PIL import Image
 
 @PreTrainedConfig.register_subclass("act")
 @dataclass

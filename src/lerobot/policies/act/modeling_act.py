@@ -556,7 +556,7 @@ class ACT(nn.Module):
             )
 
         if "observation.images" in batch:
-            batch_size = batch["observation.images"][0].shape[0]
+            batch_size = batch["observation.images"][0].shape[0] #c h w
         else:
             batch_size = batch["observation.environment_state"].shape[0]
 

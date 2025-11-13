@@ -257,7 +257,8 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
                 layer = models[i].layers[layer_idx]
                 # normalizer = torch.tensor(models[i].config.hidden_size**0.5, dtype=hidden_states.dtype)
                 # hidden_states = hidden_states * normalizer
-                hidden_states = layer.input_layernorm(hidden_states)
+                # hidden_states = layer.input_layernorm(hidden_states)
+                hidden_states = layer.input_layernorm(hidden_states)[0]
 
                 input_shape = hidden_states.shape[:-1]
                 hidden_shape = (*input_shape, -1, layer.self_attn.head_dim)
@@ -324,7 +325,8 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
                     out_emb += hidden_states
                     after_first_residual = out_emb.clone()
 
-                    out_emb = layer.post_attention_layernorm(out_emb)
+                    # out_emb = layer.post_attention_layernorm(out_emb)
+                    out_emb = layer.post_attention_layernorm(out_emb)[0]
                     out_emb = layer.mlp(out_emb)
 
                     # TODO: second dropout (by default 0.0)
