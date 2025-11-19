@@ -493,6 +493,12 @@ class ACT(nn.Module):
             self.encoder_env_state_input_proj = nn.Linear(
                 self.config.env_state_feature.shape[0], config.dim_model
             )
+
+        if self.config.robot_force_feature:
+            self.encoder_robot_force_input_proj = nn.Linear(
+                    self.config.robot_force_feature.shape[0], config.dim_model
+                )
+
         self.encoder_latent_input_proj = nn.Linear(config.latent_dim, config.dim_model)
         if self.config.image_features:
             self.encoder_img_feat_input_proj = nn.Conv2d(
@@ -504,6 +510,8 @@ class ACT(nn.Module):
         if self.robot_state_feature:
             n_1d_tokens += 1
         if self.config.env_state_feature:
+            n_1d_tokens += 1
+        if self.config.robot_force_feature:
             n_1d_tokens += 1
         self.encoder_1d_feature_pos_embed = nn.Embedding(n_1d_tokens, config.dim_model)
         if self.config.image_features:
@@ -716,6 +724,11 @@ class ACT(nn.Module):
             encoder_in_tokens.append(
                 self.encoder_env_state_input_proj(batch["observation.environment_state"])
             )
+        # add force using
+        if self.config.robot_force_feature:
+            encoder_in_tokens.append(
+                self.encoder_robot_state_input_proj(batch["observation.force"])
+                )
 
         if self.config.image_features and not self.config.img_cross_atten:
             # print("no cross attention image !")

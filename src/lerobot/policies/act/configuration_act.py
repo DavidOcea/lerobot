@@ -105,10 +105,16 @@ class ACTConfig(PreTrainedConfig):
     n_action_steps: int = 100
 
     normalization_mapping: dict[str, NormalizationMode] = field(
+        # default_factory=lambda: {
+        #     "VISUAL": NormalizationMode.MEAN_STD,
+        #     "STATE": NormalizationMode.MEAN_STD,
+        #     "ACTION": NormalizationMode.MEAN_STD,
+        # }
         default_factory=lambda: {
             "VISUAL": NormalizationMode.MEAN_STD,
             "STATE": NormalizationMode.MEAN_STD,
             "ACTION": NormalizationMode.MEAN_STD,
+            "FORCE": NormalizationMode.MEAN_STD,
         }
     )
 
@@ -123,7 +129,7 @@ class ACTConfig(PreTrainedConfig):
     n_heads: int = 8
     dim_feedforward: int = 3200
     feedforward_activation: str = "relu"
-    n_encoder_layers: int = 4
+    n_encoder_layers: int = 8
     # Note: Although the original ACT implementation has 7 for `n_decoder_layers`, there is a bug in the code
     # that means only the first layer is used. Here we match the original implementation by setting this to 1.
     # See this issue https://github.com/tonyzhaozh/act/issues/25#issue-2258740521.

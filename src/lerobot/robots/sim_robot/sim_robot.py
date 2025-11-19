@@ -55,6 +55,11 @@ class SimRobot(Robot):
     def _motors_ft(self) -> dict[str, type]:
         """电机特征定义（遵循仓库格式）"""
         return {f"{motor}.pos": float for motor in self.joint_names}
+    
+    @property
+    def _force_ft(self) -> dict[str, type]:
+        """电机特征定义（遵循仓库格式）"""
+        return {f"{motor}.force": float for motor in self.joint_names}
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
@@ -67,7 +72,8 @@ class SimRobot(Robot):
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
         """观测特征集合"""
-        return {**self._motors_ft, **self._cameras_ft}
+        return {**self._motors_ft, **self._cameras_ft, **self._force_ft}
+        # return {**self._motors_ft, **self._cameras_ft}
 
     @cached_property
     def action_features(self) -> dict[str, type]:
@@ -126,6 +132,10 @@ class SimRobot(Robot):
         }
         # print("obs_action: ", obs_dict)
         print("obs_action rad: ", joint_positions)
+
+        # 仿force 用state临时代替
+        for i, name in enumerate(self.joint_names):
+            obs_dict[f"{name}.force"] = joint_positions[i]
 
         # 获取相机图像
         images = self.simulator.get_camera_images()
