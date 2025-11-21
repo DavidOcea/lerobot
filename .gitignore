@@ -173,3 +173,6 @@ outputs/
 
 # Dev folders
 .cache/*
+
+# ignore run.sh
+run.sh
