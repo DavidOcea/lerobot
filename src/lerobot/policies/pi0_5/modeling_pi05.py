@@ -1053,7 +1053,7 @@ class PI05Policy(PreTrainedPolicy):
         tasks = batch["task"]
 
         # PaliGemma prompt has to end with a new line
-        tasks = [task if task.endswith("\n") else f"{task}\n" for task in tasks]
+        tasks = batch["task"] if type(batch["task"])==list else [batch["task"]] #推理的时候task往往是一str，导致下面切分的时候没有按照完整语句切片。
 
         tokenized_prompt = self.language_tokenizer.__call__(
             tasks,
