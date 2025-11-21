@@ -173,3 +173,6 @@ outputs/
 
 # Dev folders
 .cache/*
+
+# ssh run
+run.sh

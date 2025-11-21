@@ -256,6 +256,7 @@ def train(cfg: TrainPipelineConfig):
                     'observation.state': batch['observation.state'][-1].unsqueeze(0),
                     'action_is_pad': batch['action_is_pad'][-1].unsqueeze(0),
                     'action': batch['action'][-1].unsqueeze(0),
+                    'observation.force': batch['observation.force'][-1].unsqueeze(0)
                         }
                 with torch.no_grad():
                     actions, _ = policy.model(evl_batch)
