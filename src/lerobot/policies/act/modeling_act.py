@@ -727,7 +727,7 @@ class ACT(nn.Module):
         # add force using
         if self.config.robot_force_feature:
             encoder_in_tokens.append(
-                self.encoder_robot_state_input_proj(batch["observation.force"])
+                self.encoder_robot_force_input_proj(batch["observation.force"])
                 )
 
         if self.config.image_features and not self.config.img_cross_atten:
