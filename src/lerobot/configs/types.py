@@ -24,12 +24,15 @@ class FeatureType(str, Enum):
     ENV = "ENV"
     ACTION = "ACTION"
     REWARD = "REWARD"
+    FORCE = "FORCE"
 
 
 class NormalizationMode(str, Enum):
     MIN_MAX = "MIN_MAX"
     MEAN_STD = "MEAN_STD"
     IDENTITY = "IDENTITY"
+    QUANTILES = "QUANTILES"
+    QUANTILE10 = "QUANTILE10"
 
 
 class DictLike(Protocol):
