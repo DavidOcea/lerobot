@@ -55,6 +55,7 @@ from lerobot.robots import (  # noqa: F401
     make_robot_from_config,
     so100_follower,
     so101_follower,
+    supre_robot_follower
 )
 from lerobot.scripts.server.configs import RobotClientConfig
 from lerobot.scripts.server.constants import SUPPORTED_ROBOTS

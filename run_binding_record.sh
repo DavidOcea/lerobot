@@ -17,10 +17,10 @@ python -m lerobot.record \
     --robot.id=supre_robot_follower \
     --teleop.type=supre_robot_leader \
     --teleop.id=supre_robot_leader \
-    --robot.cameras="{head_cam: {type: opencv, index_or_path: 4, width: 640, height: 480, fps: 30}, right_wrist_cam: {type: opencv, index_or_path: 2, width: 640, height: 480, fps: 30}, left_wrist_cam: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}}" \
+    --robot.cameras="{head_cam: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, right_wrist_cam: {type: opencv, index_or_path: 2, width: 640, height: 480, fps: 30}, left_wrist_cam: {type: opencv, index_or_path: 4, width: 640, height: 480, fps: 30}}" \
     --dataset.single_task="Grasp the workpiece and put it in the appropriate position." \
     --dataset.repo_id=supdata/dataset_0917_1 \
-    --dataset.episode_time_s=130 \
+    --dataset.episode_time_s=30 \
     --dataset.num_episodes=2 \
     --dataset.reset_time_s=10 \
     --config_path="$CONFIG_FILE_PATH"    

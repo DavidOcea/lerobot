@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import List, Optional, Union
 
 import torch
 import torch.version
@@ -227,12 +228,12 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
     # TODO: break down this huge forward into modules or functions
     def forward(
         self,
-        attention_mask: torch.Tensor | None = None,
-        position_ids: torch.LongTensor | None = None,
-        past_key_values: list[torch.FloatTensor] | Cache | None = None,
-        inputs_embeds: list[torch.FloatTensor] = None,
-        use_cache: bool | None = None,
-        fill_kv_cache: bool | None = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[Union[List[torch.FloatTensor], Cache]] = None,
+        inputs_embeds: List[torch.FloatTensor] = None,
+        use_cache: Optional[bool] = None,
+        fill_kv_cache: Optional[bool] = None,
     ):
         models = [self.paligemma.language_model, self.gemma_expert.model]
 
@@ -257,8 +258,7 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
                 layer = models[i].layers[layer_idx]
                 # normalizer = torch.tensor(models[i].config.hidden_size**0.5, dtype=hidden_states.dtype)
                 # hidden_states = hidden_states * normalizer
-                # hidden_states = layer.input_layernorm(hidden_states)
-                hidden_states = layer.input_layernorm(hidden_states)[0]
+                hidden_states = layer.input_layernorm(hidden_states)
 
                 input_shape = hidden_states.shape[:-1]
                 hidden_shape = (*input_shape, -1, layer.self_attn.head_dim)
@@ -325,8 +325,7 @@ class PaliGemmaWithExpertModel(PreTrainedModel):
                     out_emb += hidden_states
                     after_first_residual = out_emb.clone()
 
-                    # out_emb = layer.post_attention_layernorm(out_emb)
-                    out_emb = layer.post_attention_layernorm(out_emb)[0]
+                    out_emb = layer.post_attention_layernorm(out_emb)
                     out_emb = layer.mlp(out_emb)
 
                     # TODO: second dropout (by default 0.0)

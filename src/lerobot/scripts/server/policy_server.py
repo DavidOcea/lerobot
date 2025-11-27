@@ -143,7 +143,10 @@ class PolicyServer(async_inference_pb2_grpc.AsyncInferenceServicer):
         policy_class = get_policy_class(self.policy_type)
 
         start = time.perf_counter()
-        self.policy = policy_class.from_pretrained(policy_specs.pretrained_name_or_path)
+        self.policy = policy_class.from_pretrained(
+            policy_specs.pretrained_name_or_path,
+            local_files_only=True
+            )
         self.policy.to(self.device)
         end = time.perf_counter()
 
