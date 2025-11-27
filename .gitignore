@@ -175,3 +175,7 @@ dmypy.json
 cython_debug/
 monitor/prometheus/grafana-data
 monitor/prometheus/prometheus-data/
+
+#
+*.md 
+*.mdx
