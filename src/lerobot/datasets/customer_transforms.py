@@ -7,7 +7,7 @@ class CustomerImageTransforms:
         self._cfg = cfg
         img_transform_list = []
         # 随机缩放（0.7~1.3 倍），再裁剪为 256x256
-        if "random_resize_crop" in self._cfg and self._cfg["random_resize_crop"]:
+        if "random_resize_crop" in self._cfg:
             random_scale_crop = self._cfg["random_resize_crop"]
             self.random_scale_crop = transforms.RandomResizedCrop(
                 size=random_scale_crop["size"],    # 最终输出尺寸 h w
@@ -17,7 +17,7 @@ class CustomerImageTransforms:
             )
             img_transform_list.append(self.random_scale_crop)
         # 随机旋转 ±15 度，空白区域用白色填充，旋转后扩展图像
-        if "random_rotation" in self._cfg and self._cfg["random_rotation"]:
+        if "random_rotation" in self._cfg:
             random_rotate = self._cfg["random_rotation"]
             self.random_rotate = transforms.RandomRotation(
                 degrees=random_rotate["degrees"],  # 角度范围：-15° 到 15°
@@ -28,7 +28,7 @@ class CustomerImageTransforms:
             )
             img_transform_list.append(self.random_rotate)
         # 随机调整亮度、对比度、饱和度、色相
-        if "colorjitter" in self._cfg and self._cfg["colorjitter"]:
+        if "colorjitter" in self._cfg:
             random_color_jitter = self._cfg["colorjitter"]
             self.random_color_jitter = transforms.ColorJitter(
                 brightness=random_color_jitter["brightness"],  # 亮度 ±20%

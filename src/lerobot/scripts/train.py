@@ -256,13 +256,20 @@ def train(cfg: TrainPipelineConfig):
                     'observation.state': batch['observation.state'][-1].unsqueeze(0),
                     'action_is_pad': batch['action_is_pad'][-1].unsqueeze(0),
                     'action': batch['action'][-1].unsqueeze(0),
-                    'observation.force': batch['observation.force'][-1].unsqueeze(0)
+                    'observation.force': batch['observation.force'][-1].unsqueeze(0) if 'observation.force' in batch else None,
+                    'observation.images.head_cam': batch['observation.images.head_cam'][-1].unsqueeze(0) if 'observation.images.head_cam' in batch else None,
+                    'observation.images.right_wrist_cam': batch['observation.images.right_wrist_cam'][-1].unsqueeze(0) if 'observation.images.right_wrist_cam' in batch else None,
+                    'observation.images.left_wrist_cam': batch['observation.images.left_wrist_cam'][-1].unsqueeze(0) if 'observation.images.left_wrist_cam' in batch else None,
+                    'task': [batch['task'][-1]] if 'task' in batch else None,
                         }
                 with torch.no_grad():
-                    actions, _ = policy.model(evl_batch)
+                    if cfg.policy.type == "act":
+                        _, _ = policy.model(evl_batch)
+                    if cfg.policy.type == "pi05":
+                        _, _ = policy(evl_batch)
 
-                if len(policy.model.original_img) == 0:
-                    print("没有进行热力图信息推理，请确保参数正确！！")
+                # if len(policy.model.original_img) == 0:
+                #     print("没有进行热力图信息推理，请确保参数正确！！")
 
                 # idx = 0
                 # for key, val in batch.items():
@@ -280,10 +287,13 @@ def train(cfg: TrainPipelineConfig):
                 # for idx, imgs in enumerate(policy.model.original_img):
                 for idx, imgs in enumerate(evl_batch["observation.images"]):
                     original_img = np.transpose(imgs[-1].cpu(), (1,2,0)) #  取每个batch最后一张图; c h w -> h w c
-                    if cfg.policy.img_cross_atten:
-                        heatmap, original_np = generate_attention_heatmap(policy.model, original_img, idx)
-                    else:
+                    if not hasattr(cfg.policy, 'img_cross_atten'):
                         heatmap, original_np = generate_activation_heatmap(policy.model, original_img, idx)
+                    else:
+                        if cfg.policy.img_cross_atten:
+                            heatmap, original_np = generate_attention_heatmap(policy.model, original_img, idx)
+                        else:
+                            heatmap, original_np = generate_activation_heatmap(policy.model, original_img, idx)
                     heatmap.save(str(checkpoint_dir) + "/" + str(idx) + "_step_" + str(step) + "_result_heatmap.jpg")
                     # original_np.save(str(checkpoint_dir) + "/" + str(idx) + "_step_" + str(step) + "_original_img.jpg")
 

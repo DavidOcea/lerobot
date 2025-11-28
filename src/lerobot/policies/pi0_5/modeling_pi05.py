@@ -548,6 +548,12 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
                 raise ValueError(msg)
         except ImportError:
             raise ValueError(msg) from None
+        
+        self.original_img_size = []   # 原始图像尺寸 (H, W)
+        self.image_features = []     # 图像特征图（无注意力时用）
+        self.feat_hw = [] # patch图形尺寸
+        self.img_hw = [] # 推理图形尺寸
+        
 
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory optimization."""
@@ -593,7 +599,22 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         )
         time = time_beta * self.config.time_sampling_scale + self.config.time_sampling_offset
         return time.to(dtype=torch.float32, device=device)
+    
+    def get_actual_patch_size(self):
+        # 获取视觉塔的卷积层（负责分割patch）
+        vision_tower = self.paligemma_with_expert.paligemma.vision_tower
+        # 通常视觉塔的第一层是卷积层，用于将图像分割为patch
+        patch_embed = vision_tower.vision_model.embeddings.patch_embedding
+        # 卷积核尺寸即实际patch尺寸 (kernel_h, kernel_w)
+        patch_h, patch_w = patch_embed.kernel_size
+        # 卷积步长需与核尺寸一致（否则会有重叠或间隙）
+        assert patch_embed.stride == (patch_h, patch_w), "patch步长与尺寸不一致，会导致分割异常"
+        return patch_h, patch_w
 
+    def get_input_image_size(self, img_tensor):
+        # 从输入图像张量中获取实际尺寸 (B, C, H, W) -> (H, W)
+        return img_tensor.shape[2], img_tensor.shape[3]    
+    
     def embed_prefix(
         self, images, img_masks, tokens, masks
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -604,12 +625,54 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         # Process images
         for img, img_mask in zip(images, img_masks, strict=True):
+            
+            if not self.training:
+                # 获取 patch 尺寸
+                # patch_h, patch_w = self.get_patch_size()  # 调用上面定义的方法
+                # 1. 获取实际图像尺寸和patch尺寸
+                img_h, img_w = self.get_input_image_size(img)  # 输入图像的真实高度和宽度
+                patch_h, patch_w = self.get_actual_patch_size()  # 从卷积层获取的实际patch尺寸            
 
             def image_embed_func(img):
                 return self.paligemma_with_expert.embed_image(img)
 
             img_emb = self._apply_checkpoint(image_embed_func, img)
             bsize, num_img_embs = img_emb.shape[:2]
+            
+            if not self.training:
+                # visual_features_list.append(img_emb)  # 保存原始视觉特征
+                self.image_features.append(img_emb.detach())
+                
+                # 3. 计算理论上的patch数量（考虑可能的填充）
+                # 视觉塔可能对图像进行了填充（padding）以确保能被patch尺寸整除
+                # 计算填充后的图像尺寸：ceil(img_h / patch_h) * patch_h
+                padded_h = ((img_h + patch_h - 1) // patch_h) * patch_h
+                padded_w = ((img_w + patch_w - 1) // patch_w) * patch_w
+                li_num_patches = (padded_h // patch_h) * (padded_w // patch_w)
+
+                # 4. 输出校验信息，定位不匹配原因
+                # print(f"输入图像尺寸: {img_h}x{img_w}")
+                # print(f"实际patch尺寸: {patch_h}x{patch_w}")
+                # print(f"填充后图像尺寸: {padded_h}x{padded_w}")
+                # print(f"理论patch数量: {li_num_patches}")
+                # print(f"实际输出num_patches: {num_img_embs}")
+                
+                # 5. 强制修正（若确认是填充导致的不匹配）
+                if li_num_patches != num_img_embs:
+                    # 以实际num_patches反推正确的特征图尺寸（可能存在非对称分割）
+                    # 尝试分解num_patches为合理的HxW（假设接近图像宽高比）
+                    aspect_ratio = img_w / img_h
+                    feat_h = int(math.sqrt(num_img_embs / aspect_ratio))
+                    feat_w = num_img_embs // feat_h
+                    # 二次校验分解结果
+                    assert feat_h * feat_w == num_img_embs, f"无法分解num_patches={num_img_embs}为合理的HxW"
+                    print(f"修正后特征图尺寸: {feat_h}x{feat_w}")
+                else:
+                    feat_h = padded_h // patch_h
+                    feat_w = padded_w // patch_w
+                self.feat_hw.append((feat_h, feat_w))
+                self.img_hw.append((img_h, img_h))
+            
 
             embs.append(img_emb)
             pad_masks.append(img_mask[:, None].expand(bsize, num_img_embs))
@@ -634,6 +697,11 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         bsize = pad_masks.shape[0]
         att_masks = att_masks[None, :].expand(bsize, len(att_masks))
+        
+        # 新增：返回视觉特征（若有多张图则拼接）
+        # visual_features = torch.cat(visual_features_list, dim=1) if visual_features_list else None
+        # if not self.training:
+        #     self.image_features.append(visual_features.detach())
 
         return embs, pad_masks, att_masks
 
@@ -691,6 +759,8 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
+            
+        self.original_img_size = [(images[-1].shape[2], images[-1].shape[3])]
 
         time_expanded = time[:, None, None]
         x_t = time_expanded * noise + (1 - time_expanded) * actions
@@ -848,7 +918,7 @@ class PI05Policy(PreTrainedPolicy):
         config.validate_features()
         self.config = config
 
-        self.language_tokenizer = AutoTokenizer.from_pretrained("/home/smai/dc_dir/models/paligemma-3b-pt-224")
+        self.language_tokenizer = AutoTokenizer.from_pretrained("/root/workspace/dc_dir/models/paligemma-3b-pt-224")
 
         # Initialize the core PI05 model
         self.model = PI05Pytorch(config)
