@@ -54,23 +54,23 @@ class DatasetConfig:
             "fill":(255, 255, 255),  # 白色填充
             "interpolation":Image.BILINEAR  # 双线性重采样（画质更平滑）
         },
-        # "colorjitter":{ # 随机亮度变化
-        #     "brightness":0.2,  # 亮度 ±20%
-        #     "contrast":0.2,    # 对比度 ±20%
-        #     "saturation":0.2,  # 饱和度 ±20%
-        #     "hue":0.1          # 色相 ±0.1（避免颜色失真）
-        # },
-        # "randomerase":{
-        #     "p":0.8,      #触发概率80%
-        #     "scale":(0.02, 0.33), #擦除区域占比2%~33%
-        #     "ratio":(0.3, 3.3), 
-        #     "value":0
-        # },
-        # "randorm_affine":{
-        #     "degrees": 0,
-        #     "translate":(0.1,0.1), # 平移尺度
-        #     "scale":(1.0,1.0) # 缩放比例
-        # }
+        "colorjitter":{ # 随机亮度变化
+            "brightness":0.2,  # 亮度 ±20%
+            "contrast":0.2,    # 对比度 ±20%
+            "saturation":0.2,  # 饱和度 ±20%
+            "hue":0.1          # 色相 ±0.1（避免颜色失真）
+        },
+        "randomerase":{
+            "p":0.8,      #触发概率80%
+            "scale":(0.02, 0.33), #擦除区域占比2%~33%
+            "ratio":(0.3, 0.33),
+            "value":0
+        },
+        "randorm_affine":{
+            "degrees": 0,
+            "translate":(0.1,0.1), # 平移尺度
+            "scale":(1.0,1.0) # 缩放比例
+        }
     })
     # Timestamp tolerance in seconds for delta_timestamps validation.
     # Use 0.03 for datasets recorded with actual timestamps (perf_counter).
