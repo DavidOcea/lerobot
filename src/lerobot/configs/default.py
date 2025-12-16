@@ -38,6 +38,8 @@ class DatasetConfig:
     use_imagenet_stats: bool = True
     video_backend: str = field(default_factory=get_safe_default_codec)
     customer_transforms: bool = False
+    # 仅对头部图像坐增强
+    only_head_transforms: bool = False
     # 图像数据增强，为了适应相机角度可能变化。
     customer_transforms_cfg: dict = field(default_factory=lambda:{
         "random_resize_crop":{ # 随机缩放裁剪
@@ -57,6 +59,17 @@ class DatasetConfig:
             "contrast":0.2,    # 对比度 ±20%
             "saturation":0.2,  # 饱和度 ±20%
             "hue":0.1          # 色相 ±0.1（避免颜色失真）
+        },
+        "randomerase":{
+            "p":0.8,      #触发概率80%
+            "scale":(0.02, 0.33), #擦除区域占比2%~33%
+            "ratio":(0.3, 3.3), 
+            "value":0
+        },
+        "randorm_affine":{
+            "degrees": 0,
+            "translate":(0.1,0.1), # 平移尺度
+            "scale":(1.0,1.0) # 缩放比例
         }
     })
 

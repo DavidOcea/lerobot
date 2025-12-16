@@ -16,6 +16,16 @@ class CustomerImageTransforms:
                 interpolation=random_scale_crop["interpolation"]  # 高质量插值（适合缩小图像）
             )
             img_transform_list.append(self.random_scale_crop)
+        # 随机仿射变换--平移
+        if "randorm_affine" in self._cfg:
+            random_affine = self._cfg["randorm_affine"]
+            self.random_affine = transforms.RandomAffine(
+                degrees=random_affine['degrees'],
+                translate=random_affine['translate'],
+                scale=random_affine['scale']
+            )
+            img_transform_list.append(self.random_affine)
+        
         # 随机旋转 ±15 度，空白区域用白色填充，旋转后扩展图像
         if "random_rotation" in self._cfg:
             random_rotate = self._cfg["random_rotation"]
@@ -39,6 +49,16 @@ class CustomerImageTransforms:
             img_transform_list.append(self.random_color_jitter)
         
         self.train_img_transform = transforms.Compose(img_transform_list)
+
+        self.random_erase = None
+        if "randomerase" in self._cfg:
+             # p=0.5：50%概率执行；scale=(0.02, 0.33)：擦除区域占比2%~33%
+             self.random_erase = transforms.RandomErasing(
+                 p=self._cfg["randomerase"]["p"], 
+                 scale=self._cfg["randomerase"]["scale"], 
+                 ratio=self._cfg["randomerase"]["ratio"], 
+                 value=self._cfg["randomerase"]["value"]
+                 )
     
     def __call__(self, *inputs: Any) -> Any:
         return self.train_img_transform(*inputs)

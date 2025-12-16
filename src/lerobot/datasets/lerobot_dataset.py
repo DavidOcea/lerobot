@@ -347,7 +347,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
         video_backend: str | None = None,
         batch_encoding_size: int = 1,
         customer_transforms: bool = False,
-        customer_transforms_cfg: dict = {}
+        customer_transforms_cfg: dict = {},
+        only_head_transforms: bool = False,
     ):
         """
         2 modes are available for instantiating this class, depending on 2 different use cases:
@@ -465,6 +466,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.batch_encoding_size = batch_encoding_size
         self.episodes_since_last_encoding = 0
         self.customer_transforms = customer_transforms
+        self.only_head_transforms = only_head_transforms
 
         # Unused attributes
         self.image_writer = None
@@ -742,14 +744,22 @@ class LeRobotDataset(torch.utils.data.Dataset):
             # print("customer_transfomers")
             image_keys = self.meta.camera_keys
             for cam in image_keys:
+                if self.only_head_transforms:
+                    if 'head_cam' not in cam:
+                        continue
                 # import pdb; pdb.set_trace()
                 cam_img = np.transpose(item[cam].cpu().numpy(),(1,2,0))*255   #c h w -> h w c 去归一化（在_query_videos decoder 中/255归一化了）
                 cam_img = Image.fromarray(np.uint8(cam_img)) 
                 # cam_img.save("orcam"+".jpg")
                 cam_img = self.customer_transforms(cam_img)
                 # cam_img.save("cam"+".jpg")
-                item[cam] = self.transform(cam_img)   # h w c -> c h w 并自动归一化 transforms.ToTensor() 自动将像素值从 [0, 255] 缩放到 [0.0, 1.0]（浮点类型）
-
+                cam_img = self.transform(cam_img)   # h w c -> c h w 并自动归一化 transforms.ToTensor() 自动将像素值从 [0, 255] 缩放到 [0.0, 1.0]（浮点类型）
+                item[cam] = cam_img
+                if self.customer_transforms.random_erase != None:
+                    item[cam] = self.customer_transforms.random_erase(cam_img)
+                    # save_img = np.transpose(item[cam].cpu().numpy(),(1,2,0))*255
+                    # save_img= Image.fromarray(np.uint8(save_img)) 
+                    # save_img.save("savam"+".jpg")
         # Add task as a string
         task_idx = item["task_index"].item()
         item["task"] = self.meta.tasks[task_idx]

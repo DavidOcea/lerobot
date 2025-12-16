@@ -98,6 +98,7 @@ class ACTConfig(PreTrainedConfig):
     use_robot_position: bool = False
     # img和position 进行交叉注意力
     img_cross_atten: bool = False
+    use_head_img: bool = True
     
     # Input / output structure.
     n_obs_steps: int = 1

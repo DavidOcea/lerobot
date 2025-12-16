@@ -244,7 +244,7 @@ class PI0Policy(PreTrainedPolicy):
             config.output_features, config.normalization_mapping, dataset_stats
         )
 
-        self.language_tokenizer = AutoTokenizer.from_pretrained("/home/smai/dc_dir/models/paligemma-3b-pt-224")
+        self.language_tokenizer = AutoTokenizer.from_pretrained("/root/workspace/dc_dir/models/paligemma-3b-pt-224")
         self.model = PI0FlowMatching(config)
 
         self.reset()
@@ -485,7 +485,7 @@ class PI0Policy(PreTrainedPolicy):
     def prepare_language(self, batch) -> tuple[Tensor, Tensor]:
         """Tokenize the text input"""
         device = batch[OBS_STATE].device
-        tasks = batch["task"]
+        tasks = batch["task"] if type(batch["task"])==list else [batch["task"]] #推理的时候task往往是一str，导致下面切分的时候没有按照完整语句切片。       
 
         # PaliGemma prompt has to end with a new line
         tasks = [task if task.endswith("\n") else f"{task}\n" for task in tasks]
@@ -608,6 +608,36 @@ class PI0FlowMatching(nn.Module):
         time = time_beta * 0.999 + 0.001
         return time
 
+    def get_patch_size(self):
+        # 获取视觉塔的配置（SigLIP 或其他视觉模型）
+        vision_config = self.paligemma_with_expert.paligemma.vision_tower.config
+        # 从配置中提取 patch 尺寸（通常是 (patch_height, patch_width)）
+        if hasattr(vision_config, "patch_size"):
+            patch_size = vision_config.patch_size
+            # 处理单值（正方形patch）或元组（矩形patch）的情况
+            if isinstance(patch_size, int):
+                patch_h = patch_w = patch_size
+            else:
+                patch_h, patch_w = patch_size
+            return patch_h, patch_w
+        else:
+            raise ValueError("视觉塔配置中未找到 patch_size 参数")
+    
+    def get_patch_size_from_config(self):
+        # 图像尺寸 (H, W)，例如 (224, 224)
+        img_h, img_w = self.config.image_size
+        # patch尺寸，可能是整数（正方形）或元组（矩形）
+        if isinstance(self.config.patch_size, int):
+            patch_h = patch_w = self.config.patch_size
+        else:
+            patch_h, patch_w = self.config.patch_size
+        # 校验：确保图像尺寸能被patch尺寸整除（否则分割会有问题）
+        assert img_h % patch_h == 0 and img_w % patch_w == 0, \
+            f"图像尺寸 ({img_h}, {img_w}) 必须能被 patch 尺寸 ({patch_h}, {patch_w}) 整除"
+        return patch_h, patch_w
+    
+    
+    
     def embed_prefix(
         self, images, img_masks, lang_tokens, lang_masks
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -831,7 +861,7 @@ class PI0FlowMatching(nn.Module):
             use_cache=self.config.use_cache,
             fill_kv_cache=False,
         )
-        suffix_out = outputs_embeds[1]
+        suffix_out = outputs_embeds[1][0]
         suffix_out = suffix_out[:, -self.config.n_action_steps :]
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self.action_out_proj(suffix_out)
