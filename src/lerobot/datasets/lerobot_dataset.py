@@ -748,14 +748,28 @@ class LeRobotDataset(torch.utils.data.Dataset):
                     if 'head_cam' not in cam:
                         continue
                 # import pdb; pdb.set_trace()
-                cam_img = np.transpose(item[cam].cpu().numpy(),(1,2,0))*255   #c h w -> h w c 去归一化（在_query_videos decoder 中/255归一化了）
-                cam_img = Image.fromarray(np.uint8(cam_img)) 
-                # cam_img.save("orcam"+".jpg")
-                cam_img = self.customer_transforms(cam_img)
-                # cam_img.save("cam"+".jpg")
-                cam_img = self.transform(cam_img)   # h w c -> c h w 并自动归一化 transforms.ToTensor() 自动将像素值从 [0, 255] 缩放到 [0.0, 1.0]（浮点类型）
+                if len(item[cam].shape) == 3:
+                    cam_img = np.transpose(item[cam].cpu().numpy(),(1,2,0))*255   #c h w -> h w c 去归一化（在_query_videos decoder 中/255归一化了）
+                    cam_img = Image.fromarray(np.uint8(cam_img)) 
+                    # cam_img.save("orcam"+".jpg")
+                    cam_img = self.customer_transforms(cam_img)
+                    # cam_img.save("cam"+".jpg")
+                    cam_img = self.transform(cam_img)   # h w c -> c h w 并自动归一化 transforms.ToTensor() 自动将像素值从 [0, 255] 缩放到 [0.0, 1.0]（浮点类型）
+                else: # len(shape) == 4
+                    cam_img = np.transpose(item[cam].cpu().numpy(),(0,2,3,1))*255 #b c h w -> b h w c
+                    all_img = []
+                    for img in cam_img:
+                        img = Image.fromarray(np.uint8(img)) 
+                        # cam_img.save("orcam"+".jpg")
+                        img = self.customer_transforms(img)
+                        # cam_img.save("cam"+".jpg")
+                        img = self.transform(img)   # h w c -> c h w 并自动归一化 transforms.ToTensor() 自动将像素值从 [0, 255] 缩放到 [0.0, 1.0]（浮点类型）
+                        all_img.append(img)
+                    cam_img = torch.stack(all_img, dim=0) #合并两个tensor
+                
                 item[cam] = cam_img
                 if self.customer_transforms.random_erase != None:
+                    # 对多张图暂未支持
                     item[cam] = self.customer_transforms.random_erase(cam_img)
                     # save_img = np.transpose(item[cam].cpu().numpy(),(1,2,0))*255
                     # save_img= Image.fromarray(np.uint8(save_img)) 
