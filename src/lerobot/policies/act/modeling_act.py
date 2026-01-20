@@ -148,6 +148,20 @@ class ACTPolicy(PreTrainedPolicy):
                 batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features if 'head_cam' not in key]
 
         actions = self.model(batch)[0]
+
+        # 相对角度推理：将相对角度转换回绝对角度
+        if self.config.use_relative_action and "observation.state" in batch:
+            # 在归一化空间中恢复绝对角度: action_norm + state_norm
+            # actions shape: (B, chunk_size, action_dim)
+            # state shape: (B, action_dim) -> 需要扩展为 (B, chunk_size, action_dim)
+            state_norm = batch["observation.state"]
+            if self.config.only_first_step:
+                # 只对第一步恢复绝对角度
+                actions[:, 0:1, :] = actions[:, 0:1, :] + state_norm.unsqueeze(1)
+            else:
+                state_expanded = state_norm.unsqueeze(1).expand_as(actions)
+                actions = actions + state_expanded
+
         actions = self.unnormalize_outputs({ACTION: actions})[ACTION]
         return actions
 
@@ -163,6 +177,21 @@ class ACTPolicy(PreTrainedPolicy):
                 batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features if 'head_cam' not in key]
 
         batch = self.normalize_targets(batch)
+
+        # 相对角度训练：在归一化空间中将 action 转换为相对角度
+        if self.config.use_relative_action and "observation.state" in batch:
+            if self.config.only_first_step:
+                # 重要：只对第一步（chunk[0]）计算相对角度，避免累积误差
+                state_expanded = batch["observation.state"].unsqueeze(1)  # (B, 1, action_dim)
+                # 只修改 chunk 的第一步：action[0] = action[0] - state
+                # 其他步保持绝对角度（避免累积误差）
+                batch["action"][:, 0:1, :] = batch["action"][:, 0:1, :] - state_expanded
+            else:
+                # action shape: (B, chunk_size, action_dim)
+                # state shape: (B, action_dim) -> 需要扩展为 (B, chunk_size, action_dim)
+                state_expanded = batch["observation.state"].unsqueeze(1).expand_as(batch["action"])
+                batch["action"] = batch["action"] - state_expanded
+
         actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
 
         l1_loss = (

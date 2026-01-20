@@ -99,6 +99,10 @@ class ACTConfig(PreTrainedConfig):
     # img和position 进行交叉注意力
     img_cross_atten: bool = False
     use_head_img: bool = True
+    # 使用相对角度训练 (action = target_angle - current_angle)
+    use_relative_action: bool = False
+    # 仅对chunk第一步使用相对角度 
+    only_first_step: bool = False
     
     # Input / output structure.
     n_obs_steps: int = 1
