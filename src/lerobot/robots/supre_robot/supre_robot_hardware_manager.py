@@ -1,10 +1,13 @@
 import yaml
+
+import os
 from typing import List, Dict, Any, Tuple
 
 # 导入你提供的两个硬件类
 # 假设它们在名为 eyou_hardware.py 和 gripper_hardware.py 的文件中
-from lerobot.motors.eyou import EyouMotorHardware
+from lerobot.motors.eyou import EyouMotorHardware,AsyncInterpolator
 from lerobot.motors.gripper import JodellGripperHardware
+from lerobot.utils.monitor_utils import monitor_performance
 
 class SupreRobotHardwareManager:
     """
@@ -18,7 +21,7 @@ class SupreRobotHardwareManager:
         "JodellGripperHardware": JodellGripperHardware,
     }
 
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str,control_frequency:float = 30,use_interpolation:bool = False):
         """
         构造函数。
         :param config_path: 指向 robot_config.yaml 文件的路径。
@@ -43,8 +46,12 @@ class SupreRobotHardwareManager:
         # 全局状态和指令向量
         self.positions = [0.0] * self.num_joints
         self.velocities = [0.0] * self.num_joints
+        self.forces = [0.0] * self.num_joints
+
         self.commands = [0.0] * self.num_joints
 
+        self.use_interpolation = use_interpolation
+        self.control_frequency = control_frequency 
     def init(self) -> bool:
         """
         根据配置初始化所有硬件接口并构建映射表。
@@ -61,11 +68,19 @@ class SupreRobotHardwareManager:
             hw_class = self.HARDWARE_TYPE_MAP[hw_type_str]
             instance = hw_class()
             
+
+            # 如果需要，创建插值器
+            if self.use_interpolation:
+                interpolation_config = {}
+                interpolation_config["control_frequency"]=self.control_frequency
+                interpolation_config["interpolation_n"]=hw_info["interpolation"]["interpolation_n"]
+                instance = AsyncInterpolator(instance, interpolation_config)
+
             # 初始化硬件
             if not instance.init(hw_info["config"]):
                 print(f"Error: Failed to initialize hardware '{hw_info['name']}'")
                 return False
-                
+                        
             self._hardware_instances.append(instance)
             print(f"Successfully created and initialized '{hw_info['name']}' of type '{hw_type_str}'")
 
@@ -116,14 +131,13 @@ class SupreRobotHardwareManager:
         for instance in self._hardware_instances:
             instance.deactivate()
         print("All hardware deactivated.")
-
-    def read(self) ->  List[float]:
+    def read(self) ->  Tuple[List[float],List[float]]:
         """
         从所有硬件读取数据，并聚合成全局状态向量。
         """
         # 1. 从每个硬件读取数据
         hw_results = {inst: inst.read() for inst in self._hardware_instances}
-
+        print(f"Results from hardware:{hw_results}")
         # 2. 使用映射表填充全局状态向量
         for global_index in range(self.num_joints):
             mapping = self._joint_map[global_index]
@@ -135,16 +149,25 @@ class SupreRobotHardwareManager:
             # 根据硬件类型适配不同的返回值
             if isinstance(instance, EyouMotorHardware):
                 # EyouMotorHardware.read() -> Tuple[List[float], List[float]]
-                self.positions[global_index] = result[hw_index]
+                self.positions[global_index] = result[hw_index][0]
                 self.velocities[global_index] = 0.0
+                self.forces[global_index] = result[hw_index][1]
+
             elif isinstance(instance, JodellGripperHardware):
                 # JodellGripperHardware.read() -> list[float | None]
-                pos = result[hw_index]
+                pos = result[hw_index][0]
+                force = result[hw_index][1]
                 self.positions[global_index] = pos if pos is not None else self.positions[global_index] # 保持旧值如果读取失败
                 self.velocities[global_index] = 0.0 # 夹爪没有速度反馈
-        
-        return list(self.positions)
-
+                self.forces[global_index] = force if force is not None else self.forces[global_index]
+            else:
+                pos = result[hw_index]
+                force = result[hw_index][1]
+                self.velocities[global_index] = 0.0
+                self.positions[global_index] = pos if pos is not None else self.positions[global_index] # 保持旧值如果读取失败                
+                self.forces[global_index] = force if force is not None else self.forces[global_index]
+       
+        return (list(self.positions),list(self.forces))
     def write(self, command_positions: List[float]):
         """
         接收全局指令向量，并分发到各个硬件。
@@ -160,7 +183,8 @@ class SupreRobotHardwareManager:
         hw_commands = {}
         for instance in self._hardware_instances:
             # 获取该硬件控制的关节数量并创建指令列表
-            num_hw_joints = len(instance.joint_names_) if hasattr(instance, 'joint_names_') else len(instance.slave_ids)
+            #num_hw_joints = len(instance.joint_names_) if hasattr(instance, 'joint_names_') else len(instance.slave_ids)
+            num_hw_joints = instance.get_joint_count()
             hw_commands[instance] = [None] * num_hw_joints
 
         # 2. 遍历全局指令，使用映射表分发

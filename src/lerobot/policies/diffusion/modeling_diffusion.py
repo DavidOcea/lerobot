@@ -103,8 +103,11 @@ class DiffusionPolicy(PreTrainedPolicy):
     def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
         """Predict a chunk of actions given environment observations."""
         # stack n latest observations from the queue
+        print("11111---")
         batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
+        print("22222---")
         actions = self.diffusion.generate_actions(batch)
+        print("33333---")
 
         # TODO(rcadene): make above methods return output dictionary?
         actions = self.unnormalize_outputs({ACTION: actions})[ACTION]

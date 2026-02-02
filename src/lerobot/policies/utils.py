@@ -18,6 +18,7 @@ from collections import deque
 
 import torch
 from torch import nn
+import logging
 
 
 def populate_queues(
@@ -83,4 +84,3 @@ def log_model_loading_keys(missing_keys: list[str], unexpected_keys: list[str]) 
         logging.warning(f"Missing key(s) when loading model: {missing_keys}")
     if unexpected_keys:
         logging.warning(f"Unexpected key(s) when loading model: {unexpected_keys}")
-

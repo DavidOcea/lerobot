@@ -285,7 +285,7 @@ def record_loop(
 
         dt_s = time.perf_counter() - start_loop_t
         busy_wait(1 / fps - dt_s)
-
+        print(f"sleep time: {1/fps - dt_s}")
         timestamp = time.perf_counter() - start_episode_t
 
 

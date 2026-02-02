@@ -30,7 +30,7 @@ cameras: {}
 
 # Maximum relative joint movement in degrees per control step.
 # Corresponds to: max_relative_joint_move: float
-max_relative_joint_move: 30.0
+max_relative_joint_move: 10.0 #30.0
 
 # Port for the Prometheus monitoring server. Use `null` for None.
 # Corresponds to: prometheus_port: int | None

@@ -1,5 +1,4 @@
 # robot_config.yaml
-
 # 定义机器人所有关节的官方顺序。上层控制程序将严格按照这个顺序来读写数据。
 joint_order:
   - left_arm_joint_1
@@ -19,9 +18,11 @@ joint_order:
 
 # 定义所有硬件接口的实例
 hardware_interfaces:
-  # 左臂电机控制器
+  # 电机控制器
   - name: arm_motors
     type: EyouMotorHardware  # 这个名字必须与管理器中的映射匹配
+    interpolation:
+      interpolation_n: 3
     config:
       can_device_index: 1
       can_baud_rate: "1M"
@@ -41,6 +42,8 @@ hardware_interfaces:
   # 左臂夹爪控制器
   - name: left_gripper
     type: JodellGripperHardware
+    interpolation:
+      interpolation_n: 1
     config:
       device: "/dev/ttyTHS1" # <-- 注意修改为你的实际设备
       baud_rate": 115200
@@ -53,6 +56,8 @@ hardware_interfaces:
   # 右臂夹爪控制器
   - name: right_gripper
     type: JodellGripperHardware
+    interpolation:
+      interpolation_n: 1
     config:
       device: "/dev/ttyTHS2" # <-- 注意修改为你的实际设备
       baud_rate": 115200

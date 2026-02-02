@@ -32,7 +32,7 @@ def main():
             loop_start = time.perf_counter()
             
             # a. Read: 从管理器读取整个机器人的状态
-            current_positions = robot_manager.read()
+            current_positions = robot_manager.read()[0]
             
             # 打印状态（简化版，只打印部分关节）
             print(f"Time: {time.time() - start_loop_time:5.2f}s | "

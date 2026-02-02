@@ -27,10 +27,11 @@ from lerobot.optim.schedulers import (
 class SmolVLAConfig(PreTrainedConfig):
 
     # 增加一个cfg用来控制是否用state
-    use_state: bool = False
+    use_state: bool = True
     # 使用state_dropout
     state_dropout = 0.0
-    
+
+
     # Input / output structure.
     n_obs_steps: int = 1
     chunk_size: int = 50

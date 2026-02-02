@@ -143,10 +143,7 @@ class PolicyServer(async_inference_pb2_grpc.AsyncInferenceServicer):
         policy_class = get_policy_class(self.policy_type)
 
         start = time.perf_counter()
-        self.policy = policy_class.from_pretrained(
-            policy_specs.pretrained_name_or_path,
-            local_files_only=True
-            )
+        self.policy = policy_class.from_pretrained(policy_specs.pretrained_name_or_path)
         self.policy.to(self.device)
         end = time.perf_counter()
 
@@ -322,7 +319,10 @@ class PolicyServer(async_inference_pb2_grpc.AsyncInferenceServicer):
 
     def _get_action_chunk(self, observation: dict[str, torch.Tensor]) -> torch.Tensor:
         """Get an action chunk from the policy. The chunk contains only"""
+        print(observation.keys())
         chunk = self.policy.predict_action_chunk(observation)
+        # dp 专属
+        # chunk = self.policy.select_action(observation)
         if chunk.ndim != 3:
             chunk = chunk.unsqueeze(0)  # adding batch dimension, now shape is (B, chunk_size, action_dim)
 

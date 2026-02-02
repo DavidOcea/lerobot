@@ -24,6 +24,8 @@ hardware_interfaces:
   # 左臂电机控制器
   - name: arm_motors
     type: EyouMotorHardware  # 这个名字必须与管理器中的映射匹配
+    interpolation:
+      interpolation_n: 1
     config:
       can_device_index: 0
       can_baud_rate: "1M"

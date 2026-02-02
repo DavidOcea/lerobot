@@ -1,5 +1,8 @@
 import time
 import jodell_gripper_py # 导入 pybind11 生成的模块
+from ..eyou.hardware_interface import HardwareInterface
+from lerobot.utils.monitor_utils import monitor_performance
+from typing import List, Dict, Any, Tuple, Optional
 
 # --- 辅助函数 (保持不变) ---
 
@@ -12,12 +15,16 @@ def convert_from_gripper_position(position_uint8: int) -> float:
     """将 0-255 的整数位置转换为 0.0-1.0 范围的浮点数。"""
     return float(position_uint8) / 255.0
 
+def convert_from_gripper_force(force_uint8: int) -> float:
+    """将 0-255 的整数位置转换为 0.0-1.0 范围的浮点数。"""
+    return float(force_uint8) / 255.0
+
 def convert_to_gripper_percentage(percentage: int) -> int:
     """将 0-100 的百分比转换为 0-255 的整数。"""
     percentage = max(0, min(100, percentage))
     return int(percentage * 255 / 100)
 
-class JodellGripperHardware:
+class JodellGripperHardware(HardwareInterface):
     """
     一个模仿 ros2_control HardwareInterface 风格的 Jodell 夹爪 Python 控制类。
     """
@@ -36,6 +43,12 @@ class JodellGripperHardware:
         # 模仿 ros2_control 的状态和命令向量
         self.hw_commands_position = []
         self.hw_states_position = []
+        self.hw_states_force = []    
+
+        # --- 新增：缓存相关变量 ---
+        self._cache_duration_seconds = 0.034  # 默认缓存50毫秒
+        self._last_read_time = 0.0           # 上次真实读取的时间戳
+        self._cached_values = []          # 缓存的位置数据
 
     def init(self, config: dict) -> bool:
         # ... 此方法保持不变 ...
@@ -48,7 +61,9 @@ class JodellGripperHardware:
             baud_rate = self.config.get("baud_rate", 115200)
             self.default_speed_percent = self.config.get("default_speed_percent", 50)
             self.default_force_percent = self.config.get("default_torque_percent", 50)
-            
+            # --- 新增：从配置中读取缓存时间 ---
+            self._cache_duration_seconds = self.config.get("cache_duration_seconds", 0.034)
+                        
             # 2. 验证并解析 "joints"
             if "joints" not in self.config or not self.config["joints"]:
                 print("Error: Configuration must contain a non-empty 'joints' list.")
@@ -58,6 +73,10 @@ class JodellGripperHardware:
             self.slave_ids = [0] * num_joints
             self.hw_commands_position = [None] * num_joints
             self.hw_states_position = [0.0] * num_joints
+            self.hw_states_force = [0.0] * num_joints
+
+            # --- 新增：初始化缓存列表 ---
+            self._cached_values = [(None,None)] * num_joints
 
             for i, joint_info in enumerate(self.config["joints"]):
                 slave_id = int(joint_info["parameters"]["slave_id"])
@@ -132,10 +151,21 @@ class JodellGripperHardware:
             self.gripper_bus = None
             print("Bus disconnected.")
             
-        return True
-    
-    def read(self) -> list[float | None]:
-        # ... 此方法保持不变 ...
+        return True    
+    def read(self) -> List[Tuple[Optional[float], Optional[float]]]:
+        """
+        从所有夹爪读取当前位置。
+        此方法实现了缓存机制：如果距离上次真实读取的时间小于 cache_duration_seconds，
+        则直接返回缓存的数据，否则执行硬件读取并更新缓存。
+        """
+        now = time.monotonic()
+        
+        # 1. 检查缓存是否有效
+        if (now - self._last_read_time) < self._cache_duration_seconds:
+            # 缓存命中，直接返回缓存值
+            return self._cached_values
+
+        # 2. 缓存失效，执行硬件读取
         if not self.gripper_clients:
             return [None] * len(self.slave_ids)
 
@@ -143,11 +173,17 @@ class JodellGripperHardware:
             try:
                 status = client.get_status()
                 self.hw_states_position[i] = convert_from_gripper_position(status.position)
+                self.hw_states_force[i] = convert_from_gripper_force(status.force_current)
             except RuntimeError as e:
                 print(f"Warning: Failed to read status from slave_id {self.slave_ids[i]}: {e}")
-                self.hw_states_position[i] = None 
+                self.hw_states_position[i] = None
+                self.hw_states_force[i] = None
         
-        return self.hw_states_position
+        # 3. 更新缓存和时间戳
+        self._cached_values = list(zip(self.hw_states_position, self.hw_states_force)) # 使用 .copy() 是个好习惯
+        self._last_read_time = now
+        
+        return list(zip(self.hw_states_position, self.hw_states_force))
     
     # --- MODIFICATION ---
     def write(self, commands: list[float | None]) -> bool:
@@ -197,7 +233,8 @@ class JodellGripperHardware:
         self.hw_commands_position = [None] * len(self.gripper_clients)
         
         return all_success
-
+    def get_joint_count(self) -> int:
+        return len(self.slave_ids)
 
 # --- 使用示例 (与第一个版本相同) ---
 if __name__ == "__main__":
@@ -261,3 +298,4 @@ if __name__ == "__main__":
         print("\n--- Deactivating hardware ---")
         gripper_hardware.deactivate()
         print("Program finished.")
+

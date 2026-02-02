@@ -122,8 +122,10 @@ class SupreRobotLeader(Teleoperator):
         if not self.is_connected:
             raise RuntimeError("Leader teleoperator is not connected.")
 
-        positions = self._hardware_manager.read()
-
+        hd_readings = self._hardware_manager.read()
+        positions = hd_readings[0]
+        forces = hd_readings[1]
+        
         pos_map = dict(zip(self.observation_joint_names, positions))
         action_value = {}
         for i in range(len(self.observation_joint_names)):

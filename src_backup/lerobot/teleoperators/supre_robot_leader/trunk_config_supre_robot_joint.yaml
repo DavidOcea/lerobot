@@ -1,0 +1,46 @@
+# robot_config.yaml
+
+# 定义机器人所有关节的官方顺序。上层控制程序将严格按照这个顺序来读写数据。
+joint_order:
+  - left_arm_joint_1
+  - left_arm_joint_2
+  - left_arm_joint_3
+  - left_arm_joint_4
+  - left_arm_joint_5
+  - left_arm_joint_6
+  - left_arm_joint_7
+  - right_arm_joint_1
+  - right_arm_joint_2
+  - right_arm_joint_3
+  - right_arm_joint_4
+  - right_arm_joint_5
+  - right_arm_joint_6
+  - right_arm_joint_7
+  - trunk_joint_1
+  - trunk_joint_2
+
+# 定义所有硬件接口的实例
+hardware_interfaces:
+  # 左臂电机控制器
+  - name: arm_motors
+    type: EyouMotorHardware  # 这个名字必须与管理器中的映射匹配
+    config:
+      can_device_index: 0
+      can_baud_rate: "1M"
+      joints:
+        - { name: left_arm_joint_1, parameters: { node_id: 22 ,start_enabled: false } }
+        - { name: left_arm_joint_2, parameters: { node_id: 21 ,start_enabled: false } }
+        - { name: left_arm_joint_3, parameters: { node_id: 23 ,start_enabled: false } }
+        - { name: left_arm_joint_4, parameters: { node_id: 24 ,start_enabled: false } }
+        - { name: left_arm_joint_5, parameters: { node_id: 25 ,start_enabled: false } }
+        - { name: left_arm_joint_6, parameters: { node_id: 26 ,start_enabled: false } }
+        - { name: left_arm_joint_7, parameters: { node_id: 27 ,start_enabled: false } }
+        - { name: right_arm_joint_1, parameters: { node_id: 12 ,start_enabled: false } }
+        - { name: right_arm_joint_2, parameters: { node_id: 11 ,start_enabled: false } }
+        - { name: right_arm_joint_3, parameters: { node_id: 13 ,start_enabled: false } }
+        - { name: right_arm_joint_4, parameters: { node_id: 14 ,start_enabled: false } }
+        - { name: right_arm_joint_5, parameters: { node_id: 15 ,start_enabled: false } }
+        - { name: right_arm_joint_6, parameters: { node_id: 16 ,start_enabled: false } }
+        - { name: right_arm_joint_7, parameters: { node_id: 17 ,start_enabled: false } }
+        - { name: trunk_joint_1, parameters: { node_id: 1 ,start_enabled: false } }
+        - { name: trunk_joint_2, parameters: { node_id: 2 ,start_enabled: false } }

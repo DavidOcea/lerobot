@@ -98,18 +98,25 @@ def replay(cfg: ReplayConfig):
     robot.connect()
 
     log_say("Replaying episode", cfg.play_sounds, blocking=True)
-    for idx in range(dataset.num_frames):
-        start_episode_t = time.perf_counter()
+    while True:
+        start_time = time.perf_counter()
+        for idx in range(dataset.num_frames):
+            start_episode_t = time.perf_counter()
 
-        action_array = actions[idx]["action"]
-        action = {}
-        for i, name in enumerate(dataset.features["action"]["names"]):
-            action[name] = action_array[i]
+            action_array = actions[idx]["action"]
+            action = {}
+            for i, name in enumerate(dataset.features["action"]["names"]):
+                action[name] = action_array[i]
 
-        robot.send_action(action)
+            robot.send_action(action)
 
-        dt_s = time.perf_counter() - start_episode_t
-        busy_wait(1 / dataset.fps - dt_s)
+            dt_s = time.perf_counter() - start_episode_t
+            busy_wait(1 / dataset.fps - dt_s)
+            
+            dur_time = time.perf_counter() - start_time
+            print("ssfdfsfsf:", dur_time)
+            if dur_time > 85:
+                break
 
     robot.disconnect()
 

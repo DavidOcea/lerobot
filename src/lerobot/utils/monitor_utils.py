@@ -40,13 +40,7 @@ def monitor_performance(func):
         avg_duration = wrapper.total_duration / wrapper.call_count
 
         # --- 6. 打印报告 ---
-        print(f"--- Function '{func.__name__}' Monitor ---")
-        print(f"  Call #{wrapper.call_count}")
-        print(f"  Duration (本次时长): {duration:.6f} s")
-        print(f"  Interval (调用间隔): {interval:.6f} s")
-        print(f"  Frequency (瞬时频率): {frequency:.2f} Hz")
-        print(f"  Average Duration (平均时长): {avg_duration:.6f} s")
-        print("-" * (len(func.__name__) + 24))
+        print(f"--- Function '{func.__qualname__} ' Monitor --- Call #{wrapper.call_count} Duration: {duration:.6f} s Interval: {interval:.6f} s Frequency: {frequency:.2f} Hz Average Duration: {avg_duration:.6f} s")
 
         return result
     

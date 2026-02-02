@@ -4,8 +4,10 @@ from typing import List, Dict, Any, Tuple, Optional
 import datetime
 # 导入更新后的 eu_motor_py 绑定
 import eu_motor_py 
+from .hardware_interface import HardwareInterface
+from lerobot.utils.monitor_utils import monitor_performance
 
-class EyouMotorHardware:
+class EyouMotorHardware(HardwareInterface):
     """
     一个模仿 supre_robot_control::EyouSystemInterface 的 Python 类。
     
@@ -24,6 +26,8 @@ class EyouMotorHardware:
         # --- 恢复内部状态和指令存储 ---
         self.hw_states_positions_: List[float] = []
         self.hw_states_velocities_: List[float] = []
+        self.hw_states_torques_: List[float] = []
+
         self.hw_commands_positions_: List[float] = []
         self.hw_start_enabled_: List[bool] = []
         
@@ -59,6 +63,8 @@ class EyouMotorHardware:
             num_joints = len(self._config["joints"])
             self.hw_states_positions_ = [0.0] * num_joints
             self.hw_states_velocities_ = [0.0] * num_joints
+            self.hw_states_torques_ = [0.0] * num_joints
+
             self.hw_commands_positions_ = [0.0] * num_joints
             self.hw_start_enabled_ = [True] * num_joints # 默认全部启用
 
@@ -125,8 +131,12 @@ class EyouMotorHardware:
             for i, motor in enumerate(self.motor_nodes_):
                 pos = motor.get_position()
                 vel = motor.get_velocity()
+                torque = motor.get_torque()
+
                 self.hw_states_positions_[i] = pos
                 self.hw_states_velocities_[i] = vel
+                self.hw_states_torques_[i] = float(torque)
+
                 self.hw_commands_positions_[i] = pos # 防止启动时跳动
                 print(f"Initial state for {self.joint_names_[i]}: Pos={pos:.2f}, Vel={vel:.2f}")
 
@@ -159,8 +169,7 @@ class EyouMotorHardware:
 
         print("Activation successful.")
         return True
-
-    def read(self) -> list[float | None]:
+    def read(self) -> List[Tuple[Optional[float], Optional[float]]]:
         """
         更新内部状态并返回一份新的状态拷贝。
         
@@ -172,10 +181,14 @@ class EyouMotorHardware:
             if feedback.last_update_time > datetime.timedelta(0):
                 self.hw_states_positions_[i] = feedback.position_deg
                 self.hw_states_velocities_[i] = feedback.velocity_dps
+                self.hw_states_torques_[i] = float(feedback.torque_milli)/1000.0
         
         # 返回内部状态的拷贝，防止外部代码意外修改
-        return list(self.hw_states_positions_)
-
+        return list(zip(self.hw_states_positions_, self.hw_states_torques_))
+    def busy_wait(self, wait_time_s):
+        end_time = time.perf_counter() + wait_time_s
+        while time.perf_counter() < end_time:
+            pass    
     def write(self, commands_positions: List[float]):
         """
         用传入的指令更新内部指令，然后发送到硬件。
@@ -194,6 +207,8 @@ class EyouMotorHardware:
                 result = motor.send_csp_target_position(self.hw_commands_positions_[i],0, False)
                 if result != 0:
                     print(f"Error: Failed to send command to joint {self.joint_names_[i]}")
+                if i!=0 and i%6==0:
+                    self.busy_wait(0.001)
                 any_motor_enabled = True
 
         #if any_motor_enabled:
@@ -225,6 +240,9 @@ class EyouMotorHardware:
             print(f"Error during deactivation: {e}")
         print("Deactivation successful.")
 
+    def get_joint_count(self) -> int:
+        """返回硬件中的电机数量。"""
+        return len(self.motor_nodes_)
 
 # --- 主程序：演示如何使用混合模式的硬件接口 ---
 if __name__ == "__main__":

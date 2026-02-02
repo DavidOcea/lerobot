@@ -30,9 +30,9 @@ def main():
         # 3. 发送策略配置
         print("发送策略配置...")
         policy_config = RemotePolicyConfig(
-            policy_type="dummy",  # 使用简单测试策略
-            pretrained_name_or_path="test",
-            device="cpu",
+            policy_type="act",  # 使用简单测试策略
+            pretrained_name_or_path="/home/smai/workspace/dc_dir/lerobot_0901_pybullet/outputs/train/act_0923_2/checkpoints/last/pretrained_model",
+            device="cuda",
             actions_per_chunk=5,
             lerobot_features={"joints": ["j1", "j2", "j3"]}
         )
@@ -62,7 +62,7 @@ def main():
             # obs_request = services_pb2.Observations(
             #     data=pickle.dumps([mock_observation])
             # )
-            obs_request = async_inference_pb2.Observations(
+            obs_request = async_inference_pb2.Observation(
                 data=pickle.dumps([mock_observation])
             )
             stub.SendObservations(obs_request)

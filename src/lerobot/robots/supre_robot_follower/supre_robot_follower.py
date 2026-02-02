@@ -4,11 +4,13 @@ import time
 import math
 from typing import Any, Dict, List, Optional, Tuple, Type
 from pathlib import Path
+import threading
+import queue
+import os
 
 import yaml
 import numpy as np
 import dataclasses
-
 # 导入我们之前设计的硬件管理器
 from lerobot.robots.supre_robot import SupreRobotHardwareManager
 # from eyou_hardware import EyouMotorHardware  # Manager will import these
@@ -20,7 +22,9 @@ from functools import cached_property
 from lerobot.utils.prometheus_manager import prometheus_manager
 import logging
 from lerobot.cameras.utils import make_cameras_from_configs
+from lerobot.utils.monitor_utils import monitor_performance
 
+#logging.basicConfig(level=logging.DEBUG)
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +75,18 @@ class SupreRobotFollower(Robot):
             # 从管理器获取共享的 Gauge 对象
             self.joint_position_gauge = prometheus_manager.get_gauge('joint_position')
 
+        self._use_interpolation = os.getenv('SUPRE_ROBOT_INTERPOLATION_ENABLED', 'false').lower() == 'true'
+
+        if self._use_interpolation:
+            logger.info("Interpolation mode is ENABLED via environment variable.")
+            # 使用 maxsize=1 的队列，它天然只保存最新的目标
+        else:
+            logger.info("Interpolation mode is DISABLED. Using direct command sending.")
 
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
-        return {**self._motors_ft, **self._cameras_ft}
+        return {**self._motors_ft, **self._cameras_ft, **self._force_ft}
+        # return {**self._motors_ft, **self._cameras_ft}
     @cached_property
     def action_features(self) -> dict[str, type]:
         return self._motors_ft
@@ -91,7 +103,7 @@ class SupreRobotFollower(Robot):
             return
 
         print(f"Connecting to {self.name} using config '{self.config.joint_config_path}'...")
-        self._hardware_manager = SupreRobotHardwareManager(config_path=self.config.joint_config_path)
+        self._hardware_manager = SupreRobotHardwareManager(config_path=self.config.joint_config_path,control_frequency=self.config.control_frequency,use_interpolation=self._use_interpolation)
         
         try:
             if not self._hardware_manager.init():
@@ -143,16 +155,26 @@ class SupreRobotFollower(Robot):
             raise RuntimeError("Cannot configure while disconnected.")
         print("Hardware is already configured on connect. Skipping.")
         pass
-
+    @monitor_performance
     def get_observation(self) -> dict[str, Any]:
         """从机器人获取当前观测值。"""
         if not self.is_connected:
             raise RuntimeError("Robot is not connected.")
         
-        positions = self._hardware_manager.read()
-        
-        obs_dict = {f"{self.observation_joint_names[i]}.pos": positions[i] for i in range(len(self.observation_joint_names))}
+        hd_readings = self._hardware_manager.read()
+        positions = hd_readings[0]
+        forces = hd_readings[1]
+        print("forces: ", forces)
+        # obs_dict = {f"{self.observation_joint_names[i]}.pos": positions[i] for i in range(len(self.observation_joint_names))}
+        obs_dict = {}
+        for i in range(len(self.observation_joint_names)):
+            joint_name = self.observation_joint_names[i]
+            # 添加关节位置
+            obs_dict[f"{joint_name}.pos"] = positions[i]
+            # 添加关节力/力矩
+            obs_dict[f"{joint_name}.force"] = forces[i]
 
+        print("obs_dict: ", obs_dict)
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
             obs_dict[cam_key] = cam.async_read()
@@ -165,8 +187,10 @@ class SupreRobotFollower(Robot):
         if not self.is_connected:
             raise RuntimeError("Robot is not connected.")
         
-        positions = self._hardware_manager.read()
+        positions = self._hardware_manager.read()[0]
         
+        pos_dict = {f"{self.observation_joint_names[i]}": positions[i] for i in range(len(self.observation_joint_names))}
+        print("current_pos: ", pos_dict)
         return {self.observation_joint_names[i]: positions[i] for i in range(len(self.observation_joint_names))}
 
     def _prepare_and_clamp_action(self, action: dict[str, Any]) -> Tuple[List[float], Dict[str, Any]]:
@@ -175,7 +199,7 @@ class SupreRobotFollower(Robot):
 
         action_pos = {key.removesuffix(".pos"): val for key, val in action.items()}
 
-        ensure_safe = False
+        ensure_safe = True
         if ensure_safe:
             # 1. --- GET CURRENT STATE (Now much cleaner!) ---
             present_positions_map = self.get_current_position()
@@ -286,6 +310,7 @@ class SupreRobotFollower(Robot):
         }
         
         return final_clamped_positions, final_action    
+    @monitor_performance
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         """向机器人发送动作指令。"""
         if not self.is_connected:
@@ -293,8 +318,11 @@ class SupreRobotFollower(Robot):
         logger.debug(f"Sending action: {action}")
         # 1. 调用辅助方法来完成所有的计算和安全检查
         final_target_positions, final_action_dict = self._prepare_and_clamp_action(action)
-
+        print("final_target_positions: ",final_target_positions)
         # 2. 将计算结果发送到硬件
+        # 2. 根据是否启用插值，选择不同的发送方式
+
+        # --- 直接发送逻辑 ---
         self.send_target_position(final_target_positions)
 
         
@@ -310,6 +338,7 @@ class SupreRobotFollower(Robot):
             return
         
         print("Disconnecting from robot...")
+                        
         try:
             if self._hardware_manager:
                 self._hardware_manager.deactivate()
@@ -330,6 +359,10 @@ class SupreRobotFollower(Robot):
     @property
     def _motors_ft(self) -> dict[str, type]:
         return {f"{motor}.pos": float for motor in self.observation_joint_names}   
+
+    @property
+    def _force_ft(self) -> dict[str, type]:
+        return {f"{motor}.force": float for motor in self.observation_joint_names}   
         
     def execute_trajectory(self, goal_action: dict[str, Any], duration: float = 1.0) -> None:
         """

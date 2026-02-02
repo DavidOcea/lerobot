@@ -117,8 +117,8 @@ def teleop_loop(
 
         robot.send_action(action)
         dt_s = time.perf_counter() - loop_start
+        print(f"loop time: {dt_s * 1e3:.6f}ms ({1 / dt_s:.0f} Hz)")
         busy_wait(1 / fps - dt_s)
-
         loop_s = time.perf_counter() - loop_start
 
         print("\n" + "-" * (display_len + 10))

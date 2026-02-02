@@ -1,0 +1,124 @@
+# -----------------------------------------------------------------
+# Main configuration file for SupreRobot teleoperation
+#
+# How to use:
+#   python teleoperate.py --config_path /path/to/this/file.yaml
+# -----------------------------------------------------------------
+
+# ===============================================
+# Teleoperator (Leader) Configuration
+# ===============================================
+teleop:
+  # Specifies which subclass of TeleoperatorConfig to use.
+  # This matches the name in `@TeleoperatorConfig.register_subclass("supre_robot_leader")`
+  type: supre_robot_leader
+
+  # Path to the joint configuration file for the leader robot.
+  # Corresponds to: SupreRobotLeaderConfig.joint_config_path
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
+
+  # Direction multipliers for each joint.
+  # Corresponds to: joint_direction: list
+  joint_direction:
+    - -1
+    - -1
+    - 1
+    - 1
+    - 1
+    - -1
+    - 1
+    - -1
+    - -1
+    - 1
+    - 1
+    - 1
+    - -1
+    - 1
+    - 1
+    - 1
+# ===============================================
+# Robot (Follower) Configuration
+# ===============================================
+robot:
+  # Specifies which subclass of RobotConfig to use.
+  # This matches the name in `@RobotConfig.register_subclass("supre_robot_follower")`
+  type: supre_robot_follower
+
+  # Path to the joint configuration file for the follower robot.
+  # Corresponds to: SupreRobotFollowerConfig.joint_config_path
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
+
+  # Dictionary of camera configurations.
+  # Corresponds to: cameras: dict[str, CameraConfig]
+  cameras: {}
+
+
+
+  # Maximum relative joint movement in degrees per control step.
+  # Corresponds to: max_relative_joint_move: float
+  max_relative_joint_move: 30.0
+
+  # Port for the Prometheus monitoring server. Use `null` for None.
+  # Corresponds to: prometheus_port: int | None
+  prometheus_port: 8000
+
+  # Control loop frequency in Hz.
+  # Corresponds to: control_frequency: int
+  control_frequency: 30
+
+  # List of motor calibration settings for each joint.
+  # Corresponds to: calibration: list[MotorCalibration]
+  calibration:
+    # --- Left Arm ---
+    - joint_name: "left_arm_joint_1"
+      min_position: -160.0
+      max_position: 160.0
+    - joint_name: "left_arm_joint_2"
+      min_position: -90.0
+      max_position: 0.0
+    - joint_name: "left_arm_joint_3"
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: "left_arm_joint_4"
+      min_position: -90.0
+      max_position: 0.0
+    - joint_name: "left_arm_joint_5"
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: "left_arm_joint_6"
+      min_position: -90.0
+      max_position: 90.0
+    - joint_name: "left_arm_joint_7"
+      min_position: 0.0
+      max_position: 1.0
+
+    # --- Right Arm ---
+    - joint_name: "right_arm_joint_1"
+      min_position: -160.0
+      max_position: 160.0
+    - joint_name: "right_arm_joint_2"
+      min_position: 0.0
+      max_position: 90.0
+    - joint_name: "right_arm_joint_3"
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: "right_arm_joint_4"
+      min_position: 0.0
+      max_position: 90.0
+    - joint_name: "right_arm_joint_5"
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: "right_arm_joint_6"
+      min_position: -90.0
+      max_position: 90.0
+    - joint_name: "right_arm_joint_7"
+      min_position: 0.0
+      max_position: 1.0
+      
+    # --- Trunk ---
+    - joint_name: "trunk_joint_1"
+      min_position: -45.0
+      max_position: 45.0
+    - joint_name: "trunk_joint_2"
+      min_position: -45.0
+      max_position: 0.0
