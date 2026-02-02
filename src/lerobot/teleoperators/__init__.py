@@ -17,4 +17,10 @@
 from .config import TeleoperatorConfig
 from .teleoperator import Teleoperator
 from .utils import make_teleoperator_from_config
-from . import ros2_leader
+
+# Optionally import ros2_leader if rclpy is available
+try:
+    import rclpy
+    from . import ros2_leader
+except ImportError:
+    pass

@@ -13,7 +13,49 @@ robot:
 
   # Dictionary of camera configurations.
   # Corresponds to: cameras: dict[str, CameraConfig]
-  cameras: {}
+  # Camera index mapping: 0=head, 2=left_wrist, 4=left_wrist2, 6=right_wrist, 8=right_wrist2
+  cameras:
+    # Head camera (main overview camera)
+    head_cam:
+      type: opencv
+      # Use index 0 for head camera
+      index: 0
+      width: 640
+      height: 480
+      fps: 30
+      # Optional: rotation, exposure, etc.
+      # rotation: 0
+      # exposure: -1  # Auto exposure
+
+    # Left wrist cameras (for left arm manipulation tasks)
+    left_wrist_cam:
+      type: opencv
+      index: 2
+      width: 640
+      height: 480
+      fps: 30
+
+    left_wrist_cam2:
+      type: opencv
+      index: 4
+      width: 640
+      height: 480
+      fps: 30
+
+    # Right wrist cameras (for right arm manipulation tasks)
+    right_wrist_cam:
+      type: opencv
+      index: 6
+      width: 640
+      height: 480
+      fps: 30
+
+    right_wrist_cam2:
+      type: opencv
+      index: 8
+      width: 640
+      height: 480
+      fps: 30
 
 
 

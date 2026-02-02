@@ -336,9 +336,9 @@ class SupreRobotFollower(Robot):
         if not self.is_connected:
             print("Robot is already disconnected.")
             return
-        
+
         print("Disconnecting from robot...")
-                        
+
         try:
             if self._hardware_manager:
                 self._hardware_manager.deactivate()
@@ -348,6 +348,45 @@ class SupreRobotFollower(Robot):
             self._hardware_manager = None
             self._is_connected_flag = False
             print("Robot disconnected.")
+
+    def emergency_stop(self) -> None:
+        """Emergency stop - immediately deactivate all hardware.
+
+        This method is called when a collision is detected or when
+        immediate shutdown is required. It stops all joint motion
+        by deactivating the hardware manager.
+        """
+        if not self.is_connected:
+            logger.warning("Emergency stop called but robot is not connected")
+            return
+
+        logger.warning("EMERGENCY STOP activated - deactivating hardware")
+
+        try:
+            if self._hardware_manager:
+                self._hardware_manager.deactivate()
+                logger.info("Hardware deactivated successfully")
+        except Exception as e:
+            logger.error(f"Error during emergency stop: {e}")
+
+    def get_raw_torques(self) -> dict[str, float]:
+        """Get raw torque/force data from all joints.
+
+        Returns:
+            Dictionary mapping joint names to their current torque values in Nm.
+        """
+        if not self.is_connected:
+            raise RuntimeError("Robot is not connected.")
+
+        try:
+            positions, forces = self._hardware_manager.read()
+            return {
+                joint_name: float(forces[i])
+                for i, joint_name in enumerate(self.observation_joint_names)
+            }
+        except Exception as e:
+            logger.error(f"Failed to get raw torques: {e}")
+            return {}
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
