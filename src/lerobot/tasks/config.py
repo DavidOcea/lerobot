@@ -18,6 +18,9 @@ import yaml
 from lerobot.safety.config import CollisionConfig
 from lerobot.monitoring.config import MonitoringConfig
 
+# Import RobotConfig from robots module to avoid duplication
+from lerobot.robots.config import RobotConfig as BaseRobotConfig
+
 
 @dataclass
 class CompletionCriteria:
@@ -68,17 +71,6 @@ class TaskConfig:
     completion_criteria: CompletionCriteria = field(default_factory=CompletionCriteria)
     enabled: bool = True  # Allow disabling specific tasks
     cameras: list[CameraConfig] = field(default_factory=list)  # Active cameras for this task
-
-
-@dataclass
-class RobotConfig:
-    """Robot-specific configuration for the orchestrator."""
-
-    type: str = "supre_robot_follower"
-    config_path: str | None = None  # Path to robot-specific config YAML
-    camera_enabled: bool = True
-    force_sensing_enabled: bool = True
-    control_frequency: float = 30.0  # Hz
 
 
 @dataclass
@@ -176,6 +168,9 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
 
     # Parse robot config
     robot_config_dict = config_dict.get("robot_config", {})
+    # Add default id field if not present (required by RobotConfig base class)
+    if "id" not in robot_config_dict:
+        robot_config_dict["id"] = None
     robot_config = RobotConfig(**robot_config_dict)
 
     # Parse collision config
