@@ -70,10 +70,10 @@ tasks:
 # Robot configuration
 robot_config:
   type: "supre_robot_follower"
-  config_path: null
-  camera_enabled: true
-  force_sensing_enabled: true
-  control_frequency: 30.0
+  control_frequency: 30  # Must be int, not float
+  prometheus_port: 8000
+  max_relative_joint_move: 15.0
+  joint_config_file: "config_supre_robot_joint.yaml"
 
 # Collision detection configuration
 collision_config:

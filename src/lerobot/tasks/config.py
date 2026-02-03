@@ -12,14 +12,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import draccus
 import yaml
 
 # Import from specialized modules
 from lerobot.safety.config import CollisionConfig
 from lerobot.monitoring.config import MonitoringConfig
 
-# Import RobotConfig from robots module to avoid duplication
-from lerobot.robots.config import RobotConfig as BaseRobotConfig
+# Import RobotConfig from robots module
+from lerobot.robots.config import RobotConfig
 
 
 @dataclass
@@ -166,12 +167,52 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
         task_dict["cameras"] = cameras
         tasks.append(TaskConfig(**task_dict))
 
-    # Parse robot config
+    # Parse robot config using draccus to handle polymorphic types
     robot_config_dict = config_dict.get("robot_config", {})
-    # Add default id field if not present (required by RobotConfig base class)
-    if "id" not in robot_config_dict:
-        robot_config_dict["id"] = None
-    robot_config = RobotConfig(**robot_config_dict)
+    if robot_config_dict:
+        # Import robot config modules to register their configs
+        # Use direct import to avoid triggering hardware dependencies
+        import sys
+        import importlib.util
+
+        # Load the config module directly without going through __init__.py
+        config_module_path = Path(__file__).parent.parent / "robots" / "supre_robot_follower" / "supre_robot_follower_config.py"
+
+        # Get the robot type from the config
+        robot_type = robot_config_dict.get("type", "supre_robot_follower")
+
+        # Try to get the config class - it should already be registered by other imports
+        try:
+            robot_config_class = RobotConfig.get_choice_class(robot_type)
+            # Remove 'type' from dict as it's handled by draccus
+            robot_config = robot_config_class(**{k: v for k, v in robot_config_dict.items() if k != "type"})
+        except Exception as e:
+            # If class not found, try loading the config module
+            if config_module_path.exists():
+                spec = importlib.util.spec_from_file_location(
+                    "supre_robot_follower_config",
+                    config_module_path
+                )
+                if spec and spec.loader:
+                    config_module = importlib.util.module_from_spec(spec)
+                    # Insert into sys.modules before loading to handle relative imports
+                    sys.modules['lerobot.robots.supre_robot_follower.supre_robot_follower_config'] = config_module
+                    spec.loader.exec_module(config_module)
+
+            # Try again
+            try:
+                robot_config_class = RobotConfig.get_choice_class(robot_type)
+                robot_config = robot_config_class(**{k: v for k, v in robot_config_dict.items() if k != "type"})
+            except Exception as e2:
+                # Fallback: create base config
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"Failed to load robot config class for type '{robot_type}': {e2}. Using base RobotConfig."
+                )
+                robot_config = RobotConfig(id=robot_config_dict.get("id"))
+    else:
+        # Create empty base config
+        robot_config = RobotConfig(id=None)
 
     # Parse collision config
     collision_config_dict = config_dict.get("collision_config", {})
