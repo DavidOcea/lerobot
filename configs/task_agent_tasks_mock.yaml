@@ -1,0 +1,48 @@
+# Task Agent Configuration - Mock Robot Version
+# This configuration uses MockRobot for testing without real hardware
+
+# Task sequence definition
+tasks:
+  # Task 1: Simple movement test
+  - name: "test_movement_mock"
+    policy_path: "/home/smai/dc_dir/lerobot_0901_pybullet/outputs/train/act_1121_3/checkpoints/last/pretrained_model"
+    policy_type: "act"
+    max_duration: 10.0
+    max_retries: 2
+    enabled: true
+    completion_criteria:
+      type: "stability"
+      stability_window: 5
+      stability_tolerance: 0.01
+
+# Robot configuration - using mock robot for testing
+robot_config:
+  type: "mock_robot"
+  n_motors: 16  # Match the number of joints in the real robot
+  random_values: true
+  calibrated: true
+
+# Collision detection configuration
+collision_config:
+  collision_threshold: 2.0
+  detection_window: 3
+  adaptive_mode: true
+  velocity_compensation: true
+  recovery_strategy: "stop_and_retreat"
+  recovery_retreat_distance: 0.05
+  auto_calibrate: true
+  calibration_samples: 50
+
+# Monitoring configuration
+monitoring_config:
+  enable_prometheus: false  # Disabled for testing
+  prometheus_port: 8000
+  log_level: "DEBUG"
+  log_observations: false
+  log_actions: false
+  state_history_size: 100
+
+# Execution settings
+environment_dt: 0.0333
+observation_timeout: 5.0
+action_timeout: 5.0
