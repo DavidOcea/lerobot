@@ -175,9 +175,6 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
         import sys
         import importlib.util
 
-        # Load the config module directly without going through __init__.py
-        config_module_path = Path(__file__).parent.parent / "robots" / "supre_robot_follower" / "supre_robot_follower_config.py"
-
         # Get the robot type from the config
         robot_type = robot_config_dict.get("type", "supre_robot_follower")
 
@@ -188,15 +185,22 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             robot_config = robot_config_class(**{k: v for k, v in robot_config_dict.items() if k != "type"})
         except Exception as e:
             # If class not found, try loading the config module
-            if config_module_path.exists():
+            config_module_paths = {
+                "supre_robot_follower": Path(__file__).parent.parent / "robots" / "supre_robot_follower" / "supre_robot_follower_config.py",
+                "mock_robot": Path(__file__).parent.parent.parent.parent / "tests" / "mocks" / "mock_robot.py",
+            }
+
+            config_module_path = config_module_paths.get(robot_type)
+            if config_module_path and config_module_path.exists():
                 spec = importlib.util.spec_from_file_location(
-                    "supre_robot_follower_config",
+                    f"{robot_type}_config",
                     config_module_path
                 )
                 if spec and spec.loader:
                     config_module = importlib.util.module_from_spec(spec)
-                    # Insert into sys.modules before loading to handle relative imports
-                    sys.modules['lerobot.robots.supre_robot_follower.supre_robot_follower_config'] = config_module
+                    # Insert into sys.modules before loading
+                    module_name = f"lerobot.robots.{robot_type}" if robot_type != "mock_robot" else "tests.mocks.mock_robot"
+                    sys.modules[module_name] = config_module
                     spec.loader.exec_module(config_module)
 
             # Try again
@@ -204,15 +208,22 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
                 robot_config_class = RobotConfig.get_choice_class(robot_type)
                 robot_config = robot_config_class(**{k: v for k, v in robot_config_dict.items() if k != "type"})
             except Exception as e2:
-                # Fallback: create base config
+                # Fallback: if we can't load the specific robot config, raise an error
+                # Using base RobotConfig would fail later when accessing config.type
                 import logging
-                logging.getLogger(__name__).warning(
-                    f"Failed to load robot config class for type '{robot_type}': {e2}. Using base RobotConfig."
+                logging.getLogger(__name__).error(
+                    f"Failed to load robot config class for type '{robot_type}': {e2}"
                 )
-                robot_config = RobotConfig(id=robot_config_dict.get("id"))
+                raise ValueError(
+                    f"Cannot load robot configuration for type '{robot_type}'. "
+                    f"Please ensure the robot type is registered and the config module is accessible."
+                ) from e2
     else:
-        # Create empty base config
-        robot_config = RobotConfig(id=None)
+        # No robot config provided - raise an error
+        raise ValueError(
+            "No robot_config provided in configuration. "
+            "Please specify a robot_config section with a valid 'type' field."
+        )
 
     # Parse collision config
     collision_config_dict = config_dict.get("collision_config", {})
