@@ -233,16 +233,30 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     monitoring_config_dict = config_dict.get("monitoring_config", {})
     monitoring_config = MonitoringConfig(**monitoring_config_dict)
 
-    # Create main config
-    config = OrchestratorConfig(
-        tasks=tasks,
-        robot_config=robot_config,
-        collision_config=collision_config,
-        monitoring_config=monitoring_config,
-        environment_dt=config_dict.get("environment_dt", 1.0 / 30.0),
-        observation_timeout=config_dict.get("observation_timeout", 5.0),
-        action_timeout=config_dict.get("action_timeout", 5.0),
-    )
+    # Create main config - use the extended orchestrator config if available
+    try:
+        # Try to import the extended config from agent module
+        from lerobot.agent.config import OrchestratorConfig as AgentOrchestratorConfig
+        config = AgentOrchestratorConfig(
+            tasks=tasks,
+            robot_config=robot_config,
+            collision_config=collision_config,
+            monitoring_config=monitoring_config,
+            environment_dt=config_dict.get("environment_dt", 1.0 / 30.0),
+            observation_timeout=config_dict.get("observation_timeout", 5.0),
+            action_timeout=config_dict.get("action_timeout", 5.0),
+        )
+    except ImportError:
+        # Fall back to base config
+        config = OrchestratorConfig(
+            tasks=tasks,
+            robot_config=robot_config,
+            collision_config=collision_config,
+            monitoring_config=monitoring_config,
+            environment_dt=config_dict.get("environment_dt", 1.0 / 30.0),
+            observation_timeout=config_dict.get("observation_timeout", 5.0),
+            action_timeout=config_dict.get("action_timeout", 5.0),
+        )
 
     return config
 
