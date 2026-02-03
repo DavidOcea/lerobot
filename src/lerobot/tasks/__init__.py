@@ -13,10 +13,11 @@ from .completion_detector import (
 from .config import (
     CameraConfig,
     OrchestratorConfig,
-    RobotConfig,
     TaskConfig,
     load_config_from_yaml,
 )
+# Import RobotConfig directly from robots module to avoid conflicts
+from lerobot.robots.config import RobotConfig
 from .local_policy_executor import LocalPolicyExecutor
 from .task_scheduler import (
     ExecutionSummary,
