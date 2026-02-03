@@ -191,6 +191,54 @@ class RobotClient:
         self.channel.close()
         self.logger.debug("Client stopped, channel closed")
 
+    def get_latest_observation(self) -> dict[str, Any]:
+        """Get the latest observation from the robot.
+
+        This method is used by collision detection and other safety systems
+        to access current robot state without sending it to the policy server.
+
+        Returns:
+            Dictionary containing the latest observation data with joint positions,
+            forces, and camera data.
+        """
+        if not self.is_connected:
+            raise RuntimeError("Robot not connected. Call connect() first.")
+
+        return self.robot.get_observation()
+
+    def emergency_stop(self) -> None:
+        """Immediately stop all robot motion.
+
+        This method should be called when a collision is detected or when
+        emergency shutdown is required. It deactivates the hardware to
+        prevent further motion.
+        """
+        if self.robot is not None and hasattr(self.robot, "emergency_stop"):
+            self.robot.emergency_stop()
+        elif self.robot is not None and hasattr(self.robot, "_hardware_manager"):
+            self.robot._hardware_manager.deactivate()
+            self.logger.warning("Emergency stop executed via hardware_manager.deactivate()")
+        else:
+            self.logger.error("No emergency stop method available")
+
+    def get_raw_torques(self) -> dict[str, float]:
+        """Get raw torque/force data from the robot.
+
+        Returns:
+            Dictionary mapping joint names to their current torque values.
+        """
+        if self.robot is not None and hasattr(self.robot, "get_raw_torques"):
+            return self.robot.get_raw_torques()
+
+        # Fallback: extract from observation
+        obs = self.get_latest_observation()
+        return {k.replace(".force", ""): v for k, v in obs.items() if ".force" in k}
+
+    @property
+    def is_connected(self) -> bool:
+        """Check if the robot client is connected and running."""
+        return self.running and self.robot is not None
+
     def send_observation(
         self,
         obs: TimedObservation,

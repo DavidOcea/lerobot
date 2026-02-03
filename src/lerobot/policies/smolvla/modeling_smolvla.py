@@ -28,7 +28,7 @@ pip install -e ".[smolvla]"
 
 Example of finetuning the smolvla pretrained model (`smolvla_base`):
 ```bash
-python -m lerobot.scripts.train \
+lerobot-train \
 --policy.path=lerobot/smolvla_base \
 --dataset.repo_id=danaaubakirova/svla_so100_task1_v3 \
 --batch_size=64 \
@@ -38,7 +38,7 @@ python -m lerobot.scripts.train \
 Example of finetuning a smolVLA. SmolVLA is composed of a pretrained VLM,
 and an action expert.
 ```bash
-python -m lerobot.scripts.train \
+lerobot-train \
 --policy.type=smolvla \
 --dataset.repo_id=danaaubakirova/svla_so100_task1_v3 \
 --batch_size=64 \
@@ -192,12 +192,6 @@ def create_sinusoidal_pos_embedding(
     sin_input = scaling_factor[None, :] * time[:, None]
     pos_emb = torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
     return pos_emb
-
-
-def sample_beta(alpha, beta, bsize, device):
-    gamma1 = torch.empty((bsize,), device=device).uniform_(0, 1).pow(1 / alpha)
-    gamma2 = torch.empty((bsize,), device=device).uniform_(0, 1).pow(1 / beta)
-    return gamma1 / (gamma1 + gamma2)
 
 
 def make_att_2d_masks(pad_masks, att_masks):
@@ -384,8 +378,13 @@ class SmolVLAPolicy(PreTrainedPolicy):
         return self.parameters()
 
     def _get_action_chunk(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
+        # TODO: Check if this for loop is needed.
+        # Context: In fact, self.queues contains only ACTION field, and in inference, we don't have action in the batch
+        # In the case of offline inference, we have the action in the batch
+        # that why without the k != ACTION check, it will raise an error because we are trying to stack
+        # on an empty container.
         for k in batch:
-            if k in self._queues:
+            if k in self._queues and k != ACTION:
                 batch[k] = torch.stack(list(self._queues[k]), dim=1)
 
         images, img_masks = self.prepare_images(batch)
@@ -631,9 +630,18 @@ class VLAFlowMatching(nn.Module):
     └──────────────────────────────┘
     """
 
-    def __init__(self, config):
+    def __init__(self, config: SmolVLAConfig):
         super().__init__()
         self.config = config
+
+        # state 应用与否
+        if not self.config.use_state:
+            print("not use_state !")
+        # state_dropout 配置
+        self.state_dropout = None
+        if self.config.state_dropout != 0.0 and self.config.use_state:
+            self.state_dropout = self.config.state_dropout
+            print("state_dropout = ",self.state_dropout)
 
         self.vlm_with_expert = SmolVLMWithExpertModel(
             model_id=self.config.vlm_model_name,
@@ -646,9 +654,17 @@ class VLAFlowMatching(nn.Module):
             self_attn_every_n_layers=self.config.self_attn_every_n_layers,
             expert_width_multiplier=self.config.expert_width_multiplier,
         )
+
+        # if self.config.use_state:
         self.state_proj = nn.Linear(
             self.config.max_state_dim, self.vlm_with_expert.config.text_config.hidden_size
         )
+
+        if self.state_dropout:
+            print("usr dropout")
+            self.state_proj_dropout = nn.Dropout(p=self.state_dropout)
+
+
         self.action_in_proj = nn.Linear(self.config.max_action_dim, self.vlm_with_expert.expert_hidden_size)
         self.action_out_proj = nn.Linear(self.vlm_with_expert.expert_hidden_size, self.config.max_action_dim)
 
@@ -658,8 +674,9 @@ class VLAFlowMatching(nn.Module):
         self.action_time_mlp_out = nn.Linear(
             self.vlm_with_expert.expert_hidden_size, self.vlm_with_expert.expert_hidden_size
         )
-
+        # if self.config.use_state:
         self.set_requires_grad()
+
         self.fake_image_token = self.vlm_with_expert.processor.tokenizer.fake_image_token_id
         self.global_image_token = self.vlm_with_expert.processor.tokenizer.global_image_token_id
         self.global_image_start_token = torch.tensor(
@@ -685,9 +702,10 @@ class VLAFlowMatching(nn.Module):
         return noise
 
     def sample_time(self, bsize, device):
-        time_beta = sample_beta(1.5, 1.0, bsize, device)
+        beta_dist = torch.distributions.Beta(concentration1=1.5, concentration0=1.0)
+        time_beta = beta_dist.sample((bsize,)).to(device=device, dtype=torch.float32)
         time = time_beta * 0.999 + 0.001
-        return time.to(dtype=torch.float32, device=device)
+        return time
 
     def embed_prefix(
         self, images, img_masks, lang_tokens, lang_masks, state: torch.Tensor = None
@@ -756,18 +774,22 @@ class VLAFlowMatching(nn.Module):
         num_lang_embs = lang_emb.shape[1]
         att_masks += [0] * num_lang_embs
 
-        state_emb = self.state_proj(state)
-        state_emb = state_emb[:, None, :] if state_emb.ndim == 2 else state_emb
-        embs.append(state_emb)
-        bsize = state_emb.shape[0]
-        device = state_emb.device
+        if self.config.use_state:
+            state_emb = self.state_proj(state)
+            if self.state_dropout:
+                state_emb = self.state_proj_dropout(state_emb)
+            state_emb = state_emb[:, None, :] if state_emb.ndim == 2 else state_emb
+            embs.append(state_emb)
+            bsize = state_emb.shape[0]
+            device = state_emb.device
 
-        states_seq_len = state_emb.shape[1]
-        state_mask = torch.ones(bsize, states_seq_len, dtype=torch.bool, device=device)
-        pad_masks.append(state_mask)
+            states_seq_len = state_emb.shape[1]
+            state_mask = torch.ones(bsize, states_seq_len, dtype=torch.bool, device=device)
+            pad_masks.append(state_mask)
 
-        # Set attention masks so that image and language inputs do not attend to state or actions
-        att_masks += [1] * (states_seq_len)
+            # Set attention masks so that image and language inputs do not attend to state or actions
+            att_masks += [1] * (states_seq_len)
+
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
         att_masks = torch.tensor(att_masks, dtype=torch.bool, device=pad_masks.device)

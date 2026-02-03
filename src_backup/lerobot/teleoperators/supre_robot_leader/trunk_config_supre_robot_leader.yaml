@@ -1,0 +1,25 @@
+# Specifies which subclass of TeleoperatorConfig to use.
+type: supre_robot_leader
+
+# Path to the joint configuration file for the leader robot.
+joint_config_file: "trunk_config_supre_robot_joint.yaml"
+
+# Direction multipliers for each joint.
+# Corresponds to: joint_direction: list
+joint_direction:
+  - -1
+  - -1
+  - 1
+  - 1
+  - 1
+  - -1
+  - 1
+  - -1
+  - -1
+  - 1
+  - 1
+  - 1
+  - -1
+  - 1
+  - 1
+  - 1

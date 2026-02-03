@@ -25,7 +25,7 @@ from typing import Any
 import torch
 
 from lerobot.configs.types import PolicyFeature
-from lerobot.constants import OBS_IMAGES, OBS_STATE
+from lerobot.constants import OBS_IMAGES, OBS_STATE, OBS_FORCE
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
 
 # NOTE: Configs need to be loaded for the client to be able to instantiate the policy config
@@ -132,6 +132,17 @@ def extract_state_from_raw_observation(
 
     return state
 
+def extract_force_from_raw_observation(
+    lerobot_obs: RawObservation,
+) -> torch.Tensor:
+    """Extract the state from a raw observation."""
+    state = torch.tensor(lerobot_obs[OBS_FORCE])
+
+    if state.ndim == 1:
+        state = state.unsqueeze(0)
+
+    return state
+
 
 def extract_images_from_raw_observation(
     lerobot_obs: RawObservation,
@@ -159,6 +170,10 @@ def prepare_raw_observation(
     # 1. {motor.pos1:value1, motor.pos2:value2, ..., laptop:np.ndarray} ->
     # -> {observation.state:[value1,value2,...], observation.images.laptop:np.ndarray}
     lerobot_obs = make_lerobot_observation(robot_obs, lerobot_features)
+    # print("///////=====")
+    # print(robot_obs)
+    # print(lerobot_features)
+    # print(lerobot_obs)
 
     # 2. Greps all observation.images.<> keys
     image_keys = list(filter(is_image_key, lerobot_obs))
@@ -178,7 +193,14 @@ def prepare_raw_observation(
     if "task" in robot_obs:
         state_dict["task"] = robot_obs["task"]
 
-    return {**state_dict, **image_dict}
+    if any("force" in key for key in robot_obs.keys()):
+        # print("1111")  目前force 由于采集的代码有force，暂时传过来的几个robot_obs/lerobot_features都包含force，
+        # 除了用代码分支来却简单的代码区别不太容易；先暂时推理force的时候记得手工修改注释
+        force_dict = {OBS_FORCE: extract_force_from_raw_observation(lerobot_obs)}
+        #带force
+        return {**state_dict, **force_dict, **image_dict}
+    # 原生
+    # return {**state_dict, **image_dict}
 
 
 def get_logger(name: str, log_to_file: bool = True) -> logging.Logger:

@@ -21,6 +21,7 @@
 [Jax code](https://github.com/Physical-Intelligence/openpi)
 
 Designed by Physical Intelligence. Ported from Jax by Hugging Face.
+Disclaimer: It is not expected to perform as well as the original implementation.
 
 Install pi0 extra dependencies:
 ```bash
@@ -29,7 +30,7 @@ pip install -e ".[pi0]"
 
 Example of finetuning the pi0 pretrained model (`pi0_base` in `openpi`):
 ```bash
-python -m lerobot.scripts.train \
+lerobot-train \
 --policy.path=lerobot/pi0 \
 --dataset.repo_id=danaaubakirova/koch_test
 ```
@@ -37,7 +38,7 @@ python -m lerobot.scripts.train \
 Example of finetuning the pi0 neural network with PaliGemma and expert Gemma
 pretrained with VLM default parameters before pi0 finetuning:
 ```bash
-python -m lerobot.scripts.train \
+lerobot-train \
 --policy.type=pi0 \
 --dataset.repo_id=danaaubakirova/koch_test
 ```
@@ -65,7 +66,8 @@ from lerobot.policies.pi0.paligemma_with_expert import (
     PaliGemmaWithExpertModel,
 )
 from lerobot.policies.pretrained import PreTrainedPolicy
-from lerobot.utils.utils import get_safe_dtype
+from lerobot.policies.utils import log_model_loading_keys
+from lerobot.utils.utils import get_safe_dtype, init_logging
 
 
 def create_sinusoidal_pos_embedding(
@@ -87,12 +89,6 @@ def create_sinusoidal_pos_embedding(
     sin_input = scaling_factor[None, :] * time[:, None]
     pos_emb = torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
     return pos_emb
-
-
-def sample_beta(alpha, beta, bsize, device):
-    gamma1 = torch.empty((bsize,), device=device).uniform_(0, 1).pow(1 / alpha)
-    gamma2 = torch.empty((bsize,), device=device).uniform_(0, 1).pow(1 / beta)
-    return gamma1 / (gamma1 + gamma2)
 
 
 def make_att_2d_masks(pad_masks, att_masks):
@@ -218,6 +214,81 @@ def aloha_gripper_from_angular_inv(value):
     return normalize(value, min_val=0.4, max_val=1.5)
 
 
+def resize_with_pad_torch(  # see openpi `resize_with_pad_torch` (exact copy)
+    images: torch.Tensor,
+    height: int,
+    width: int,
+    mode: str = "bilinear",
+) -> torch.Tensor:
+    """PyTorch version of resize_with_pad. Resizes an image to a target height and width without distortion
+    by padding with black. If the image is float32, it must be in the range [-1, 1].
+
+    Args:
+        images: Tensor of shape [*b, h, w, c] or [*b, c, h, w]
+        height: Target height
+        width: Target width
+        mode: Interpolation mode ('bilinear', 'nearest', etc.)
+
+    Returns:
+        Resized and padded tensor with same shape format as input
+    """
+    # Check if input is in channels-last format [*b, h, w, c] or channels-first [*b, c, h, w]
+    if images.shape[-1] <= 4:  # Assume channels-last format
+        channels_last = True
+        if images.dim() == 3:
+            images = images.unsqueeze(0)  # Add batch dimension
+        images = images.permute(0, 3, 1, 2)  # [b, h, w, c] -> [b, c, h, w]
+    else:
+        channels_last = False
+        if images.dim() == 3:
+            images = images.unsqueeze(0)  # Add batch dimension
+
+    batch_size, channels, cur_height, cur_width = images.shape
+
+    # Calculate resize ratio
+    ratio = max(cur_width / width, cur_height / height)
+    resized_height = int(cur_height / ratio)
+    resized_width = int(cur_width / ratio)
+
+    # Resize
+    resized_images = F.interpolate(
+        images,
+        size=(resized_height, resized_width),
+        mode=mode,
+        align_corners=False if mode == "bilinear" else None,
+    )
+
+    # Handle dtype-specific clipping
+    if images.dtype == torch.uint8:
+        resized_images = torch.round(resized_images).clamp(0, 255).to(torch.uint8)
+    elif images.dtype == torch.float32:
+        resized_images = resized_images.clamp(-1.0, 1.0)
+    else:
+        raise ValueError(f"Unsupported image dtype: {images.dtype}")
+
+    # Calculate padding
+    pad_h0, remainder_h = divmod(height - resized_height, 2)
+    pad_h1 = pad_h0 + remainder_h
+    pad_w0, remainder_w = divmod(width - resized_width, 2)
+    pad_w1 = pad_w0 + remainder_w
+
+    # Pad
+    constant_value = 0 if images.dtype == torch.uint8 else -1.0
+    padded_images = F.pad(
+        resized_images,
+        (pad_w0, pad_w1, pad_h0, pad_h1),  # left, right, top, bottom
+        mode="constant",
+        value=constant_value,
+    )
+
+    # Convert back to original format if needed
+    if channels_last:
+        padded_images = padded_images.permute(0, 2, 3, 1)  # [b, c, h, w] -> [b, h, w, c]
+
+    return padded_images
+
+
+
 class PI0Policy(PreTrainedPolicy):
     """Wrapper class around PI0FlowMatching model to train and run inference within LeRobot."""
 
@@ -248,7 +319,7 @@ class PI0Policy(PreTrainedPolicy):
             config.output_features, config.normalization_mapping, dataset_stats
         )
 
-        self.language_tokenizer = AutoTokenizer.from_pretrained("google/paligemma-3b-pt-224")
+        self.language_tokenizer = AutoTokenizer.from_pretrained("/home/smai/.cache/huggingface/models/paligemma-3b-pt-224")
         self.model = PI0FlowMatching(config)
 
         self.reset()
@@ -257,13 +328,200 @@ class PI0Policy(PreTrainedPolicy):
         """This should be called whenever the environment is reset."""
         self._action_queue = deque([], maxlen=self.config.n_action_steps)
 
+    @classmethod
+    def _transform_state_dict_keys(cls, state_dict: dict) -> dict:
+        """
+        Transform state dict keys to match expected model structure.
+
+        Transformations:
+        - model.paligemma_with_expert.paligemma.language_model.lm_head ->
+          model.paligemma_with_expert.paligemma.lm_head
+        - model.paligemma_with_expert.paligemma.language_model.model ->
+          model.paligemma_with_expert.paligemma.model.language_model
+        - model.paligemma_with_expert.paligemma.vision_tower ->
+          model.paligemma_with_expert.paligemma.model.vision_tower
+        - model.paligemma_with_expert.paligemma.multi_modal_projector ->
+          model.paligemma_with_expert.paligemma.model.multi_modal_projector
+
+        Also handles tied weights between lm_head.weight and
+        embed_tokens.weight.
+        """
+        import re
+
+        transformed_dict = {}
+
+        transformations = [
+            (
+                re.compile(r"\.paligemma_with_expert\.paligemma\.language_model\.lm_head"),
+                ".paligemma_with_expert.paligemma.lm_head",
+            ),
+            (
+                re.compile(r"\.paligemma_with_expert\.paligemma\.language_model\.model"),
+                ".paligemma_with_expert.paligemma.model.language_model",
+            ),
+            (
+                re.compile(r"\.paligemma_with_expert\.paligemma\.vision_tower"),
+                ".paligemma_with_expert.paligemma.model.vision_tower",
+            ),
+            (
+                re.compile(r"\.paligemma_with_expert\.paligemma\.multi_modal_projector"),
+                ".paligemma_with_expert.paligemma.model.multi_modal_projector",
+            ),
+        ]
+
+        for key, value in state_dict.items():
+            new_key = key
+            for pattern, replacement in transformations:
+                new_key = pattern.sub(replacement, new_key)
+            transformed_dict[new_key] = value
+
+        # Handle tied weights: lm_head.weight and embed_tokens.weight share memory
+        lm_head_key = None
+        embed_tokens_key = None
+
+        for key in transformed_dict:
+            if key.endswith(".paligemma_with_expert.paligemma.lm_head.weight"):
+                lm_head_key = key
+            elif key.endswith(".paligemma_with_expert.paligemma.model.language_model.embed_tokens.weight"):
+                embed_tokens_key = key
+            if lm_head_key and embed_tokens_key:
+                break
+
+        if lm_head_key and not embed_tokens_key:
+            embed_tokens_key = lm_head_key.replace(
+                ".lm_head.weight", ".model.language_model.embed_tokens.weight"
+            )
+            transformed_dict[embed_tokens_key] = transformed_dict[lm_head_key]
+        elif embed_tokens_key and not lm_head_key:
+            lm_head_key = embed_tokens_key.replace(
+                ".model.language_model.embed_tokens.weight", ".lm_head.weight"
+            )
+            transformed_dict[lm_head_key] = transformed_dict[embed_tokens_key]
+
+        return transformed_dict
+
+    @classmethod
+    def _load_as_safetensor(
+        cls, model: "PI0Policy", model_file: str, map_location: str, strict: bool
+    ) -> "PI0Policy":
+        """Override to apply key transformations before loading."""
+        from safetensors.torch import load_file
+
+        init_logging()
+        # Load the state dict from file safely
+        state_dict = load_file(model_file, device=map_location)
+
+        # Apply key transformations
+        transformed_state_dict = cls._transform_state_dict_keys(state_dict)
+
+        # Load the transformed state dict
+        msg = model.load_state_dict(transformed_state_dict, strict=strict)
+
+        # Log message
+        log_model_loading_keys(msg.missing_keys, msg.unexpected_keys)
+        return model
+
     def get_optim_params(self) -> dict:
         return self.parameters()
 
+    @classmethod
+    def from_pretrained(cls, *args, **kwargs):
+        """Override the from_pretrained method to display important disclaimer."""
+        print(
+            "⚠️  DISCLAIMER: The PI0 model is ported from JAX by the Hugging Face team. \n"
+            "   It is not expected to perform as well as the original implementation. \n"
+            "   Original implementation: https://github.com/Physical-Intelligence/openpi"
+        )
+        return super().from_pretrained(*args, **kwargs)
+
+    def _preprocess_images(self, batch: dict[str, Tensor]) -> tuple[list[Tensor], list[Tensor]]:
+        """Preprocess images for the model.
+
+        Images from LeRobot are typically in [B, C, H, W] format and normalized to [0, 1].
+        PaliGemma expects images in [B, C, H, W] format and normalized to [-1, 1].
+        """
+        images = []
+        img_masks = []
+
+        # Get device from model parameters
+        device = next(self.parameters()).device
+
+        present_img_keys = [key for key in self.config.image_features if key in batch]
+        missing_img_keys = [key for key in self.config.image_features if key not in batch]
+
+        if len(present_img_keys) == 0:
+            raise ValueError(
+                f"All image features are missing from the batch. At least one expected. "
+                f"(batch: {batch.keys()}) (image_features: {self.config.image_features})"
+            )
+
+        # Preprocess image features present in the batch
+        for key in present_img_keys:
+            img = batch[key]
+
+            # Ensure tensor is on the same device as the model
+            if img.device != device:
+                img = img.to(device)
+
+            # Ensure float32 dtype for consistency
+            if img.dtype != torch.float32:
+                img = img.to(torch.float32)
+
+            # from openpi preprocess_observation_pytorch: Handle both [B, C, H, W] and [B, H, W, C] formats
+            is_channels_first = img.shape[1] == 3  # Check if channels are in dimension 1
+
+            if is_channels_first:
+                # Convert [B, C, H, W] to [B, H, W, C] for processing
+                img = img.permute(0, 2, 3, 1)
+
+            # from openpi preprocess_observation_pytorch: Resize with padding if needed
+            if img.shape[1:3] != (224, 224):
+                img = resize_with_pad_torch(img, *(224, 224))
+
+            # Normalize from [0,1] to [-1,1] as expected by siglip
+            img = img * 2.0 - 1.0
+
+            # from openpi preprocess_observation_pytorch: Convert back to [B, C, H, W] format if it was originally channels-first
+            if is_channels_first:
+                img = img.permute(0, 3, 1, 2)  # [B, H, W, C] -> [B, C, H, W]
+
+            images.append(img)
+            # Create mask (all ones for real images)
+            bsize = img.shape[0]
+            mask = torch.ones(bsize, dtype=torch.bool, device=device)
+            img_masks.append(mask)
+
+        # Create image features not present in the batch as fully 0 padded images
+        for _num_empty_cameras in range(len(missing_img_keys)):
+            img = torch.ones_like(img) * -1  # Padded with -1 for SigLIP
+            mask = torch.zeros_like(mask)  # Mask is zero for empty cameras
+            images.append(img)
+            img_masks.append(mask)
+
+        return images, img_masks
+    
     @torch.no_grad()
+    # def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
+    #     """Predict a chunk of actions given environment observations."""
+    #     raise NotImplementedError("Currently not implemented for PI0")
     def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
         """Predict a chunk of actions given environment observations."""
-        raise NotImplementedError("Currently not implemented for PI0")
+        self.eval()
+
+        # Prepare inputs
+        images, img_masks = self._preprocess_images(batch)
+        # tokens, masks = batch[f"{OBS_LANGUAGE_TOKENS}"], batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
+        tokens, masks = self.prepare_language(batch)
+        state = self.prepare_state(batch)
+
+        # Sample actions using the model (no separate state needed for PI05)
+        actions = self.model.sample_actions(images, img_masks, tokens, masks, state)
+
+        # Unpad actions to actual action dimension
+        original_action_dim = self.config.output_features[ACTION].shape[0]
+        actions = actions[:, :, :original_action_dim]
+
+        return actions
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor], noise: Tensor | None = None) -> Tensor:
@@ -386,7 +644,7 @@ class PI0Policy(PreTrainedPolicy):
     def prepare_language(self, batch) -> tuple[Tensor, Tensor]:
         """Tokenize the text input"""
         device = batch[OBS_STATE].device
-        tasks = batch["task"]
+        tasks = batch["task"] if type(batch["task"])==list else [batch["task"]] #推理的时候task往往是一str，导致下面切分的时候没有按照完整语句切片。       
 
         # PaliGemma prompt has to end with a new line
         tasks = [task if task.endswith("\n") else f"{task}\n" for task in tasks]
@@ -504,9 +762,10 @@ class PI0FlowMatching(nn.Module):
         return noise
 
     def sample_time(self, bsize, device):
-        time_beta = sample_beta(1.5, 1.0, bsize, device)
+        beta_dist = torch.distributions.Beta(concentration1=1.5, concentration0=1.0)
+        time_beta = beta_dist.sample((bsize,)).to(device=device, dtype=torch.float32)
         time = time_beta * 0.999 + 0.001
-        return time.to(dtype=torch.float32, device=device)
+        return time
 
     def embed_prefix(
         self, images, img_masks, lang_tokens, lang_masks
@@ -646,7 +905,8 @@ class PI0FlowMatching(nn.Module):
             use_cache=False,
             fill_kv_cache=False,
         )
-        suffix_out = suffix_out[:, -self.config.n_action_steps :]
+        # suffix_out = suffix_out[:, -self.config.n_action_steps :]
+        suffix_out = suffix_out[0][:, -self.config.n_action_steps :]
         # Original openpi code, upcast attention output
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self.action_out_proj(suffix_out)
@@ -730,7 +990,7 @@ class PI0FlowMatching(nn.Module):
             use_cache=self.config.use_cache,
             fill_kv_cache=False,
         )
-        suffix_out = outputs_embeds[1]
+        suffix_out = outputs_embeds[1][0]
         suffix_out = suffix_out[:, -self.config.n_action_steps :]
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self.action_out_proj(suffix_out)

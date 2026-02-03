@@ -1,0 +1,89 @@
+# -----------------------------------------------------------------
+# Configuration for the SupreRobot Follower
+# This file corresponds to the `SupreRobotFollowerConfig` dataclass.
+# -----------------------------------------------------------------
+
+# [IMPORTANT] Specifies which subclass of RobotConfig to use.
+# This matches the name in `@RobotConfig.register_subclass("supre_robot_follower")`
+type: supre_robot_follower
+
+# Path to another configuration file, if needed.
+# Corresponds to: config_path: str
+joint_config_path: "config_supre_robot_joint.yaml"
+
+# Dictionary of camera configurations.
+# Corresponds to: cameras: dict[str, CameraConfig]
+# Example (uncomment and modify if you have cameras):
+# cameras:
+#   wrist_camera:
+#     # Assuming CameraConfig has these fields
+#     width: 640
+#     height: 480
+#     device_id: 0
+#   head_camera:
+#     width: 1280
+#     height: 720
+#     device_id: 1
+cameras: {}
+
+
+# Maximum relative joint movement in degrees per control step.
+# Corresponds to: max_relative_joint_move: float
+max_relative_joint_move: 30.0
+
+# Port for the Prometheus monitoring server. Use `null` for None.
+# Corresponds to: prometheus_port: int | None
+prometheus_port: 8000
+
+# Control loop frequency in Hz.
+# Corresponds to: control_frequency: int
+control_frequency: 30
+
+# List of motor calibration settings for each joint.
+# Corresponds to: calibration: list[MotorCalibration]
+calibration:
+  # --- Left Arm ---
+  - joint_name: "left_arm_joint_1"
+    min_position: -160.0
+    max_position: 160.0
+  - joint_name: "left_arm_joint_2"
+    min_position: -90.0
+    max_position: 0.0
+  - joint_name: "left_arm_joint_3"
+    min_position: -150.0
+    max_position: 150.0
+  - joint_name: "left_arm_joint_4"
+    min_position: -90.0
+    max_position: 0.0
+  - joint_name: "left_arm_joint_5"
+    min_position: -150.0
+    max_position: 150.0
+  - joint_name: "left_arm_joint_6"
+    min_position: -90.0
+    max_position: 90.0
+  - joint_name: "left_arm_joint_7"
+    min_position: 0.0
+    max_position: 1.0
+
+  # --- Right Arm ---
+  - joint_name: "right_arm_joint_1"
+    min_position: -160.0
+    max_position: 160.0
+  - joint_name: "right_arm_joint_2"
+    min_position: 0.0
+    max_position: 90.0
+  - joint_name: "right_arm_joint_3"
+    min_position: -150.0
+    max_position: 150.0
+  - joint_name: "right_arm_joint_4"
+    min_position: 0.0
+    max_position: 90.0
+  - joint_name: "right_arm_joint_5"
+    min_position: -150.0
+    max_position: 150.0
+  - joint_name: "right_arm_joint_6"
+    min_position: -90.0
+    max_position: 90.0
+  - joint_name: "right_arm_joint_7"
+    min_position: 0.0
+    max_position: 1.0
