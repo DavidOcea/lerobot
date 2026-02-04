@@ -2,6 +2,8 @@
 
 # 定义机器人所有关节的官方顺序。上层控制程序将严格按照这个顺序来读写数据。
 joint_order:
+  - trunk_joint_1
+  - trunk_joint_2
   - left_arm_joint_1
   - left_arm_joint_2
   - left_arm_joint_3
@@ -19,6 +21,18 @@ joint_order:
 
 # 定义所有硬件接口的实例
 hardware_interfaces:
+  # 腰部电机控制器
+  - name: trunk_motors
+    type: EyouMotorHardware
+    interpolation:
+      interpolation_n: 1
+    config:
+      can_device_index: 0
+      can_baud_rate: "1M"
+      joints:
+        - { name: trunk_joint_1, parameters: { node_id: 1 } }
+        - { name: trunk_joint_2, parameters: { node_id: 2 } }
+
   # 左臂电机控制器
   - name: arm_motors
     type: EyouMotorHardware  # 这个名字必须与管理器中的映射匹配
