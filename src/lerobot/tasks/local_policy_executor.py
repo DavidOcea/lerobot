@@ -297,25 +297,31 @@ class LocalPolicyExecutor:
         joint_names = []
         for key in action_features.keys():
             if key == "action":
-                # For single action output
-                import json
-                if hasattr(action_features[key], "shape"):
-                    # Assume standard joint order
+                # Get the feature shape which should contain the action dimension
+                feature = action_features[key]
+                if hasattr(feature, "shape") and len(feature.shape) > 0:
+                    # The action dimension should match the number of joints
+                    action_dim = feature.shape[0]
+                    # For now, use the joint_order from robot config if available
+                    # This should match the training configuration
+                    # Use joint order matching config_supre_robot_joint.yaml:
                     joint_names = [
+                        "trunk_joint_1", "trunk_joint_2",
                         "left_arm_joint_1", "left_arm_joint_2", "left_arm_joint_3",
                         "left_arm_joint_4", "left_arm_joint_5", "left_arm_joint_6",
-                        "left_arm_joint_7", "right_arm_joint_1", "right_arm_joint_2",
-                        "right_arm_joint_3", "right_arm_joint_4", "right_arm_joint_5",
-                        "right_arm_joint_6", "right_arm_joint_7", "trunk_joint_1",
-                        "trunk_joint_2",
-                    ][:action_tensor.shape[0]]
+                        "left_arm_joint_7",
+                        "right_arm_joint_1", "right_arm_joint_2", "right_arm_joint_3",
+                        "right_arm_joint_4", "right_arm_joint_5", "right_arm_joint_6",
+                        "right_arm_joint_7",
+                    ][:action_dim]
                 break
 
         # Convert to dict
         action_dict = {}
+        action_tensor_flat = action_tensor.flatten() if action_tensor.numel() > 0 else action_tensor
         for i, joint_name in enumerate(joint_names):
-            if i < action_tensor.shape[-1]:
-                action_dict[f"{joint_name}.pos"] = float(action_tensor[i].item())
+            if i < len(action_tensor_flat):
+                action_dict[f"{joint_name}.pos"] = float(action_tensor_flat[i].item())
 
         return action_dict
 
