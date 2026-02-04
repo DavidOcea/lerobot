@@ -160,7 +160,7 @@ class SupreRobotFollower(Robot):
         """从机器人获取当前观测值。"""
         if not self.is_connected:
             raise RuntimeError("Robot is not connected.")
-        
+
         hd_readings = self._hardware_manager.read()
         positions = hd_readings[0]
         forces = hd_readings[1]
@@ -174,10 +174,11 @@ class SupreRobotFollower(Robot):
             # 添加关节力/力矩
             obs_dict[f"{joint_name}.force"] = forces[i]
 
-        print("obs_dict: ", obs_dict)
+        # 添加相机图像到 'images' 子字典中
+        obs_dict["images"] = {}
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
-            obs_dict[cam_key] = cam.async_read()
+            obs_dict["images"][cam_key] = cam.async_read()
             dt_ms = (time.perf_counter() - start) * 1e3
             logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
         return obs_dict
