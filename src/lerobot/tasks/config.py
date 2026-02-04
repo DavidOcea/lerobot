@@ -185,6 +185,7 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             robot_config = robot_config_class(**{k: v for k, v in robot_config_dict.items() if k != "type"})
         except Exception as e:
             # If class not found, try loading the config module
+            # Only load the config module, not the full package (to avoid hardware dependencies)
             config_module_paths = {
                 "supre_robot_follower": Path(__file__).parent.parent / "robots" / "supre_robot_follower" / "supre_robot_follower_config.py",
                 "mock_robot": Path(__file__).parent.parent.parent.parent / "tests" / "mocks" / "mock_robot.py",
@@ -193,14 +194,17 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             config_module_path = config_module_paths.get(robot_type)
             if config_module_path and config_module_path.exists():
                 spec = importlib.util.spec_from_file_location(
-                    f"{robot_type}_config",
+                    f"lerobot.robots.{robot_type}.{robot_type}_config",
                     config_module_path
                 )
                 if spec and spec.loader:
                     config_module = importlib.util.module_from_spec(spec)
-                    # Insert into sys.modules before loading
-                    module_name = f"lerobot.robots.{robot_type}" if robot_type != "mock_robot" else "tests.mocks.mock_robot"
-                    sys.modules[module_name] = config_module
+                    # For mock_robot, set the module name correctly
+                    if robot_type == "mock_robot":
+                        sys.modules["tests.mocks.mock_robot"] = config_module
+                    # For other robots, use a unique name that won't interfere with normal imports
+                    else:
+                        sys.modules[f"lerobot.robots.{robot_type}.{robot_type}_config"] = config_module
                     spec.loader.exec_module(config_module)
 
             # Try again
