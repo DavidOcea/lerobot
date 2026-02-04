@@ -15,20 +15,20 @@ tasks:
       - name: "head_cam"
         type: "opencv"
         index: 0
-        width: 224
-        height: 224
+        width: 640
+        height: 480
         fps: 30
       - name: "left_wrist_cam"
         type: "opencv"
         index: 2
-        width: 224
-        height: 224
+        width: 640
+        height: 480
         fps: 30
       - name: "right_wrist_cam"
         type: "opencv"
         index: 6
-        width: 224
-        height: 224
+        width: 640
+        height: 480
         fps: 30
     completion_criteria:
       type: "stability"
@@ -41,26 +41,26 @@ robot_config:
   n_motors: 16  # Match the number of joints in the real robot
   random_values: true
   calibrated: true
-  image_height: 224
-  image_width: 224
+  image_height: 480
+  image_width: 640
   cameras:
     head_cam:
       type: "opencv"
       index: 0
-      width: 224
-      height: 224
+      width: 640
+      height: 480
       fps: 30
     left_wrist_cam:
       type: "opencv"
       index: 2
-      width: 224
-      height: 224
+      width: 640
+      height: 480
       fps: 30
     right_wrist_cam:
       type: "opencv"
       index: 6
-      width: 224
-      height: 224
+      width: 640
+      height: 480
       fps: 30
 
 # Collision detection configuration
