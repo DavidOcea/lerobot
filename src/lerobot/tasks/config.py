@@ -22,6 +22,10 @@ from lerobot.monitoring.config import MonitoringConfig
 # Import RobotConfig from robots module
 from lerobot.robots.config import RobotConfig
 
+# Import camera config from lerobot.cameras for robot configuration
+# Use alias to avoid conflict with local CameraConfig class
+from lerobot.cameras.configs import CameraConfig as RobotCameraConfig
+
 
 @dataclass
 class CompletionCriteria:
@@ -182,7 +186,35 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
         try:
             robot_config_class = RobotConfig.get_choice_class(robot_type)
             # Remove 'type' from dict as it's handled by draccus
-            robot_config = robot_config_class(**{k: v for k, v in robot_config_dict.items() if k != "type"})
+            robot_config_dict_clean = {k: v for k, v in robot_config_dict.items() if k != "type"}
+
+            # Parse camera configurations if present
+            if "cameras" in robot_config_dict_clean and robot_config_dict_clean["cameras"]:
+                cameras = {}
+                for cam_name, cam_dict in robot_config_dict_clean["cameras"].items():
+                    if isinstance(cam_dict, dict):
+                        # Convert YAML camera config to CameraConfig
+                        # The 'type' field is used to select the subclass (e.g., "opencv" -> OpenCVCameraConfig)
+                        cam_type = cam_dict.pop("type", "opencv")  # Remove 'type' from kwargs
+
+                        # Map common field names
+                        if "index" in cam_dict:
+                            cam_dict["index_or_path"] = cam_dict.pop("index")
+
+                        # Import the correct camera config class based on type
+                        if cam_type == "opencv":
+                            from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+                            cameras[cam_name] = OpenCVCameraConfig(**cam_dict)
+                        elif cam_type == "intelrealsense":
+                            from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
+                            cameras[cam_name] = RealSenseCameraConfig(**cam_dict)
+                        else:
+                            raise ValueError(f"Unknown camera type: {cam_type}")
+                    else:
+                        cameras[cam_name] = cam_dict
+                robot_config_dict_clean["cameras"] = cameras
+
+            robot_config = robot_config_class(**robot_config_dict_clean)
         except Exception as e:
             # If class not found, try loading the config module
             # Only load the config module, not the full package (to avoid hardware dependencies)
@@ -210,7 +242,36 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             # Try again
             try:
                 robot_config_class = RobotConfig.get_choice_class(robot_type)
-                robot_config = robot_config_class(**{k: v for k, v in robot_config_dict.items() if k != "type"})
+                # Remove 'type' from dict as it's handled by draccus
+                robot_config_dict_clean = {k: v for k, v in robot_config_dict.items() if k != "type"}
+
+                # Parse camera configurations if present
+                if "cameras" in robot_config_dict_clean and robot_config_dict_clean["cameras"]:
+                    cameras = {}
+                    for cam_name, cam_dict in robot_config_dict_clean["cameras"].items():
+                        if isinstance(cam_dict, dict):
+                            # Convert YAML camera config to CameraConfig
+                            # The 'type' field is used to select the subclass (e.g., "opencv" -> OpenCVCameraConfig)
+                            cam_type = cam_dict.pop("type", "opencv")  # Remove 'type' from kwargs
+
+                            # Map common field names
+                            if "index" in cam_dict:
+                                cam_dict["index_or_path"] = cam_dict.pop("index")
+
+                            # Import the correct camera config class based on type
+                            if cam_type == "opencv":
+                                from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+                                cameras[cam_name] = OpenCVCameraConfig(**cam_dict)
+                            elif cam_type == "intelrealsense":
+                                from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
+                                cameras[cam_name] = RealSenseCameraConfig(**cam_dict)
+                            else:
+                                raise ValueError(f"Unknown camera type: {cam_type}")
+                        else:
+                            cameras[cam_name] = cam_dict
+                    robot_config_dict_clean["cameras"] = cameras
+
+                robot_config = robot_config_class(**robot_config_dict_clean)
             except Exception as e2:
                 # Fallback: if we can't load the specific robot config, raise an error
                 # Using base RobotConfig would fail later when accessing config.type
