@@ -178,93 +178,50 @@ class LocalPolicyExecutor:
         # Prepare batch
         batch = {}
 
-        # Collect position and force data for state/force vectors
-        positions = []
-        forces = []
-
-        # Extract positions and forces from observation
-        for key in observation.keys():
-            if key == 'images':
-                continue
-            if key.endswith('.pos'):
-                # Extract index and sort by it
-                try:
-                    idx = int(key.split('_')[1].split('.')[0])
-                    positions.append((idx, observation[key]))
-                except (ValueError, IndexError):
-                    pass
-            elif key.endswith('.force') or '.force' in key:
-                try:
-                    idx = int(key.split('_')[1].split('.')[0])
-                    forces.append((idx, observation[key]))
-                except (ValueError, IndexError):
-                    pass
-
-        # Sort by index and create vectors
-        positions.sort(key=lambda x: x[0])
-        forces.sort(key=lambda x: x[0])
-
-        state_vector = [p[1] for p in positions]
-        force_vector = [f[1] for f in forces]
+        # Collect all position and force keys, sort them alphabetically for consistency
+        pos_keys = sorted([k for k in observation.keys() if k.endswith('.pos')])
+        force_keys = sorted([k for k in observation.keys() if k.endswith('.force') or '.force' in k])
 
         # Add state vector to batch
-        if state_vector:
+        if pos_keys:
             state_values = []
             for obs in self.observation_buffer:
-                # Extract state from each observation in buffer
-                obs_positions = []
-                for key in obs.keys():
-                    if key.endswith('.pos') and key != 'images':
-                        try:
-                            idx = int(key.split('_')[1].split('.')[0])
-                            obs_positions.append((idx, obs[key]))
-                        except (ValueError, IndexError):
-                            pass
-                obs_positions.sort(key=lambda x: x[0])
-                obs_state = [p[1] for p in obs_positions]
+                # Extract state from each observation in buffer (same order)
+                obs_state = [obs.get(k, 0.0) for k in pos_keys]
                 state_values.append(obs_state)
 
             # Pad if needed
             while len(state_values) < self.n_obs_steps:
-                state_values.insert(0, state_values[0] if state_values else [0.0] * 16)
+                state_values.insert(0, state_values[0] if state_values else [0.0] * len(pos_keys))
 
-            # Convert to tensor
+            # Convert to tensor: (n_obs_steps, n_joints)
             state_tensor = torch.tensor(state_values, dtype=torch.float32)
             if self.n_obs_steps == 1:
-                # (1, 16) - already has batch dimension, no temporal dimension
+                # (1, n_joints) - squeeze extra dimension
                 batch["observation.state"] = state_tensor
             else:
-                # (n_obs_steps, 16) -> (n_obs_steps, 16) needs batch dim
+                # (n_obs_steps, n_joints) -> add batch dimension
                 batch["observation.state"] = state_tensor.unsqueeze(0)
 
         # Add force vector to batch
-        if force_vector:
+        if force_keys:
             force_values = []
             for obs in self.observation_buffer:
-                # Extract force from each observation in buffer
-                obs_forces = []
-                for key in obs.keys():
-                    if ('.force' in key or key.endswith('.force')) and key != 'images':
-                        try:
-                            idx = int(key.split('_')[1].split('.')[0])
-                            obs_forces.append((idx, obs[key]))
-                        except (ValueError, IndexError):
-                            pass
-                obs_forces.sort(key=lambda x: x[0])
-                obs_force = [f[1] for f in obs_forces]
+                # Extract force from each observation in buffer (same order)
+                obs_force = [obs.get(k, 0.0) for k in force_keys]
                 force_values.append(obs_force)
 
             # Pad if needed
             while len(force_values) < self.n_obs_steps:
-                force_values.insert(0, force_values[0] if force_values else [0.0] * 16)
+                force_values.insert(0, force_values[0] if force_values else [0.0] * len(force_keys))
 
-            # Convert to tensor
+            # Convert to tensor: (n_obs_steps, n_joints)
             force_tensor = torch.tensor(force_values, dtype=torch.float32)
             if self.n_obs_steps == 1:
-                # (1, 16) - already has batch dimension, no temporal dimension
+                # (1, n_joints) - squeeze extra dimension
                 batch["observation.force"] = force_tensor
             else:
-                # (n_obs_steps, 16) -> (n_obs_steps, 16) needs batch dim
+                # (n_obs_steps, n_joints) -> add batch dimension
                 batch["observation.force"] = force_tensor.unsqueeze(0)
 
         # Handle nested images structure if present
