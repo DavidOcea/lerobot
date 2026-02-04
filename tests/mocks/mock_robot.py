@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any
 
+import numpy as np
+
 from lerobot.cameras import CameraConfig, make_cameras_from_configs
 from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 from lerobot.robots import Robot, RobotConfig
@@ -32,6 +34,8 @@ class MockRobotConfig(RobotConfig):
     random_values: bool = True
     static_values: list[float] | None = None
     calibrated: bool = True
+    image_height: int = 224  # Default image height for mock cameras
+    image_width: int = 224   # Default image width for mock cameras
 
     def __post_init__(self):
         if self.n_motors < 1:
@@ -42,9 +46,6 @@ class MockRobotConfig(RobotConfig):
 
         if self.static_values is not None and len(self.static_values) != self.n_motors:
             raise ValueError("Specify the same number of static values as motors")
-
-        if len(self.cameras) > 0:
-            raise NotImplementedError  # TODO with the cameras refactor
 
 
 class MockRobot(Robot):
@@ -108,12 +109,30 @@ class MockRobot(Robot):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
+        observation: dict[str, Any] = {}
+
+        # Add motor positions and forces
         if self.config.random_values:
-            return {f"{motor}.pos": random.uniform(-100, 100) for motor in self.motors}
+            for motor in self.motors:
+                observation[f"{motor}.pos"] = random.uniform(-100, 100)
+                observation[f"{motor}.force"] = random.uniform(-1.0, 1.0)  # Add random force values
         else:
-            return {
-                f"{motor}.pos": val for motor, val in zip(self.motors, self.config.static_values, strict=True)
-            }
+            for motor, val in zip(self.motors, self.config.static_values, strict=True):
+                observation[f"{motor}.pos"] = val
+                observation[f"{motor}.force"] = 0.0  # Add zero force for static mode
+
+        # Add mock camera images
+        if self.cameras:
+            observation["images"] = {}
+            for cam_name, cam_config in self.config.cameras.items():
+                # Generate random image with correct shape (height, width, 3)
+                observation["images"][cam_name] = np.random.randint(
+                    0, 255,
+                    (cam_config.height, cam_config.width, 3),
+                    dtype=np.uint8
+                )
+
+        return observation
 
     def send_action(self, action: dict[str, Any]) -> dict[str, Any]:
         if not self.is_connected:
@@ -126,3 +145,4 @@ class MockRobot(Robot):
             raise DeviceNotConnectedError(f"{self} is not connected.")
 
         self._is_connected = False
+

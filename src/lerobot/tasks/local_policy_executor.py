@@ -178,23 +178,139 @@ class LocalPolicyExecutor:
         # Prepare batch
         batch = {}
 
-        # Stack observations for temporal dimension
+        # Collect position and force data for state/force vectors
+        positions = []
+        forces = []
+
+        # Extract positions and forces from observation
         for key in observation.keys():
-            # Collect values from buffer
-            values = [obs.get(key, 0) for obs in self.observation_buffer]
+            if key == 'images':
+                continue
+            if key.endswith('.pos'):
+                # Extract index and sort by it
+                try:
+                    idx = int(key.split('_')[1].split('.')[0])
+                    positions.append((idx, observation[key]))
+                except (ValueError, IndexError):
+                    pass
+            elif key.endswith('.force') or '.force' in key:
+                try:
+                    idx = int(key.split('_')[1].split('.')[0])
+                    forces.append((idx, observation[key]))
+                except (ValueError, IndexError):
+                    pass
+
+        # Sort by index and create vectors
+        positions.sort(key=lambda x: x[0])
+        forces.sort(key=lambda x: x[0])
+
+        state_vector = [p[1] for p in positions]
+        force_vector = [f[1] for f in forces]
+
+        # Add state vector to batch
+        if state_vector:
+            state_values = []
+            for obs in self.observation_buffer:
+                # Extract state from each observation in buffer
+                obs_positions = []
+                for key in obs.keys():
+                    if key.endswith('.pos') and key != 'images':
+                        try:
+                            idx = int(key.split('_')[1].split('.')[0])
+                            obs_positions.append((idx, obs[key]))
+                        except (ValueError, IndexError):
+                            pass
+                obs_positions.sort(key=lambda x: x[0])
+                obs_state = [p[1] for p in obs_positions]
+                state_values.append(obs_state)
 
             # Pad if needed
-            while len(values) < self.n_obs_steps:
-                values.insert(0, values[0])
+            while len(state_values) < self.n_obs_steps:
+                state_values.insert(0, state_values[0] if state_values else [0.0] * 16)
 
             # Convert to tensor
-            if isinstance(values[0], (int, float)):
-                batch[key] = torch.tensor(values, dtype=torch.float32).unsqueeze(0)
-            elif isinstance(values[0], dict):
-                # Handle nested structures (like images)
-                batch[key] = values[0]  # TODO: proper stacking for images
+            state_tensor = torch.tensor(state_values, dtype=torch.float32)
+            if self.n_obs_steps == 1:
+                # (1, 16) - already has batch dimension, no temporal dimension
+                batch["observation.state"] = state_tensor
             else:
-                batch[key] = values[0]
+                # (n_obs_steps, 16) -> (n_obs_steps, 16) needs batch dim
+                batch["observation.state"] = state_tensor.unsqueeze(0)
+
+        # Add force vector to batch
+        if force_vector:
+            force_values = []
+            for obs in self.observation_buffer:
+                # Extract force from each observation in buffer
+                obs_forces = []
+                for key in obs.keys():
+                    if ('.force' in key or key.endswith('.force')) and key != 'images':
+                        try:
+                            idx = int(key.split('_')[1].split('.')[0])
+                            obs_forces.append((idx, obs[key]))
+                        except (ValueError, IndexError):
+                            pass
+                obs_forces.sort(key=lambda x: x[0])
+                obs_force = [f[1] for f in obs_forces]
+                force_values.append(obs_force)
+
+            # Pad if needed
+            while len(force_values) < self.n_obs_steps:
+                force_values.insert(0, force_values[0] if force_values else [0.0] * 16)
+
+            # Convert to tensor
+            force_tensor = torch.tensor(force_values, dtype=torch.float32)
+            if self.n_obs_steps == 1:
+                # (1, 16) - already has batch dimension, no temporal dimension
+                batch["observation.force"] = force_tensor
+            else:
+                # (n_obs_steps, 16) -> (n_obs_steps, 16) needs batch dim
+                batch["observation.force"] = force_tensor.unsqueeze(0)
+
+        # Handle nested images structure if present
+        if 'images' in observation and isinstance(observation['images'], dict):
+            for cam_name in observation['images'].keys():
+                # Collect values from buffer
+                values = []
+                for obs in self.observation_buffer:
+                    if 'images' in obs and isinstance(obs['images'], dict) and cam_name in obs['images']:
+                        values.append(obs['images'][cam_name])
+                    else:
+                        values.append(None)
+
+                # Filter out None values
+                if all(v is None for v in values):
+                    continue  # Skip this camera if all values are None
+
+                # Use first non-None value for padding
+                first_valid = next((v for v in values if v is not None), None)
+
+                if first_valid is None:
+                    continue
+
+                # Pad if needed
+                while len(values) < self.n_obs_steps:
+                    values.insert(0, first_valid)
+
+                # Convert numpy arrays to torch tensors
+                if hasattr(first_valid, 'shape'):
+                    import numpy as np
+
+                    if self.n_obs_steps == 1:
+                        # No temporal stacking needed, just use the single observation
+                        img = values[0]
+                        # Convert to tensor: (H, W, C) -> (1, C, H, W)
+                        tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+                    else:
+                        # Stack multiple observations along temporal dimension
+                        stacked = np.stack([v if v is not None else first_valid for v in values])
+                        # Convert to tensor: (time, H, W, C) -> (1, C, time, H, W)
+                        tensor = torch.from_numpy(stacked).permute(0, 3, 1, 2).unsqueeze(0).float() / 255.0
+
+                    # Use the prefixed key format expected by the policy
+                    batch[f"observation.images.{cam_name}"] = tensor
+
+        # Add batch dimension
 
         # Add batch dimension
         for key, value in batch.items():
