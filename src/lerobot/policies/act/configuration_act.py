@@ -89,7 +89,21 @@ class ACTConfig(PreTrainedConfig):
         kl_weight: The weight to use for the KL-divergence component of the loss if the variational objective
             is enabled. Loss is then calculated as: `reconstruction_loss + kl_weight * kld_loss`.
     """
-
+    # import pdb; pdb.set_trace()
+    # 增加一个cfg用来控制是否用state
+    use_state: bool = True
+    # 使用state_dropout
+    state_dropout: float = 0.0
+    head_dropout: float = 0.0
+    use_robot_position: bool = False
+    # img和position 进行交叉注意力
+    img_cross_atten: bool = False
+    use_head_img: bool = True
+    # 使用相对角度训练 (action = target_angle - current_angle)
+    use_relative_action: bool = False
+    # 仅对chunk第一步使用相对角度 
+    only_first_step: bool = False
+    
     # Input / output structure.
     n_obs_steps: int = 1
     chunk_size: int = 100
