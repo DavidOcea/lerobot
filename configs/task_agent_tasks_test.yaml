@@ -73,7 +73,7 @@ robot_config:
   control_frequency: 30  # Must be int, not float
   prometheus_port: 8000
   max_relative_joint_move: 15.0
-  joint_config_file: "config_supre_robot_joint.yaml"
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
   cameras:
     head_cam:
       type: "opencv"

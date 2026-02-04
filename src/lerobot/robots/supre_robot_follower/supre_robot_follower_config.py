@@ -19,23 +19,12 @@ class SupreRobotFollowerConfig(RobotConfig):
     """Configuration for the SupreRobot."""
     joint_config_file: str = _DEFAULT_JOINT_CONFIG_PATH
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
-    joint_direction: list= field(default_factory=lambda: [1, 1, -1, -1, -1, 1, 1, 1, 1, -1, -1, -1, 1, 1, 1, -1, -1])
+    joint_direction: list= field(default_factory=lambda: [1, 1, -1, -1, -1, 1, 1, 1, 1, -1, -1, -1, 1, 1, 1, -1])
     max_relative_joint_move: float = 15.0 #30.0
     prometheus_port: int | None = 8000
     control_frequency: int = 30
     calibration:list[MotorCalibration] = field(default_factory=lambda: [
-        # Trunk joints
-        MotorCalibration(
-            joint_name="trunk_joint_1",
-            min_position=-45.0,
-            max_position=45.0,
-        ),
-        MotorCalibration(
-            joint_name="trunk_joint_2",
-            min_position=-45.0,
-            max_position=0.0,
-        ),
-        # Left arm
+        # Left arm (7 joints)
         MotorCalibration(
             joint_name="left_arm_joint_1",
             min_position=-160.0,
@@ -71,6 +60,7 @@ class SupreRobotFollowerConfig(RobotConfig):
             min_position=0.0,
             max_position=1.0,
         ),
+        # Right arm (7 joints)
         MotorCalibration(
             joint_name="right_arm_joint_1",
             min_position=-160.0,
@@ -105,5 +95,16 @@ class SupreRobotFollowerConfig(RobotConfig):
             joint_name="right_arm_joint_7",
             min_position=0.0,
             max_position=1.0,
-        ),           
+        ),
+        # Trunk joints (2 joints)
+        MotorCalibration(
+            joint_name="trunk_joint_1",
+            min_position=-45.0,
+            max_position=45.0,
+        ),
+        MotorCalibration(
+            joint_name="trunk_joint_2",
+            min_position=-45.0,
+            max_position=0.0,
+        ),
     ])    
