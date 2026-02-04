@@ -304,15 +304,15 @@ class LocalPolicyExecutor:
                     action_dim = feature.shape[0]
                     # For now, use the joint_order from robot config if available
                     # This should match the training configuration
-                    # Use joint order matching config_supre_robot_joint.yaml:
+                    # Use joint order matching trunk_config_supre_robot_joint.yaml:
                     joint_names = [
-                        "trunk_joint_1", "trunk_joint_2",
                         "left_arm_joint_1", "left_arm_joint_2", "left_arm_joint_3",
                         "left_arm_joint_4", "left_arm_joint_5", "left_arm_joint_6",
                         "left_arm_joint_7",
                         "right_arm_joint_1", "right_arm_joint_2", "right_arm_joint_3",
                         "right_arm_joint_4", "right_arm_joint_5", "right_arm_joint_6",
                         "right_arm_joint_7",
+                        "trunk_joint_1", "trunk_joint_2",
                     ][:action_dim]
                 break
 
