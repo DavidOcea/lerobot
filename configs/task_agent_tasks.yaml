@@ -217,6 +217,37 @@ robot_config:
   prometheus_port: 8000
   max_relative_joint_move: 15.0
   joint_config_file: "config_supre_robot_joint.yaml"
+  cameras:
+    head_cam:
+      type: "opencv"
+      index: 0
+      width: 480
+      height: 640
+      fps: 30
+    left_wrist_cam:
+      type: "opencv"
+      index: 2
+      width: 480
+      height: 640
+      fps: 30
+    left_wrist_cam2:
+      type: "opencv"
+      index: 4
+      width: 480
+      height: 640
+      fps: 30
+    right_wrist_cam:
+      type: "opencv"
+      index: 6
+      width: 480
+      height: 640
+      fps: 30
+    right_wrist_cam2:
+      type: "opencv"
+      index: 8
+      width: 480
+      height: 640
+      fps: 30
 
 # Collision detection configuration
 collision_config:
