@@ -103,7 +103,10 @@ class LocalPolicyExecutor:
         logger.info(f"Set joint names from robot config: {joint_names}")
 
     def get_action(self, observation: dict[str, Any]) -> dict[str, float] | None:
-        """Get action from the current policy.
+        """Get action from the current policy using select_action().
+
+        This method uses the policy's select_action() which manages an internal action queue,
+        matching the behavior of the record command.
 
         Args:
             observation: Current observation dict containing:
@@ -122,7 +125,7 @@ class LocalPolicyExecutor:
             # Prepare observation batch
             batch = self._prepare_observation_batch(observation)
 
-            # Run inference
+            # Run inference using select_action (matches record command behavior)
             with torch.no_grad():
                 self.policy.eval()
                 action_tensor = self.policy.select_action(batch)
@@ -134,6 +137,8 @@ class LocalPolicyExecutor:
 
         except Exception as e:
             logger.error(f"Failed to get action: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def get_action_chunk(
