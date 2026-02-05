@@ -164,6 +164,43 @@ class CollisionHandler:
             logger.error(f"Failed to execute emergency stop: {e}")
             return False
 
+    def _reactivate_robot(self) -> bool:
+        """Reactivate robot hardware after emergency stop.
+
+        Returns:
+            True if reactivation was successful, False otherwise.
+        """
+        try:
+            if hasattr(self.robot, "_hardware_manager"):
+                hw_manager = self.robot._hardware_manager
+                # Reactivate all hardware interfaces
+                for instance in hw_manager._hardware_instances:
+                    if hasattr(instance, 'activate'):
+                        # Check if already active to avoid errors
+                        try:
+                            # For EyouMotorHardware and JodellGripperHardware
+                            # activate() will re-enable the hardware
+                            if hasattr(instance, 'can_manager_'):
+                                # EyouMotorHardware - re-enable motors
+                                for motor in instance.motor_nodes_:
+                                    motor.enable()
+                            elif hasattr(instance, 'gripper_clients'):
+                                # JodellGripperHardware - re-enable grippers
+                                for client in instance.gripper_clients:
+                                    client.enable()
+                        except Exception as e:
+                            logger.warning(f"Warning during reactivation: {e}")
+
+                logger.info("Robot hardware reactivated after emergency stop")
+                return True
+            else:
+                logger.warning("No hardware manager to reactivate")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to reactivate robot: {e}")
+            return False
+
     def retreat_to_safe_state(self, distance: float | None = None) -> bool:
         """Retreat robot joints to a safer state after collision.
 
@@ -183,6 +220,13 @@ class CollisionHandler:
             return False
 
         try:
+            # First, reactivate hardware after emergency stop
+            if not self._reactivate_robot():
+                logger.warning("Hardware reactivation failed, attempting retreat anyway")
+
+            # Wait a bit for hardware to stabilize
+            time.sleep(0.1)
+
             # Build retreat action by moving back from current position
             current_obs = self.robot.get_observation()
 

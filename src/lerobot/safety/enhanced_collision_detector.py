@@ -50,6 +50,11 @@ class EnhancedCollisionConfig(CollisionConfig):
     # Detection strategy
     detection_mode: str = "immediate"  # "immediate" or "windowed"
 
+    # Gripper-specific settings
+    gripper_force_scale: float = 5.0  # Scale factor to convert gripper 0-1 force to Nm equivalent
+    gripper_collision_threshold: float = 0.3  # Normalized threshold for gripper force
+    gripper_rate_threshold: float = 0.2  # Rate threshold for gripper force (per step)
+
 
 class EnhancedCollisionDetector(CollisionDetector):
     """Enhanced collision detector with multiple detection strategies.
@@ -93,11 +98,20 @@ class EnhancedCollisionDetector(CollisionDetector):
         self._total_checks += 1
         timestamp = time.time()
 
-        # Extract torque data
-        current_torques = {k: v for k, v in observation.items() if ".force" in k}
-
-        # Get current positions for velocity estimation
+        # Extract torque data with gripper force scaling
+        current_torques = {}
         current_positions = {k: v for k, v in observation.items() if ".pos" in k}
+
+        for key, value in observation.items():
+            if ".force" in key:
+                joint_name = key.replace(".force", "")
+                # Check if this is a gripper joint (joint_7)
+                if joint_name.endswith("_joint_7"):
+                    # Scale gripper force to Nm equivalent
+                    # Gripper force is 0-1 normalized, scale to Nm range
+                    current_torques[key] = value * self.config.gripper_force_scale
+                else:
+                    current_torques[key] = value
 
         # Initialize result
         result = CollisionResult(timestamp=timestamp, raw_torques=current_torques)
@@ -115,13 +129,13 @@ class EnhancedCollisionDetector(CollisionDetector):
         )
         anomalies.update(baseline_anomalies)
 
-        # Strategy 2: Force rate-of-change detection
+        # Strategy 2: Force rate-of-change detection (with gripper-specific handling)
         if self.config.enable_rate_detection:
-            rate_anomalies = self._check_force_rate_changes(current_torques)
+            rate_anomalies = self._check_force_rate_changes(current_torques, observation)
             anomalies.update(rate_anomalies)
 
         # Strategy 3: Immediate high-torque detection
-        immediate_anomalies = self._check_immediate_dangers(current_torques)
+        immediate_anomalies = self._check_immediate_dangers(current_torques, observation)
         anomalies.update(immediate_anomalies)
 
         # Strategy 4: Multi-joint detection
@@ -177,10 +191,10 @@ class EnhancedCollisionDetector(CollisionDetector):
             else:
                 result.severity = "low"
 
-        # Update previous forces for rate detection
-        for joint_name, force_value in current_torques.items():
-            joint = joint_name.replace(".force", "")
-            self._prev_forces[joint] = force_value
+        # Update previous forces for rate detection (store original values)
+        for key, value in observation.items():
+            if ".force" in key:
+                self._prev_forces[key] = value
 
         return result
 
@@ -230,60 +244,95 @@ class EnhancedCollisionDetector(CollisionDetector):
 
         return anomalies
 
-    def _check_force_rate_changes(self, current_torques: dict[str, float]) -> dict[str, float]:
+    def _check_force_rate_changes(
+        self, current_torques: dict[str, float], raw_observation: dict[str, Any]
+    ) -> dict[str, float]:
         """Check for sudden force changes (rate-of-change detection).
 
         Args:
-            current_torques: Current torque values
+            current_torques: Current torque values (scaled for grippers)
+            raw_observation: Raw observation with original force values
 
         Returns:
             Dictionary of joints with excessive force rate changes
         """
         anomalies = {}
 
-        for joint_force_key, torque_value in current_torques.items():
-            joint_name = joint_force_key.replace(".force", "")
+        for key, value in raw_observation.items():
+            if ".force" in key:
+                joint_name = key.replace(".force", "")
 
-            # Need previous force to compute rate
-            if joint_name not in self._prev_forces:
-                continue
+                # Need previous force to compute rate
+                prev_key = f"{joint_name}.force"
+                if prev_key not in self._prev_forces:
+                    continue
 
-            # Compute rate of change
-            force_delta = abs(torque_value - self._prev_forces[joint])
+                prev_force = self._prev_forces[prev_key]
+                force_delta = abs(value - prev_force)
 
-            # Check against threshold
-            if force_delta > self.config.force_rate_threshold:
-                anomalies[joint_name] = force_delta
-                self._rate_detections += 1
+                # Check if this is a gripper joint
+                if joint_name.endswith("_joint_7"):
+                    # Use gripper-specific rate threshold
+                    if force_delta > self.config.gripper_rate_threshold:
+                        # Scale to Nm equivalent for anomaly reporting
+                        scaled_delta = force_delta * self.config.gripper_force_scale
+                        anomalies[joint_name] = scaled_delta
+                        self._rate_detections += 1
 
-                if force_delta > self.config.force_rate_threshold * 3:
-                    # Very high rate - critical
-                    anomalies[joint_name] = float("inf")
-                    self._immediate_detections += 1
+                        if force_delta > self.config.gripper_rate_threshold * 3:
+                            # Very high rate - critical
+                            anomalies[joint_name] = float("inf")
+                            self._immediate_detections += 1
+                else:
+                    # Use arm motor rate threshold
+                    if force_delta > self.config.force_rate_threshold:
+                        anomalies[joint_name] = force_delta
+                        self._rate_detections += 1
+
+                        if force_delta > self.config.force_rate_threshold * 3:
+                            # Very high rate - critical
+                            anomalies[joint_name] = float("inf")
+                            self._immediate_detections += 1
 
         return anomalies
 
-    def _check_immediate_dangers(self, current_torques: dict[str, float]) -> dict[str, float]:
+    def _check_immediate_dangers(
+        self, current_torques: dict[str, float], raw_observation: dict[str, Any]
+    ) -> dict[str, float]:
         """Check for immediate dangerous conditions.
 
         Args:
-            current_torques: Current torque values
+            current_torques: Current torque values (scaled for grippers)
+            raw_observation: Raw observation with original force values
 
         Returns:
             Dictionary of joints with dangerous conditions
         """
         anomalies = {}
 
-        for joint_force_key, torque_value in current_torques.items():
-            joint_name = joint_force_key.replace(".force", "")
+        for key, value in raw_observation.items():
+            if ".force" in key:
+                joint_name = key.replace(".force", "")
 
-            # Check absolute torque
-            if abs(torque_value) > self.config.immediate_absolute_limit:
-                anomalies[joint_name] = float("inf")
+                # Check if this is a gripper joint
+                if joint_name.endswith("_joint_7"):
+                    # Check gripper absolute force against threshold
+                    if value > self.config.gripper_collision_threshold:
+                        # Scale to Nm equivalent
+                        scaled_value = value * self.config.gripper_force_scale
+                        anomalies[joint_name] = scaled_value
 
-            # Check against immediate threshold
-            if abs(torque_value) > self.config.immediate_threshold:
-                anomalies[joint_name] = abs(torque_value)
+                        # Very high gripper force - critical
+                        if value > self.config.gripper_collision_threshold * 2:
+                            anomalies[joint_name] = float("inf")
+                else:
+                    # Check arm motor absolute torque
+                    if abs(value) > self.config.immediate_absolute_limit:
+                        anomalies[joint_name] = float("inf")
+
+                    # Check against immediate threshold
+                    if abs(value) > self.config.immediate_threshold:
+                        anomalies[joint_name] = abs(value)
 
         return anomalies
 
@@ -424,5 +473,9 @@ def create_enhanced_collision_config(
         detection_mode="immediate",
         adaptive_mode=True,
         velocity_compensation=True,
+        # Gripper-specific settings
+        gripper_force_scale=5.0,  # Convert 0-1 gripper force to Nm equivalent
+        gripper_collision_threshold=0.3,  # Normalized threshold for gripper
+        gripper_rate_threshold=0.15,  # Rate threshold for gripper (more sensitive)
         **kwargs,
     )
