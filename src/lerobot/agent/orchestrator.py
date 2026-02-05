@@ -163,12 +163,26 @@ class TaskAgentOrchestrator:
 
         # 7. Initialize task scheduler with local executor
         from lerobot.tasks.task_scheduler import LocalTaskScheduler
-        self.task_scheduler = LocalTaskScheduler(
+        from lerobot.tasks.adaptive_scheduler import AdaptiveTaskScheduler
+
+        base_scheduler = LocalTaskScheduler(
             tasks=self.config.tasks,
             robot=self.robot,
             policy_executor=self.local_executor,
             completion_detector=None,  # Will be set per task
         )
+
+        # Wrap with adaptive scheduler if enabled
+        if getattr(self.config, 'enable_adaptive_scheduler', True):
+            gripper_config = getattr(self.config, 'gripper_config', None)
+            self.task_scheduler = AdaptiveTaskScheduler(
+                scheduler=base_scheduler,
+                gripper_config=gripper_config or {}
+            )
+            logger.info("Using AdaptiveTaskScheduler with force feedback and adaptive speed control")
+        else:
+            self.task_scheduler = base_scheduler
+            logger.info("Using standard LocalTaskScheduler")
 
         self.is_initialized = True
         logger.info("Initialization complete (LOCAL mode)")
@@ -389,12 +403,21 @@ class TaskAgentOrchestrator:
                 task.max_duration = self.config.override_max_duration
 
             # Execute task
-            result = self.task_scheduler.execute_task_with_safety(
-                task,
-                collision_detector=self.collision_detector,
-                collision_handler=self.collision_handler,
-                state_monitor=self.state_monitor,
-            )
+            # Check if using adaptive scheduler
+            if hasattr(self.task_scheduler, 'execute_task_adaptive'):
+                result = self.task_scheduler.execute_task_adaptive(
+                    task,
+                    collision_detector=self.collision_detector,
+                    collision_handler=self.collision_handler,
+                    state_monitor=self.state_monitor,
+                )
+            else:
+                result = self.task_scheduler.execute_task_with_safety(
+                    task,
+                    collision_detector=self.collision_detector,
+                    collision_handler=self.collision_handler,
+                    state_monitor=self.state_monitor,
+                )
 
             # Restore original settings
             task.max_retries = original_max_retries

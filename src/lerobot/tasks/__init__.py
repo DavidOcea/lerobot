@@ -19,6 +19,7 @@ from .config import (
 # Import RobotConfig directly from robots module to avoid conflicts
 from lerobot.robots.config import RobotConfig
 from .local_policy_executor import LocalPolicyExecutor
+from .adaptive_scheduler import AdaptiveTaskScheduler
 from .task_scheduler import (
     ExecutionSummary,
     LocalTaskScheduler,
@@ -40,6 +41,8 @@ __all__ = [
     "load_config_from_yaml",
     # Policy execution
     "LocalPolicyExecutor",
+    # Adaptive scheduling
+    "AdaptiveTaskScheduler",
     # Scheduling
     "ExecutionSummary",
     "LocalTaskScheduler",
