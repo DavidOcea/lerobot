@@ -76,7 +76,7 @@ class AdaptiveTaskScheduler:
         Returns:
             TaskResult with execution outcome
         """
-        from time import time
+        import time
 
         start_time = time.time()
         timeout = start_time + task.max_duration
