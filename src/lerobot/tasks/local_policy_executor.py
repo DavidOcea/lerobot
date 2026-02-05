@@ -356,7 +356,10 @@ class LocalPolicyExecutor:
     def reset(self):
         """Reset the executor state."""
         self.observation_buffer.clear()
-        logger.debug("Executor reset")
+        # Also reset the policy's internal action queue
+        if self.policy is not None:
+            self.policy.reset()
+        logger.debug("Executor reset (policy action queue cleared)")
 
     def get_info(self) -> dict[str, Any]:
         """Get executor information."""

@@ -405,6 +405,13 @@ class AdaptiveTaskScheduler:
                 handler_result = collision_handler.handle_collision(
                     collision_result, observation
                 )
+
+                # Reset policy executor after retreat to clear stale state
+                if handler_result.recovery_success:
+                    if hasattr(self.scheduler, 'policy_executor'):
+                        self.scheduler.policy_executor.reset()
+                        logger.info("Policy executor reset after collision recovery")
+
                 return handler_result.can_continue
         except Exception as e:
             logger.error(f"Collision handler failed: {e}")
@@ -422,6 +429,12 @@ class AdaptiveTaskScheduler:
 
             self.scheduler.robot.send_action(retreat_action)
             time.sleep(0.1)
+
+            # Reset policy executor after fallback retreat
+            if hasattr(self.scheduler, 'policy_executor'):
+                self.scheduler.policy_executor.reset()
+                logger.info("Policy executor reset after fallback retreat")
+
             return True
         except Exception as e:
             logger.error(f"Retreat failed: {e}")
