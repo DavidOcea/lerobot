@@ -124,7 +124,7 @@ collision_config:
 
   # Recovery settings
   recovery_strategy: "stop_and_retreat"
-  recovery_retreat_distance: 0.08  # Larger retreat for safety
+  recovery_retreat_distance: 0.15  # Increased from 0.08 for safer retreat (more safety margin)
   recovery_timeout: 5.0
 
   # Calibration settings
@@ -197,10 +197,18 @@ collision_config:
   # Safety limits
   max_torque_limit: 4.0  # Reduced from 5.0 for extra safety
 
+  # Gripper-specific settings
+  gripper_force_scale: 5.0  # Scale factor to convert gripper 0-1 force to Nm equivalent
+  gripper_collision_threshold: 0.25  # Normalized threshold for gripper force (more sensitive)
+  gripper_rate_threshold: 0.1  # Rate threshold for gripper force (per step, more sensitive)
+
 # Gripper force feedback configuration
 gripper_config:
+  # Force scaling for gripper (converts 0-1 normalized to Nm equivalent)
+  gripper_force_scale: 5.0  # Scale factor for gripper force
+
   # Force threshold for successful grasp detection
-  grasp_force_threshold: 0.6  # Nm - indicates object is gripped
+  grasp_force_threshold: 0.4  # Nm - indicates object is gripped (lowered for better detection)
   grasp_force_stable_frames: 3  # Number of consecutive frames above threshold
 
   # Force threshold for object release confirmation
@@ -211,12 +219,12 @@ gripper_config:
 
   # Adaptive speed based on force feedback
   enable_adaptive_speed: true
-  high_force_threshold: 1.2  # Slow down when approaching this force
+  high_force_threshold: 0.8  # Slow down when approaching this force (lowered for earlier response)
   slow_speed_factor: 0.3  # Reduce speed by this factor
 
   # Surface proximity detection (for placement tasks)
   enable_surface_proximity_detection: true
-  surface_force_threshold: 0.8  # Nm - indicates near surface
+  surface_force_threshold: 0.5  # Nm - indicates near surface (lowered for earlier detection)
   proximity_slow_factor: 0.2  # Very slow when near surface
   proximity_max_approach_speed: 0.5  # Max speed when approaching surface
 

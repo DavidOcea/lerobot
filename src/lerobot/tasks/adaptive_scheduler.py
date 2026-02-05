@@ -48,6 +48,7 @@ class AdaptiveTaskScheduler:
         self.grasp_detected = False
         self.grasp_stable_frames = 0
         self.current_gripper_force = 0.0
+        self.current_gripper_force_raw = 0.0  # Raw normalized force (0-1)
 
         # Adaptive speed control
         self.current_speed_factor = 1.0
@@ -244,16 +245,28 @@ class AdaptiveTaskScheduler:
 
         Args:
             observation: Current observation dict with force data
+
+        Note: Gripper force is normalized 0-1, needs to be scaled for comparison
         """
         # Extract gripper forces (both left and right)
-        left_gripper_force = observation.get("left_arm_joint_7.force", 0.0)
-        right_gripper_force = observation.get("right_arm_joint_7.force", 0.0)
+        # Note: Gripper force is in 0-1 range, scale to Nm equivalent
+        gripper_force_scale = self.gripper_config.get("gripper_force_scale", 5.0)
+
+        left_gripper_force_raw = observation.get("left_arm_joint_7.force", 0.0)
+        right_gripper_force_raw = observation.get("right_arm_joint_7.force", 0.0)
+
+        # Scale to Nm equivalent for threshold comparison
+        left_gripper_force = left_gripper_force_raw * gripper_force_scale
+        right_gripper_force = right_gripper_force_raw * gripper_force_scale
 
         # Track the higher force (assuming one gripper is active)
         self.current_gripper_force = max(left_gripper_force, right_gripper_force)
 
+        # Also track raw force for rate detection
+        self.current_gripper_force_raw = max(left_gripper_force_raw, right_gripper_force_raw)
+
         # Check grasp stability
-        grasp_threshold = self.gripper_config.get("grasp_force_threshold", 0.8)
+        grasp_threshold = self.gripper_config.get("grasp_force_threshold", 0.4)
         stable_frames = self.gripper_config.get("grasp_force_stable_frames", 3)
 
         if self.current_gripper_force > grasp_threshold:
@@ -273,7 +286,7 @@ class AdaptiveTaskScheduler:
         if not self.gripper_config.get("enable_adaptive_speed", True):
             return 1.0
 
-        high_force_threshold = self.gripper_config.get("high_force_threshold", 1.5)
+        high_force_threshold = self.gripper_config.get("high_force_threshold", 0.8)
         slow_speed_factor = self.gripper_config.get("slow_speed_factor", 0.3)
 
         # Reduce speed when approaching objects (high force detected)
@@ -286,6 +299,15 @@ class AdaptiveTaskScheduler:
         else:
             self.high_force_detected = False
             return 1.0
+
+    def _reset_grasp_state(self) -> None:
+        """Reset grasp detection state."""
+        self.grasp_detected = False
+        self.grasp_stable_frames = 0
+        self.current_gripper_force = 0.0
+        self.current_gripper_force_raw = 0.0
+        self.current_speed_factor = 1.0
+        self.high_force_detected = False
 
     def _apply_speed_control(
         self, action: dict[str, float], speed_factor: float
@@ -404,14 +426,6 @@ class AdaptiveTaskScheduler:
         except Exception as e:
             logger.error(f"Retreat failed: {e}")
             return False
-
-    def _reset_grasp_state(self) -> None:
-        """Reset grasp detection state."""
-        self.grasp_detected = False
-        self.grasp_stable_frames = 0
-        self.current_gripper_force = 0.0
-        self.current_speed_factor = 1.0
-        self.high_force_detected = False
 
     def get_statistics(self) -> dict[str, Any]:
         """Get execution statistics.
