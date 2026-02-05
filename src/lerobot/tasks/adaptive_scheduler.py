@@ -11,7 +11,8 @@ This module provides enhanced task execution with:
 import logging
 from typing import TYPE_CHECKING, Any
 
-from .config import TaskConfig, TaskResult, TaskStatus
+from .config import TaskConfig
+from .task_scheduler import TaskResult, TaskStatus
 
 if TYPE_CHECKING:
     from .task_scheduler import LocalTaskScheduler
