@@ -19,7 +19,7 @@ class SupreRobotFollowerConfig(RobotConfig):
     """Configuration for the SupreRobot."""
     joint_config_file: str = _DEFAULT_JOINT_CONFIG_PATH
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
-    joint_direction: list= field(default_factory=lambda: [1, 1, -1, -1, -1, 1, 1, 1, 1, -1, -1, -1, 1, 1, 1, -1])
+    joint_direction: list= field(default_factory=lambda: [-1, -1, 1, 1, 1, -1, 1, -1, -1, 1, 1, 1, -1, 1, 1, 1])
     max_relative_joint_move: float = 15.0 #30.0
     prometheus_port: int | None = 8000
     control_frequency: int = 30
