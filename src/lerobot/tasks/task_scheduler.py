@@ -677,11 +677,10 @@ class LocalTaskScheduler:
         collision_handler=None,
         state_monitor=None,
     ) -> dict[str, Any]:
-        """Execute a single attempt of a task using action chunks.
+        """Execute a single attempt of a task.
 
-        This method uses get_action_chunk() to retrieve a full sequence of actions
-        from the policy, then executes them sequentially. This is more efficient and
-        produces smoother motion than getting actions one at a time.
+        This method uses get_action() which internally manages the policy's action queue,
+        matching the behavior of the record command for smoother motion.
 
         Args:
             task: Task configuration.
@@ -711,10 +710,6 @@ class LocalTaskScheduler:
         control_dt = 1.0 / 30.0  # 30 Hz
         if hasattr(task, "control_frequency"):
             control_dt = 1.0 / task.control_frequency
-
-        # Track if we need a new action chunk
-        action_chunk: list[dict[str, float]] | None = None
-        chunk_index = 0
 
         try:
             # Initialize with empty action for first collision check
@@ -752,8 +747,8 @@ class LocalTaskScheduler:
                                 result["error"] = "Collision - cannot continue"
                                 return result
 
-                        # Reset action chunk after collision to get fresh trajectory
-                        action_chunk = None
+                        # Reset executor state after collision to get fresh trajectory
+                        self.policy_executor.reset()
                         last_action = None
                         time.sleep(0.5)
                         continue
@@ -770,18 +765,12 @@ class LocalTaskScheduler:
                         logger.info(f"Task completed with confidence: {detection.confidence}")
                         return result
 
-                # Get new action chunk if needed
-                if action_chunk is None or chunk_index >= len(action_chunk):
-                    action_chunk = self.policy_executor.get_action_chunk(observation)
-                    if action_chunk is None or len(action_chunk) == 0:
-                        result["error"] = "Failed to get action chunk from policy"
-                        return result
-                    chunk_index = 0
-                    logger.debug(f"Got new action chunk with {len(action_chunk)} actions")
+                # Get action from policy (internal action queue management)
+                action = self.policy_executor.get_action(observation)
+                if action is None:
+                    result["error"] = "Failed to get action from policy"
+                    return result
 
-                # Get current action from chunk
-                action = action_chunk[chunk_index]
-                chunk_index += 1
                 last_action = action
 
                 # Send action to robot
