@@ -87,6 +87,13 @@ class AdaptiveTaskScheduler:
             start_time=start_time,
         )
 
+        # Load policy for this task first
+        logger.info(f"Loading policy for task {task.name}: {task.policy_path}")
+        if not self.scheduler.policy_executor.load_policy(task.policy_path, task.policy_type):
+            result.status = TaskStatus.FATAL_FAILURE
+            result.error_message = f"Failed to load policy from {task.policy_path}"
+            return result
+
         # Reset state
         self.scheduler.policy_executor.reset()
         self._reset_grasp_state()
