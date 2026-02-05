@@ -72,7 +72,7 @@ robot_config:
   type: "supre_robot_follower"
   control_frequency: 50  # Higher frequency for smoother motion (was 30)
   prometheus_port: 8000
-  max_relative_joint_move: 2.0  # Smaller steps for smoother motion (was 3.0)
+  max_relative_joint_move: 1.5  # Even smaller for maximum safety (was 2.0)
   joint_config_file: "trunk_config_supre_robot_joint.yaml"
   cameras:
     head_cam:
@@ -106,41 +106,76 @@ robot_config:
       height: 480
       fps: 30
 
-# Collision detection configuration - Optimized for safety
+# Collision detection configuration - Enhanced for maximum safety
 collision_config:
-  # Lower threshold for earlier collision detection
-  collision_threshold: 1.0  # Reduced from 2.0 for faster detection
-  detection_window: 2  # Reduced from 3 for faster response
+  # Use enhanced collision detector with multiple detection strategies
+  use_enhanced_detector: true
+
+  # Base threshold (more sensitive)
+  collision_threshold: 0.8  # Nm - reduced from 1.0 for faster detection
+
+  # Immediate detection mode
+  detection_mode: "immediate"  # Trigger immediately on anomaly
+  detection_window: 1  # Immediate response (no waiting for confirmation)
+
+  # Adaptive mode
   adaptive_mode: true
   velocity_compensation: true
+
+  # Recovery settings
   recovery_strategy: "stop_and_retreat"
-  recovery_retreat_distance: 0.05
+  recovery_retreat_distance: 0.08  # Larger retreat for safety
+  recovery_timeout: 5.0
+
+  # Calibration settings
   auto_calibrate: true
-  calibration_samples: 50
+  calibration_samples: 100  # More samples for accurate baseline
+  calibration_threshold: 0.1  # Tighter calibration requirement
 
-  # Per-joint thresholds - more sensitive for fragile joints
+  # Enhanced detection parameters
+  enable_rate_detection: true
+  force_rate_threshold: 1.5  # Nm per step - detect sudden spikes
+  immediate_threshold: 3.0  # Nm - trigger immediately
+  immediate_absolute_limit: 5.0  # Nm - hard limit
+
+  # Surface detection (detects contact with work surface)
+  enable_surface_detection: true
+  surface_force_threshold: 1.2  # Nm
+  surface_consecutive_frames: 3
+
+  # Multi-joint detection (catches large-scale collisions)
+  multi_joint_threshold: 3  # Trigger if 3+ joints over threshold
+  multi_joint_threshold_per_joint: 0.4  # Lower threshold for multi-joint
+
+  # Per-joint thresholds - more sensitive for all joints
   joint_specific_thresholds:
-    # Lower thresholds for grippers (most fragile)
-    left_arm_joint_7: 0.5
-    right_arm_joint_7: 0.5
-    # Trunk joints (high inertia)
-    trunk_joint_1: 1.5
-    trunk_joint_2: 1.5
-    # Arm joints
-    left_arm_joint_1: 0.8
-    left_arm_joint_2: 0.8
-    left_arm_joint_3: 0.8
-    left_arm_joint_4: 0.8
-    left_arm_joint_5: 0.8
-    left_arm_joint_6: 0.8
-    right_arm_joint_1: 0.8
-    right_arm_joint_2: 0.8
-    right_arm_joint_3: 0.8
-    right_arm_joint_4: 0.8
-    right_arm_joint_5: 0.8
-    right_arm_joint_6: 0.8
+    # Grippers (most fragile, most sensitive)
+    left_arm_joint_7: 0.3
+    right_arm_joint_7: 0.3
 
-  # Joint inertia for velocity compensation
+    # Trunk joints (high inertia, need moderate sensitivity)
+    trunk_joint_1: 1.2
+    trunk_joint_2: 1.2
+
+    # Arm joints - proximal (stronger, less sensitive)
+    left_arm_joint_1: 0.6
+    left_arm_joint_2: 0.6
+    right_arm_joint_1: 0.6
+    right_arm_joint_2: 0.6
+
+    # Arm joints - middle (moderate sensitivity)
+    left_arm_joint_3: 0.5
+    left_arm_joint_4: 0.5
+    left_arm_joint_5: 0.5
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 0.5
+    right_arm_joint_5: 0.5
+
+    # Arm joints - distal (more sensitive, closer to end-effector)
+    left_arm_joint_6: 0.4
+    right_arm_joint_6: 0.4
+
+  # Joint inertia for accurate velocity compensation
   joint_inertia:
     trunk_joint_1: 0.8
     trunk_joint_2: 0.8
@@ -160,24 +195,30 @@ collision_config:
     right_arm_joint_7: 0.02
 
   # Safety limits
-  max_torque_limit: 3.0  # Reduced from 5.0
+  max_torque_limit: 4.0  # Reduced from 5.0 for extra safety
 
 # Gripper force feedback configuration
 gripper_config:
   # Force threshold for successful grasp detection
-  grasp_force_threshold: 0.8  # Nm - indicates object is gripped
+  grasp_force_threshold: 0.6  # Nm - indicates object is gripped
   grasp_force_stable_frames: 3  # Number of consecutive frames above threshold
 
   # Force threshold for object release confirmation
   release_force_threshold: 0.1  # Nm - indicates gripper is open
 
   # Maximum gripper force to avoid damage
-  max_gripper_force: 2.0  # Nm
+  max_gripper_force: 1.8  # Nm
 
   # Adaptive speed based on force feedback
   enable_adaptive_speed: true
-  high_force_threshold: 1.5  # Slow down when approaching this force
+  high_force_threshold: 1.2  # Slow down when approaching this force
   slow_speed_factor: 0.3  # Reduce speed by this factor
+
+  # Surface proximity detection (for placement tasks)
+  enable_surface_proximity_detection: true
+  surface_force_threshold: 0.8  # Nm - indicates near surface
+  proximity_slow_factor: 0.2  # Very slow when near surface
+  proximity_max_approach_speed: 0.5  # Max speed when approaching surface
 
 # Monitoring configuration
 monitoring_config:
