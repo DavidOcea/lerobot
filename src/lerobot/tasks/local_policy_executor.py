@@ -50,6 +50,9 @@ class LocalPolicyExecutor:
         self.observation_buffer: list[dict[str, Any]] = []
         self.n_obs_steps = 1
 
+        # Cache for joint names from robot config
+        self._joint_names_from_robot: list[str] | None = None
+
     def load_policy(self, policy_path: str, policy_type: str = "act") -> bool:
         """Load a policy from disk.
 
@@ -87,6 +90,17 @@ class LocalPolicyExecutor:
         except Exception as e:
             logger.error(f"Failed to load policy: {e}")
             return False
+
+    def set_joint_names(self, joint_names: list[str]) -> None:
+        """Set the joint names to use for observation/action mapping.
+
+        This should match the order used during policy training.
+
+        Args:
+            joint_names: List of joint names in the order expected by the policy.
+        """
+        self._joint_names_from_robot = joint_names
+        logger.info(f"Set joint names from robot config: {joint_names}")
 
     def get_action(self, observation: dict[str, Any]) -> dict[str, float] | None:
         """Get action from the current policy.
@@ -178,9 +192,15 @@ class LocalPolicyExecutor:
         # Prepare batch
         batch = {}
 
-        # Collect all position and force keys, sort them alphabetically for consistency
-        pos_keys = sorted([k for k in observation.keys() if k.endswith('.pos')])
-        force_keys = sorted([k for k in observation.keys() if k.endswith('.force') or '.force' in k])
+        # Use joint names from robot config if available, otherwise fallback to sorted keys
+        if self._joint_names_from_robot is not None:
+            # Use the order from robot config (matches training data)
+            pos_keys = [f"{name}.pos" for name in self._joint_names_from_robot]
+            force_keys = [f"{name}.force" for name in self._joint_names_from_robot]
+        else:
+            # Fallback: collect all position and force keys, sort alphabetically
+            pos_keys = sorted([k for k in observation.keys() if k.endswith('.pos')])
+            force_keys = sorted([k for k in observation.keys() if k.endswith('.force') or '.force' in k])
 
         # Add state vector to batch
         if pos_keys:
@@ -293,27 +313,30 @@ class LocalPolicyExecutor:
         # Get action features from policy
         action_features = self.policy.config.output_features
 
-        # Extract joint names from action features
-        joint_names = []
+        # Determine joint names to use
+        if self._joint_names_from_robot is not None:
+            # Use joint names from robot config (matches training data order)
+            joint_names = self._joint_names_from_robot
+        else:
+            # Fallback: use hardcoded joint order
+            # This matches trunk_config_supre_robot_joint.yaml order
+            joint_names = [
+                "left_arm_joint_1", "left_arm_joint_2", "left_arm_joint_3",
+                "left_arm_joint_4", "left_arm_joint_5", "left_arm_joint_6",
+                "left_arm_joint_7",
+                "right_arm_joint_1", "right_arm_joint_2", "right_arm_joint_3",
+                "right_arm_joint_4", "right_arm_joint_5", "right_arm_joint_6",
+                "right_arm_joint_7",
+                "trunk_joint_1", "trunk_joint_2",
+            ]
+
+        # Trim to action_dim
         for key in action_features.keys():
             if key == "action":
-                # Get the feature shape which should contain the action dimension
                 feature = action_features[key]
                 if hasattr(feature, "shape") and len(feature.shape) > 0:
-                    # The action dimension should match the number of joints
                     action_dim = feature.shape[0]
-                    # For now, use the joint_order from robot config if available
-                    # This should match the training configuration
-                    # Use joint order matching trunk_config_supre_robot_joint.yaml:
-                    joint_names = [
-                        "left_arm_joint_1", "left_arm_joint_2", "left_arm_joint_3",
-                        "left_arm_joint_4", "left_arm_joint_5", "left_arm_joint_6",
-                        "left_arm_joint_7",
-                        "right_arm_joint_1", "right_arm_joint_2", "right_arm_joint_3",
-                        "right_arm_joint_4", "right_arm_joint_5", "right_arm_joint_6",
-                        "right_arm_joint_7",
-                        "trunk_joint_1", "trunk_joint_2",
-                    ][:action_dim]
+                    joint_names = joint_names[:action_dim]
                 break
 
         # Convert to dict

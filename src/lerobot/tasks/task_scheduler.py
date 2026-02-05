@@ -498,6 +498,10 @@ class LocalTaskScheduler:
         self.policy_executor: LocalPolicyExecutor = policy_executor
         self.completion_detector = completion_detector
 
+        # Get joint names from robot for consistent observation/action mapping
+        if hasattr(robot, 'observation_joint_names'):
+            self.policy_executor.set_joint_names(robot.observation_joint_names)
+
         # Execution state
         self.current_policy_path: str | None = None
         self.action_history: deque[dict[str, Any]] = deque(maxlen=100)
