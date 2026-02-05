@@ -214,9 +214,9 @@ tasks:
 # Robot configuration
 robot_config:
   type: "supre_robot_follower"
-  control_frequency: 30  # Must be int, not float
+  control_frequency: 50  # Higher frequency for smoother motion
   prometheus_port: 8000
-  max_relative_joint_move: 3.0  # Reduced for safer motion
+  max_relative_joint_move: 2.0  # Smaller steps for smoother motion
   joint_config_file: "trunk_config_supre_robot_joint.yaml"
   cameras:
     head_cam:
@@ -308,6 +308,6 @@ monitoring_config:
   state_history_size: 1000
 
 # Execution settings
-environment_dt: 0.0333  # Control loop timestep (30 Hz)
+environment_dt: 0.02  # Control loop timestep (50 Hz)
 observation_timeout: 5.0  # Seconds to wait for observations
 action_timeout: 5.0  # Seconds to wait for actions
