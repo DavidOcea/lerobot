@@ -673,7 +673,11 @@ class LocalTaskScheduler:
         collision_handler=None,
         state_monitor=None,
     ) -> dict[str, Any]:
-        """Execute a single attempt of a task.
+        """Execute a single attempt of a task using action chunks.
+
+        This method uses get_action_chunk() to retrieve a full sequence of actions
+        from the policy, then executes them sequentially. This is more efficient and
+        produces smoother motion than getting actions one at a time.
 
         Args:
             task: Task configuration.
@@ -699,8 +703,22 @@ class LocalTaskScheduler:
         # Reset executor state
         self.policy_executor.reset()
 
+        # Control frequency from config
+        control_dt = 1.0 / 30.0  # 30 Hz
+        if hasattr(task, "control_frequency"):
+            control_dt = 1.0 / task.control_frequency
+
+        # Track if we need a new action chunk
+        action_chunk: list[dict[str, float]] | None = None
+        chunk_index = 0
+
         try:
+            # Initialize with empty action for first collision check
+            last_action = None
+
             while time.time() < timeout:
+                loop_start = time.time()
+
                 # Get current observation
                 try:
                     observation = self.robot.get_observation()
@@ -711,13 +729,14 @@ class LocalTaskScheduler:
 
                 # Update monitor
                 if state_monitor is not None:
-                    state_monitor.update(observation, {})
+                    state_monitor.update(observation, last_action)
 
-                # Check for collision
+                # Check for collision using last action (for inertia compensation)
                 if collision_detector is not None:
-                    collision_result = collision_detector.check_collision(observation)
+                    collision_result = collision_detector.check_collision(observation, last_action)
                     if collision_result.is_detected:
                         result["collision_detected"] = True
+                        logger.warning(f"Collision detected: {collision_result.affected_joints}")
 
                         if collision_handler is not None:
                             handler_result = collision_handler.handle_collision(
@@ -729,6 +748,9 @@ class LocalTaskScheduler:
                                 result["error"] = "Collision - cannot continue"
                                 return result
 
+                        # Reset action chunk after collision to get fresh trajectory
+                        action_chunk = None
+                        last_action = None
                         time.sleep(0.5)
                         continue
 
@@ -741,13 +763,22 @@ class LocalTaskScheduler:
                         result["success"] = True
                         result["completion_confidence"] = detection.confidence
                         result["final_observation"] = observation
+                        logger.info(f"Task completed with confidence: {detection.confidence}")
                         return result
 
-                # Get action from local executor
-                action = self.policy_executor.get_action(observation)
-                if action is None:
-                    result["error"] = "Failed to get action from policy"
-                    return result
+                # Get new action chunk if needed
+                if action_chunk is None or chunk_index >= len(action_chunk):
+                    action_chunk = self.policy_executor.get_action_chunk(observation)
+                    if action_chunk is None or len(action_chunk) == 0:
+                        result["error"] = "Failed to get action chunk from policy"
+                        return result
+                    chunk_index = 0
+                    logger.debug(f"Got new action chunk with {len(action_chunk)} actions")
+
+                # Get current action from chunk
+                action = action_chunk[chunk_index]
+                chunk_index += 1
+                last_action = action
 
                 # Send action to robot
                 try:
@@ -759,7 +790,10 @@ class LocalTaskScheduler:
                     return result
 
                 # Maintain control frequency
-                time.sleep(1.0 / 30.0)  # 30 Hz
+                loop_time = time.time() - loop_start
+                sleep_time = control_dt - loop_time
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
             # Timeout
             result["error"] = f"Task timeout after {task.max_duration}s"
