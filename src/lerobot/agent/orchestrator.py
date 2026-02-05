@@ -14,8 +14,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from lerobot.monitoring.state_monitor import StateMonitor
-from lerobot.safety.collision_detector import CollisionDetector
-from lerobot.safety.collision_handler import CollisionHandler
+from lerobot.safety import (
+    CollisionDetector,
+    CollisionHandler,
+    EnhancedCollisionDetector,
+    create_enhanced_collision_config,
+)
+from lerobot.safety.collision_detector import CollisionConfig
 from lerobot.tasks.completion_detector import TaskCompletionDetector
 from lerobot.tasks.local_policy_executor import LocalPolicyExecutor
 from lerobot.tasks.task_scheduler import ExecutionSummary, TaskScheduler, TaskStatus
@@ -133,7 +138,23 @@ class TaskAgentOrchestrator:
         logger.info(f"Local policy executor initialized on {device}")
 
         # 3. Initialize collision detector
-        self.collision_detector = CollisionDetector(self.config.collision_config)
+        collision_cfg = self.config.collision_config
+        if getattr(collision_cfg, 'use_enhanced_detector', False):
+            # Use enhanced collision detector with multiple detection strategies
+            enhanced_cfg = create_enhanced_collision_config(
+                collision_threshold=collision_cfg.collision_threshold,
+                detection_window=collision_cfg.detection_window,
+                adaptive_mode=collision_cfg.adaptive_mode,
+                velocity_compensation=collision_cfg.velocity_compensation,
+                joint_specific_thresholds=getattr(collision_cfg, 'joint_specific_thresholds', {}),
+                joint_inertia=getattr(collision_cfg, 'joint_inertia', {}),
+                max_torque_limit=collision_cfg.max_torque_limit,
+            )
+            self.collision_detector = EnhancedCollisionDetector(enhanced_cfg)
+            logger.info("Using Enhanced Collision Detector with multiple detection strategies")
+        else:
+            self.collision_detector = CollisionDetector(self.config.collision_config)
+
         if self.config.collision_config.auto_calibrate:
             logger.info("Calibrating collision detector...")
             self.collision_detector.calibrate_base_torques(
