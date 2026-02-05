@@ -46,6 +46,10 @@ class OrchestratorConfig(TasksOrchestratorConfig):
     override_max_retries: int | None = None  # Override task-specific retry counts
     override_max_duration: float | None = None  # Override task-specific durations
 
+    # Adaptive execution settings
+    enable_adaptive_scheduler: bool = True  # Use AdaptiveTaskScheduler for better performance
+    gripper_config: dict | None = None  # Configuration for gripper force feedback
+
     # Debug settings
     debug_mode: bool = False
     save_observations: bool = False

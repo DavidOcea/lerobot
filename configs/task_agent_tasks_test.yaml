@@ -106,16 +106,78 @@ robot_config:
       height: 480
       fps: 30
 
-# Collision detection configuration
+# Collision detection configuration - Optimized for safety
 collision_config:
-  collision_threshold: 2.0
-  detection_window: 3
+  # Lower threshold for earlier collision detection
+  collision_threshold: 1.0  # Reduced from 2.0 for faster detection
+  detection_window: 2  # Reduced from 3 for faster response
   adaptive_mode: true
   velocity_compensation: true
   recovery_strategy: "stop_and_retreat"
   recovery_retreat_distance: 0.05
   auto_calibrate: true
   calibration_samples: 50
+
+  # Per-joint thresholds - more sensitive for fragile joints
+  joint_specific_thresholds:
+    # Lower thresholds for grippers (most fragile)
+    left_arm_joint_7: 0.5
+    right_arm_joint_7: 0.5
+    # Trunk joints (high inertia)
+    trunk_joint_1: 1.5
+    trunk_joint_2: 1.5
+    # Arm joints
+    left_arm_joint_1: 0.8
+    left_arm_joint_2: 0.8
+    left_arm_joint_3: 0.8
+    left_arm_joint_4: 0.8
+    left_arm_joint_5: 0.8
+    left_arm_joint_6: 0.8
+    right_arm_joint_1: 0.8
+    right_arm_joint_2: 0.8
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 0.8
+    right_arm_joint_5: 0.8
+    right_arm_joint_6: 0.8
+
+  # Joint inertia for velocity compensation
+  joint_inertia:
+    trunk_joint_1: 0.8
+    trunk_joint_2: 0.8
+    left_arm_joint_1: 0.5
+    left_arm_joint_2: 0.4
+    left_arm_joint_3: 0.3
+    left_arm_joint_4: 0.2
+    left_arm_joint_5: 0.1
+    left_arm_joint_6: 0.05
+    left_arm_joint_7: 0.02
+    right_arm_joint_1: 0.5
+    right_arm_joint_2: 0.4
+    right_arm_joint_3: 0.3
+    right_arm_joint_4: 0.2
+    right_arm_joint_5: 0.1
+    right_arm_joint_6: 0.05
+    right_arm_joint_7: 0.02
+
+  # Safety limits
+  max_torque_limit: 3.0  # Reduced from 5.0
+
+# Gripper force feedback configuration
+gripper_config:
+  # Force threshold for successful grasp detection
+  grasp_force_threshold: 0.8  # Nm - indicates object is gripped
+  grasp_force_stable_frames: 3  # Number of consecutive frames above threshold
+
+  # Force threshold for object release confirmation
+  release_force_threshold: 0.1  # Nm - indicates gripper is open
+
+  # Maximum gripper force to avoid damage
+  max_gripper_force: 2.0  # Nm
+
+  # Adaptive speed based on force feedback
+  enable_adaptive_speed: true
+  high_force_threshold: 1.5  # Slow down when approaching this force
+  slow_speed_factor: 0.3  # Reduce speed by this factor
 
 # Monitoring configuration
 monitoring_config:
