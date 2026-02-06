@@ -261,14 +261,17 @@ class CollisionDetector:
                     result.is_detected = True
                     result.affected_joints = confirmed_joints
                     self._collision_count += 1
-                    logger.warning(
-                        f"Collision detected! Affected joints: {confirmed_joints}, "
-                        f"Severity: {result.severity}"
+                    self._log_collision_details(
+                        confirmed_joints, current_torques, result.severity
                     )
         else:
             # Clear buffer if no anomaly
             if len(self.detection_buffer) > 0:
                 self.detection_buffer.clear()
+
+        # Optional: Periodic force status logging
+        if self._total_checks % 100 == 0 and self.is_calibrated and not anomalies:
+            self._log_force_summary(current_torques)
 
         return result
 
@@ -327,6 +330,119 @@ class CollisionDetector:
         self._prev_timestamp = current_time
 
         return estimated
+
+    def _log_collision_details(
+        self,
+        anomalies: dict[str, float],
+        current_torques: dict[str, float],
+        severity: str,
+    ):
+        """Log detailed collision analysis with force breakdown.
+
+        Args:
+            anomalies: Dictionary of joint names to anomaly values.
+            current_torques: Current torque readings.
+            severity: Collision severity level.
+        """
+        logger.warning("")
+        logger.warning("=" * 80)
+        logger.warning(f"🔴 COLLISION DETECTED - {severity.upper()} SEVERITY")
+        logger.warning("=" * 80)
+
+        # Sort anomalies by value (descending)
+        sorted_anomalies = sorted(
+            anomalies.items(),
+            key=lambda x: abs(x[1]) if x[1] != float("inf") else 999,
+            reverse=True
+        )
+
+        for joint_force_key, anomaly_value in sorted_anomalies[:10]:  # Show top 10
+            joint_name = joint_force_key.replace(".force", "")
+
+            # Get current torque
+            current_torque = current_torques.get(joint_force_key, 0.0)
+
+            # Get base torque
+            base_torque = self.base_torques.get(joint_name, 0.0)
+
+            # Get threshold
+            threshold = self.config.joint_specific_thresholds.get(
+                joint_name, self.config.collision_threshold
+            )
+
+            # Calculate delta (actual change from baseline)
+            delta = current_torque - base_torque
+
+            # Format output
+            if anomaly_value == float("inf"):
+                anomaly_display = "∞ (ABSOLUTE LIMIT)"
+                reason = "Absolute torque limit exceeded"
+            else:
+                anomaly_display = f"{anomaly_value:.3f}"
+                reason = f"Above threshold ({threshold:.3f})"
+
+            logger.warning(f"   📍 {joint_name}")
+            logger.warning(f"      Current Force: {current_torque:+7.3f} Nm")
+            logger.warning(f"      Base Torque:   {base_torque:+7.3f} Nm")
+            logger.warning(f"      Delta (Δ):     {delta:+7.3f} Nm")
+            logger.warning(f"      Anomaly:       {anomaly_display:>15} Nm")
+            logger.warning(f"      Threshold:     {threshold:.3f} Nm")
+            logger.warning(f"      Reason:        {reason}")
+
+        logger.warning("=" * 80)
+        logger.warning("")
+
+    def _log_force_summary(self, current_torques: dict[str, float]):
+        """Log periodic force status summary.
+
+        Shows joints with highest deviations from baseline.
+        """
+        deviations = []
+
+        for joint_force_key, torque_value in current_torques.items():
+            joint_name = joint_force_key.replace(".force", "")
+
+            # Get base torque
+            base_torque = self.base_torques.get(joint_name, 0.0)
+
+            # Calculate deviation
+            deviation = abs(torque_value - base_torque)
+
+            # Get threshold
+            threshold = self.config.joint_specific_thresholds.get(
+                joint_name, self.config.collision_threshold
+            )
+
+            # Calculate percentage of threshold
+            threshold_pct = (deviation / threshold * 100) if threshold > 0 else 0
+
+            deviations.append({
+                "joint": joint_name,
+                "current": torque_value,
+                "base": base_torque,
+                "deviation": deviation,
+                "threshold": threshold,
+                "threshold_pct": threshold_pct,
+            })
+
+        # Sort by deviation (descending)
+        deviations.sort(key=lambda x: x["deviation"], reverse=True)
+
+        logger.debug("")
+        logger.debug("─" * 60)
+        logger.debug(f"Force Status Check #{self._total_checks}")
+        logger.debug("─" * 60)
+
+        for d in deviations[:5]:
+            status = "⚠️" if d["threshold_pct"] > 50 else "  "
+            logger.debug(
+                f"   {status} {d['joint']:25} | "
+                f"Curr: {d['current']:+6.2f} | "
+                f"Base: {d['base']:+6.2f} | "
+                f"Δ: {d['deviation']:.2f} Nm ({d['threshold_pct']:.0f}%)"
+            )
+
+        logger.debug("─" * 60)
 
     def reset(self):
         """Reset detector state (clear buffer and statistics).
