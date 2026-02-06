@@ -83,6 +83,11 @@ class SupreRobotFollower(Robot):
         else:
             logger.info("Interpolation mode is DISABLED. Using direct command sending.")
 
+        # Force display control
+        self._observation_count = 0
+        self._force_display_interval = 50  # Print detailed force info every N observations
+        self._last_forces = None  # Store previous forces for rate calculation
+
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
         return {**self._motors_ft, **self._cameras_ft, **self._force_ft}
@@ -164,7 +169,11 @@ class SupreRobotFollower(Robot):
         hd_readings = self._hardware_manager.read()
         positions = hd_readings[0]
         forces = hd_readings[1]
-        print("forces: ", forces)
+
+        # Enhanced force display with analysis
+        self._observation_count += 1
+        self._display_force_info(forces)
+
         # obs_dict = {f"{self.observation_joint_names[i]}.pos": positions[i] for i in range(len(self.observation_joint_names))}
         obs_dict = {}
         for i in range(len(self.observation_joint_names)):
@@ -388,6 +397,111 @@ class SupreRobotFollower(Robot):
         except Exception as e:
             logger.error(f"Failed to get raw torques: {e}")
             return {}
+
+    def _display_force_info(self, forces: List[float]):
+        """Display force information with analysis.
+
+        Shows raw forces, force rates, and highlights high forces.
+
+        Args:
+            forces: List of force values for each joint.
+        """
+        # Always print raw forces (simple format)
+        if self._observation_count % self._force_display_interval == 0:
+            # Detailed print every N cycles
+            print("")
+            print("=" * 70)
+            print(f"Force Analysis - Observation #{self._observation_count}")
+            print("=" * 70)
+
+            # Group joints by type for better readability
+            arm_joints = []
+            gripper_joints = []
+            trunk_joints = []
+
+            for i, joint_name in enumerate(self.observation_joint_names):
+                force = forces[i]
+                rate = 0.0
+                if self._last_forces is not None and i < len(self._last_forces):
+                    rate = abs(force - self._last_forces[i])
+
+                info = {
+                    "name": joint_name,
+                    "force": force,
+                    "rate": rate,
+                }
+
+                if "gripper" in joint_name.lower() or joint_name.endswith("_joint_7"):
+                    gripper_joints.append(info)
+                elif "trunk" in joint_name.lower():
+                    trunk_joints.append(info)
+                else:
+                    arm_joints.append(info)
+
+            # Display each group
+            for group_name, group_data in [
+                ("Left Arm", [j for j in arm_joints if "left" in j["name"].lower()]),
+                ("Right Arm", [j for j in arm_joints if "right" in j["name"].lower()]),
+                ("Trunk", trunk_joints),
+                ("Grippers", gripper_joints),
+            ]:
+                if not group_data:
+                    continue
+
+                print(f"\n{group_name}:")
+                for info in group_data:
+                    force = info["force"]
+                    rate = info["rate"]
+
+                    # Visual indicators
+                    force_bar = self._get_force_bar(force)
+                    rate_indicator = " 🔺" if rate > 0.1 else ""
+
+                    print(f"  {info['name']:30} | Force: {force:+6.3f} Nm {force_bar} {rate_indicator}")
+                    if rate > 0.05:
+                        print(f"  {'':30} | Rate:   {rate:.3f} Nm/step")
+
+            print("=" * 70)
+            print("")
+        elif self._last_forces is not None:
+            # Check for sudden force spikes - alert immediately
+            max_rate = 0
+            max_rate_joint = None
+            for i, force in enumerate(forces):
+                rate = abs(force - self._last_forces[i]) if i < len(self._last_forces) else 0
+                if rate > max_rate:
+                    max_rate = rate
+                    max_rate_joint = self.observation_joint_names[i] if i < len(self.observation_joint_names) else "unknown"
+
+            if max_rate > 0.3:
+                logger.warning(f"⚠️ Sudden force spike: {max_rate_joint} | Δ = {max_rate:.3f} Nm/step")
+
+        # Store for next comparison
+        self._last_forces = forces.copy() if forces else None
+
+    def _get_force_bar(self, force: float, max_abs: float = 2.0) -> str:
+        """Generate a visual bar for force magnitude.
+
+        Args:
+            force: The force value in Nm.
+            max_abs: Maximum absolute force for full bar.
+
+        Returns:
+            String with visual bar representation.
+        """
+        abs_force = abs(force)
+        if abs_force < 0.1:
+            return "│"
+
+        # Scale to 0-10 range
+        scaled = min(int(abs_force / max_abs * 10), 10)
+
+        if force > 0:
+            bar = "▸" * scaled
+        else:
+            bar = "◂" * scaled
+
+        return bar
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
