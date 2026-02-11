@@ -6,10 +6,23 @@ This module provides enhanced task execution with:
 2. Adaptive speed control based on force feedback
 3. Improved collision detection with per-joint thresholds
 4. Smart recovery strategies
+5. Action smoothing for precise control
+6. Temporal and adaptive collision detection
 """
 
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
+
+import numpy as np
+
+from lerobot.control import ActionPostProcessor, PostProcessorConfig, create_post_processor_for_robot
+from lerobot.safety import (
+    AdaptiveCollisionDetector,
+    MotionPhase,
+    TemporalCollisionDetector,
+    create_adaptive_collision_config,
+    create_temporal_collision_config,
+)
 
 from .config import TaskConfig
 from .task_scheduler import TaskResult, TaskStatus
@@ -28,21 +41,41 @@ class AdaptiveTaskScheduler:
     - Adaptive speed control (slow down when high force detected)
     - Per-joint collision thresholds
     - Smart collision recovery
+    - Action smoothing for precise motion
+    - Temporal and adaptive collision detection
     """
 
     def __init__(
         self,
         scheduler: "LocalTaskScheduler",
         gripper_config: dict[str, Any] | None = None,
+        enable_action_smoothing: bool = True,
+        smoothing_level: str = "medium",
+        collision_detector_type: str = "adaptive",  # "basic", "enhanced", "temporal", "adaptive"
     ):
         """Initialize the adaptive scheduler.
 
         Args:
             scheduler: Base LocalTaskScheduler instance
             gripper_config: Configuration for gripper force feedback
+            enable_action_smoothing: Enable action post-processing for smooth motion
+            smoothing_level: Level of action smoothing ("low", "medium", "high")
+            collision_detector_type: Type of collision detector to use
+                - "basic": Standard collision detector
+                - "enhanced": Enhanced with rate and immediate detection
+                - "temporal": Temporal pattern analysis (most sensitive)
+                - "adaptive": Motion-aware thresholds (fewest false positives)
         """
         self.scheduler = scheduler
         self.gripper_config = gripper_config or {}
+        self.enable_action_smoothing = enable_action_smoothing
+        self.smoothing_level = smoothing_level
+        self.collision_detector_type = collision_detector_type
+
+        # Initialize action post-processor
+        self.action_post_processor: Optional[ActionPostProcessor] = None
+        if enable_action_smoothing:
+            self._initialize_action_post_processor()
 
         # Grasp detection state
         self.grasp_detected = False
@@ -58,6 +91,90 @@ class AdaptiveTaskScheduler:
         self.total_collisions = 0
         self.grasp_attempts = 0
         self.successful_grasps = 0
+        self.action_smooth_count = 0
+
+    def _initialize_action_post_processor(self):
+        """Initialize the action post-processor."""
+        try:
+            # Try to create from robot config
+            self.action_post_processor = create_post_processor_for_robot(
+                self.scheduler.robot.config,
+                smoothing_level=self.smoothing_level,
+            )
+            logger.info(f"Action post-processor initialized with '{self.smoothing_level}' smoothing")
+        except Exception as e:
+            logger.warning(f"Failed to create action post-processor from config: {e}")
+            # Create with default config
+            joint_names = getattr(
+                self.scheduler.robot,
+                "observation_joint_names",
+                [
+                    "left_arm_joint_1", "left_arm_joint_2", "left_arm_joint_3",
+                    "left_arm_joint_4", "left_arm_joint_5", "left_arm_joint_6",
+                    "left_arm_joint_7",
+                    "right_arm_joint_1", "right_arm_joint_2", "right_arm_joint_3",
+                    "right_arm_joint_4", "right_arm_joint_5", "right_arm_joint_6",
+                    "right_arm_joint_7",
+                    "trunk_joint_1", "trunk_joint_2",
+                ]
+            )
+            config = PostProcessorConfig()
+            if self.smoothing_level == "low":
+                config.filter_alpha = 0.9
+                config.max_velocity = 5.0
+            elif self.smoothing_level == "high":
+                config.filter_alpha = 0.5
+                config.max_velocity = 2.0
+            else:  # medium
+                config.filter_alpha = 0.7
+                config.max_velocity = 3.0
+
+            self.action_post_processor = ActionPostProcessor(config, joint_names)
+            logger.info(f"Action post-processor created with default '{self.smoothing_level}' config")
+
+    def create_collision_detector(self, collision_threshold: float = 0.8):
+        """Create a collision detector of the configured type.
+
+        Args:
+            collision_threshold: Base collision threshold in Nm.
+
+        Returns:
+            Configured collision detector instance.
+        """
+        detector_type = self.collision_detector_type
+
+        if detector_type == "adaptive":
+            config = create_adaptive_collision_config(
+                collision_threshold=collision_threshold,
+                enable_smoothing=True,
+                smoothing_factor=0.3,
+            )
+            detector = AdaptiveCollisionDetector(config)
+            logger.info("Created Adaptive collision detector (motion-aware thresholds)")
+
+        elif detector_type == "temporal":
+            config = create_temporal_collision_config(
+                collision_threshold=collision_threshold,
+                temporal_window_size=10,
+            )
+            detector = TemporalCollisionDetector(config)
+            logger.info("Created Temporal collision detector (pattern analysis)")
+
+        elif detector_type == "enhanced":
+            from lerobot.safety import create_enhanced_collision_config, EnhancedCollisionDetector
+            config = create_enhanced_collision_config(
+                collision_threshold=collision_threshold,
+            )
+            detector = EnhancedCollisionDetector(config)
+            logger.info("Created Enhanced collision detector")
+
+        else:  # "basic" or default
+            from lerobot.safety import CollisionConfig, CollisionDetector
+            config = CollisionConfig(collision_threshold=collision_threshold)
+            detector = CollisionDetector(config)
+            logger.info("Created Basic collision detector")
+
+        return detector
 
     def execute_task_adaptive(
         self,
@@ -178,6 +295,19 @@ class AdaptiveTaskScheduler:
                 # Apply adaptive speed control
                 action = self._apply_speed_control(action, speed_factor)
 
+                # Apply action smoothing for precise motion
+                if self.action_post_processor is not None:
+                    action = self.action_post_processor.process_action(action, observation)
+                    self.action_smooth_count += 1
+
+                # Log action processing details periodically
+                if self.total_collisions == 0 and self.action_smooth_count % 100 == 0:
+                    stats = self.action_post_processor.get_statistics()
+                    logger.debug(
+                        f"Action smoothing stats: limit_rate={stats['limit_rate']:.2%}, "
+                        f"total_processed={stats['total_processed']}"
+                    )
+
                 # Send action to robot
                 try:
                     sent_action = self.scheduler.robot.send_action(action)
@@ -216,6 +346,8 @@ class AdaptiveTaskScheduler:
 
         This extends the basic collision detection to use joint-specific thresholds
         for more sensitive detection on fragile joints.
+
+        Also handles temporal and adaptive detectors with enhanced logging.
         """
         # Get base collision result
         result = collision_detector.check_collision(observation, action)
@@ -237,6 +369,23 @@ class AdaptiveTaskScheduler:
                     result.severity = "medium"
                 else:
                     result.severity = "low"
+
+        # Log additional context for temporal and adaptive detectors
+        if result.is_detected:
+            if isinstance(collision_detector, AdaptiveCollisionDetector):
+                motion_phase = collision_detector.get_motion_phase()
+                current_thresholds = collision_detector.get_current_thresholds()
+                logger.info(
+                    f"Adaptive collision: phase={motion_phase.value}, "
+                    f"avg_threshold_multiplier={np.mean(list(current_thresholds.values())) / collision_detector.config.collision_threshold:.2f}"
+                )
+            elif isinstance(collision_detector, TemporalCollisionDetector):
+                stats = collision_detector.get_statistics()
+                logger.info(
+                    f"Temporal collision: gradient_detections={stats.get('gradient_detections', 0)}, "
+                    f"oscillation_detections={stats.get('oscillation_detections', 0)}, "
+                    f"persistent_detections={stats.get('persistent_detections', 0)}"
+                )
 
         return result
 
@@ -446,7 +595,7 @@ class AdaptiveTaskScheduler:
         Returns:
             Dictionary with statistics
         """
-        return {
+        stats = {
             "total_collisions": self.total_collisions,
             "grasp_attempts": self.grasp_attempts,
             "successful_grasps": self.successful_grasps,
@@ -458,4 +607,13 @@ class AdaptiveTaskScheduler:
             "current_gripper_force": self.current_gripper_force,
             "grasp_detected": self.grasp_detected,
             "current_speed_factor": self.current_speed_factor,
+            "collision_detector_type": self.collision_detector_type,
+            "smoothing_enabled": self.enable_action_smoothing,
+            "action_smooth_count": self.action_smooth_count,
         }
+
+        # Add action post-processor statistics
+        if self.action_post_processor is not None:
+            stats["action_post_processor"] = self.action_post_processor.get_statistics()
+
+        return stats
