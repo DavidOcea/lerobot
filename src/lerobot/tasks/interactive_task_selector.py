@@ -156,7 +156,7 @@ class InteractiveTaskSelector:
         if current_task:
             lines.extend([
                 f"Next task: {current_task.name}",
-                f"Description: {current_task.description or 'No description'}",
+                f"Policy: {current_task.policy_path}",
                 "",
             ])
 
@@ -311,13 +311,16 @@ class InteractiveTaskSelector:
         Args:
             task_name: Name of the custom task.
         """
+        # Import CameraConfig for creating empty cameras list
+        from lerobot.tasks.config import CameraConfig
+
         # Create a simple custom task config
         custom_task = TaskConfig(
             name=task_name,
-            description=f"Custom task: {task_name}",
+            policy_path="",  # Empty for custom task
             max_duration=300.0,  # 5 minutes default
             max_retries=3,
-            cameras=[],
+            cameras=[],  # Empty list for custom task
             enabled=True,
         )
 
