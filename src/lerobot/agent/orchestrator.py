@@ -37,11 +37,12 @@ from lerobot.tasks.interactive_task_selector import (
     TaskSelection,
     ExecutionMode as ExecutionMode,
 )
-from lerobot.safety.emergency_stop_controller import (
-    EmergencyStopController,
-    DangerDetectionConfig,
-    StopEvent,
-    StopReason,
+from lerobot.safety.manual_intervention_controller import (
+    ManualInterventionController,
+    InterventionConfig,
+    InterventionAction,
+    InterventionReason,
+    create_manual_intervention_controller,
 )
 
 from .config import OrchestratorConfig
@@ -98,13 +99,14 @@ class TaskAgentOrchestrator:
         self.state_monitor: StateMonitor | None = None
         self.completion_detectors: dict[str, TaskCompletionDetector] = {}
 
-        # New components for interactive and emergency stop
+        # New components for interactive and intervention
         self.interactive_selector: InteractiveTaskSelector | None = None
-        self.emergency_controller: EmergencyStopController | None = None
+        self.intervention_controller: ManualInterventionController | None = None
 
         # Execution state
         self.is_initialized = False
         self.is_running = False
+        self.is_paused_for_intervention: bool = False  # Track if paused by intervention
         self.total_collision_count = 0
 
         # Execution mode
@@ -234,7 +236,7 @@ class TaskAgentOrchestrator:
 
         # 9. Initialize emergency stop controller if enabled
         if getattr(self.config, 'enable_emergency_stop', True):
-            self._init_emergency_controller()
+            self._init_intervention_controller()
 
         self.is_initialized = True
         logger.info("Initialization complete (LOCAL mode)")
@@ -413,6 +415,42 @@ class TaskAgentOrchestrator:
         )
         logger.info("Interactive task selector initialized")
 
+    def _init_intervention_controller(self):
+        """Initialize manual intervention controller."""
+        if self.intervention_controller is not None:
+            logger.info("Intervention controller already initialized")
+            return
+
+        # Get robot reference
+        robot = self.robot if self.use_local_execution else self.robot_client
+        if robot is None:
+            logger.warning("Cannot initialize intervention controller - no robot available")
+            return
+
+        # Create intervention config
+        intervention_config = InterventionConfig(
+            enable_force_detection=getattr(self.config, 'intervention_enable_force_detection', True),
+            force_threshold=getattr(self.config, 'intervention_force_threshold', 2.5),
+            force_detection_window=getattr(self.config, 'intervention_force_window', 3),
+            enable_velocity_detection=getattr(self.config, 'intervention_enable_velocity_detection', True),
+            max_velocity=getattr(self.config, 'intervention_max_velocity', 5.0),
+            rollback_steps=getattr(self.config, 'intervention_rollback_steps', 50),
+            rollback_step_delay=getattr(self.config, 'intervention_rollback_delay', 0.033),
+            enable_manual_pause=getattr(self.config, 'intervention_enable_manual_pause', True),
+        )
+
+        # Create intervention controller
+        self.intervention_controller = create_manual_intervention_controller(
+            robot=robot,
+            config=intervention_config,
+        )
+
+        # Set available tasks for user selection
+        self.intervention_controller.set_tasks(self.config.tasks)
+        self.intervention_controller.current_task = None  # Will be set during execution
+
+        logger.info("Manual intervention controller initialized")
+
     def _init_emergency_controller(self):
         """Initialize the emergency stop controller."""
         if self.emergency_controller is not None:
@@ -524,6 +562,33 @@ class TaskAgentOrchestrator:
 
         return success
 
+    def _get_observation(self) -> dict[str, Any]:
+        """Get current observation from robot.
+
+        Returns:
+            Current observation dictionary, or empty dict if not available.
+        """
+        if self.use_local_execution and self.robot is not None:
+            if hasattr(self.robot, 'get_observation'):
+                return self.robot.get_observation()
+            elif hasattr(self.robot, 'read'):
+                # Fallback: try to read from robot
+                try:
+                    obs = self.robot.read()
+                    if isinstance(obs, dict):
+                        return obs
+                except Exception:
+                    pass
+
+        # Remote mode - try to get from robot_client
+        elif self.robot_client is not None:
+            if hasattr(self.robot_client, 'get_latest_observation'):
+                return self.robot_client.get_latest_observation()
+
+        # Fallback: return empty dict
+        logger.warning("Could not get observation from robot")
+        return {}
+
     def run(self) -> ExecutionSummary:
         """Execute the complete task sequence.
 
@@ -606,7 +671,7 @@ class TaskAgentOrchestrator:
             # Check if using adaptive scheduler
             if hasattr(self.task_scheduler, 'execute_task_adaptive'):
                 result = self.task_scheduler.execute_task_adaptive(
-                    task,
+            # Set current task in intervention controller            if self.intervention_controller is not None:                self.intervention_controller.current_task = task            # Record action for potential rollback            if self.intervention_controller is not None:                self.intervention_controller.record_action(action, observation)            # Check for intervention            observation = self._get_observation()            needs_intervention, reason = self.intervention_controller.check_intervention_needed(                observation, action)            if needs_intervention:                # Interrupt robot                self.intervention_controller.interrupt_robot()                # Show intervention menu and get user choice                intervention_reason = reason or InterventionReason.MANUAL_PAUSE                user_choice = self.intervention_controller.prompt_intervention_menu(                    intervention_reason, observation)                # Handle user choice                intervention_result = self.intervention_controller.handle_user_choice(user_choice)                # Check if user wants to exit                if intervention_result.get("exit_program", False):                    logger.info("User requested to exit program")                    break                # Check if user wants to skip task                elif intervention_result.get("skip_task", False):                    logger.info(f"Skipping task: {task.name}")                    self.intervention_controller.current_task_index = (i + 1) % len(self.config.tasks)                    continue                # Check if user selected new task                elif intervention_result.get("new_task_index") is not None:                    new_index = intervention_result["new_task_index"]                    logger.info(f"User selected new task: {new_index}")                    i = new_index                    task = self.config.tasks[new_index]                    continue                # Otherwise: resume execution (rollback or continue)                if intervention_result.get("resume_execution", False):                    success = self.intervention_controller.resume_execution()                    if not success:                        logger.warning("Failed to resume after intervention")                        break                    task,
                     collision_detector=self.collision_detector,
                     collision_handler=self.collision_handler,
                     state_monitor=self.state_monitor,
