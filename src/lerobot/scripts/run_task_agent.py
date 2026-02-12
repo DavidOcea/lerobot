@@ -37,14 +37,20 @@ Examples:
   # Run all tasks from config (local mode - recommended)
   python run_task_agent.py --config configs/task_agent_tasks.yaml
 
+  # Run with interactive mode (prompt before each task)
+  python run_task_agent.py --config configs/task_agent_tasks.yaml --interactive
+
+  # Run with custom emergency stop thresholds
+  python run_task_agent.py --config configs/task_agent_tasks.yaml --emergency-force-threshold 2.0 --emergency-max-velocity 3.0
+
   # Run with debug output
   python run_task_agent.py --config configs/task_agent_tasks.yaml --debug
 
   # Run only specific tasks
   python run_task_agent.py --config configs/task_agent_tasks.yaml --tasks pick_short,pick_long
 
-  # Override retry count
-  python run_task_agent.py --config configs/task_agent_tasks.yaml --max-retries 5
+  # Disable emergency stop (for testing)
+  python run_task_agent.py --config configs/task_agent_tasks.yaml --no-emergency-stop
 
   # Remote mode (requires Policy Server running)
   python run_task_agent.py --config configs/task_agent_tasks.yaml --remote
@@ -117,6 +123,41 @@ Examples:
         help="Save observations to disk for debugging",
     )
 
+    # Interactive mode
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Enable interactive task selection mode (prompt before each task)",
+    )
+
+    # Emergency stop settings
+    parser.add_argument(
+        "--no-emergency-stop",
+        action="store_true",
+        help="Disable emergency stop and rollback functionality",
+    )
+
+    parser.add_argument(
+        "--emergency-force-threshold",
+        type=float,
+        default=None,
+        help="Emergency stop force threshold in Nm (default: 2.0)",
+    )
+
+    parser.add_argument(
+        "--emergency-max-velocity",
+        type=float,
+        default=None,
+        help="Emergency stop maximum velocity in rad/s (default: 3.0)",
+    )
+
+    parser.add_argument(
+        "--emergency-max-rollback-steps",
+        type=int,
+        default=None,
+        help="Maximum steps to rollback on emergency stop (default: 80)",
+    )
+
     return parser.parse_args()
 
 
@@ -175,6 +216,28 @@ def main():
 
         if args.save_observations:
             config.save_observations = True
+
+        # Apply interactive mode setting
+        config.enable_interactive_mode = args.interactive
+        if args.interactive:
+            logger.info("Interactive mode enabled - will prompt before each task")
+
+        # Apply emergency stop settings
+        config.enable_emergency_stop = not args.no_emergency_stop
+        if args.no_emergency_stop:
+            logger.warning("Emergency stop DISABLED via command line")
+
+        if args.emergency_force_threshold is not None:
+            config.emergency_force_threshold = args.emergency_force_threshold
+            logger.info(f"Emergency force threshold: {args.emergency_force_threshold} Nm")
+
+        if args.emergency_max_velocity is not None:
+            config.emergency_max_velocity = args.emergency_max_velocity
+            logger.info(f"Emergency max velocity: {args.emergency_max_velocity} rad/s")
+
+        if args.emergency_max_rollback_steps is not None:
+            config.emergency_max_rollback_steps = args.emergency_max_rollback_steps
+            logger.info(f"Emergency max rollback steps: {args.emergency_max_rollback_steps}")
 
         # Filter tasks if specified
         if args.tasks:
