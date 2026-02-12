@@ -7,11 +7,17 @@ subsystems for autonomous robotic task execution.
 Supports two execution modes:
 1. Local mode (recommended): Direct policy execution without Policy Server
 2. Remote mode: Uses Policy Server via gRPC for remote inference
+
+New Features:
+- Interactive task selection with user prompting
+- Emergency stop with action history and rollback
+- Task completion detection
+- State monitoring and logging
 """
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from lerobot.monitoring.state_monitor import StateMonitor
 from lerobot.safety import (
@@ -24,6 +30,19 @@ from lerobot.safety.collision_detector import CollisionConfig
 from lerobot.tasks.completion_detector import TaskCompletionDetector
 from lerobot.tasks.local_policy_executor import LocalPolicyExecutor
 from lerobot.tasks.task_scheduler import ExecutionSummary, TaskScheduler, TaskStatus
+
+# New imports
+from lerobot.tasks.interactive_task_selector import (
+    InteractiveTaskSelector,
+    TaskSelection,
+    ExecutionMode as ExecutionMode,
+)
+from lerobot.safety.emergency_stop_controller import (
+    EmergencyStopController,
+    DangerDetectionConfig,
+    StopEvent,
+    StopReason,
+)
 
 from .config import OrchestratorConfig
 
@@ -78,6 +97,10 @@ class TaskAgentOrchestrator:
         self.collision_handler: CollisionHandler | None = None
         self.state_monitor: StateMonitor | None = None
         self.completion_detectors: dict[str, TaskCompletionDetector] = {}
+
+        # New components for interactive and emergency stop
+        self.interactive_selector: InteractiveTaskSelector | None = None
+        self.emergency_controller: EmergencyStopController | None = None
 
         # Execution state
         self.is_initialized = False
@@ -204,6 +227,14 @@ class TaskAgentOrchestrator:
         else:
             self.task_scheduler = base_scheduler
             logger.info("Using standard LocalTaskScheduler")
+
+        # 8. Initialize interactive task selector if enabled
+        if getattr(self.config, 'enable_interactive_mode', False):
+            self._init_interactive_selector()
+
+        # 9. Initialize emergency stop controller if enabled
+        if getattr(self.config, 'enable_emergency_stop', True):
+            self._init_emergency_controller()
 
         self.is_initialized = True
         logger.info("Initialization complete (LOCAL mode)")
@@ -370,6 +401,129 @@ class TaskAgentOrchestrator:
         except Exception as e:
             logger.error(f"Failed to switch cameras: {e}")
 
+    def _init_interactive_selector(self):
+        """Initialize the interactive task selector."""
+        if self.interactive_selector is not None:
+            logger.info("Interactive selector already initialized")
+            return
+
+        self.interactive_selector = InteractiveTaskSelector(
+            tasks=self.config.tasks,
+            exit_handler=self._handle_exit_request,
+        )
+        logger.info("Interactive task selector initialized")
+
+    def _init_emergency_controller(self):
+        """Initialize the emergency stop controller."""
+        if self.emergency_controller is not None:
+            logger.info("Emergency controller already initialized")
+            return
+
+        # Get robot reference
+        robot = self.robot if self.use_local_execution else self.robot_client
+        if robot is None:
+            logger.warning("Cannot initialize emergency controller - no robot available")
+            return
+
+        # Create danger detection config
+        danger_config = DangerDetectionConfig(
+            force_threshold=getattr(self.config, 'emergency_force_threshold', 2.5),
+            total_force_threshold=getattr(self.config, 'emergency_total_force_threshold', 5.0),
+            max_joint_force=getattr(self.config, 'emergency_max_joint_force', 1.5),
+            max_velocity=getattr(self.config, 'emergency_max_velocity', 5.0),
+            velocity_change_threshold=getattr(self.config, 'emergency_velocity_change_threshold', 2.0),
+            max_action_delta=getattr(self.config, 'emergency_max_action_delta', 0.5),
+            detection_window=getattr(self.config, 'emergency_detection_window', 5),
+        )
+
+        # Create rollback config
+        from lerobot.safety.emergency_stop_controller import RollbackConfig
+        rollback_config = RollbackConfig(
+            max_rollback_steps=getattr(self.config, 'emergency_max_rollback_steps', 100),
+            rollback_step_delay=getattr(self.config, 'emergency_rollback_step_delay', 0.02),
+            safe_state_confirm_steps=getattr(self.config, 'emergency_safe_confirm_steps', 10),
+        )
+
+        # Create emergency controller
+        self.emergency_controller = EmergencyStopController(
+            robot=robot,
+            history_size=getattr(self.config, 'emergency_history_size', 1000),
+            danger_config=danger_config,
+            rollback_config=rollback_config,
+        )
+
+        # Set stop callback
+        self.emergency_controller.set_stop_callback(self._on_emergency_stop)
+
+        logger.info("Emergency stop controller initialized")
+
+    def _handle_exit_request(self) -> bool:
+        """Handle user request to exit.
+
+        Returns:
+            True if exit should proceed.
+        """
+        logger.info("Exit requested by user")
+        return True
+
+    def _on_emergency_stop(self, stop_event):
+        """Callback when emergency stop is triggered.
+
+        Args:
+            stop_event: StopEvent with details of the stop.
+        """
+        logger.warning(f"Emergency stop triggered: {stop_event.reason.value}")
+
+        # Update collision count for tracking
+        self.total_collision_count += 1
+
+    def _check_emergency_stop(self, observation: dict[str, Any], action: dict[str, float]) -> bool:
+        """Check if emergency stop should be triggered.
+
+        Args:
+            observation: Current observation from robot.
+            action: Current action being executed.
+
+        Returns:
+            True if emergency stop was triggered, False otherwise.
+        """
+        if self.emergency_controller is None:
+            return False
+
+        # Check for dangerous action
+        is_dangerous, reason = self.emergency_controller.check_action_danger(action, observation)
+
+        if is_dangerous:
+            logger.warning(f"Dangerous action detected: {reason.value if reason else 'unknown'}")
+
+            # Trigger emergency stop
+            auto_rollback = getattr(self.config, 'auto_rollback_on_stop', True)
+            self.emergency_controller.trigger_stop(
+                reason=reason or StopReason.DANGEROUS_ACTION,
+                auto_rollback=auto_rollback
+            )
+
+            return True
+
+        return False
+
+    def _handle_emergency_resume(self) -> bool:
+        """Handle resuming after emergency stop.
+
+        Returns:
+            True if successfully resumed, False otherwise.
+        """
+        if self.emergency_controller is None:
+            return True  # No emergency controller, nothing to resume
+
+        # Resume execution
+        success = self.emergency_controller.resume()
+
+        if success:
+            logger.info("Successfully resumed after emergency stop")
+
+        return success
+
     def run(self) -> ExecutionSummary:
         """Execute the complete task sequence.
 
@@ -396,13 +550,38 @@ class TaskAgentOrchestrator:
             self._cleanup()
 
     def _execute_with_safety(self) -> ExecutionSummary:
-        """Execute task sequence with collision monitoring."""
+        """Execute task sequence with collision monitoring and interactive selection."""
         results = []
 
         for i, task in enumerate(self.config.tasks):
             if not task.enabled:
                 logger.info(f"Skipping disabled task: {task.name}")
                 continue
+
+            # Interactive task selection before each task
+            if self.interactive_selector is not None:
+                selection = self.interactive_selector.prompt_next_task()
+
+                # Handle exit request
+                if selection.exit_requested:
+                    logger.info("User requested exit, stopping task sequence")
+                    break
+
+                # Handle custom task creation
+                if selection.custom_task_name is not None:
+                    logger.info(f"Custom task requested: {selection.custom_task_name}")
+                    # Would need to execute custom task here
+                    continue
+
+                # Handle specific task selection
+                if selection.selected_task:
+                    # Find and execute selected task
+                    for t in self.config.tasks:
+                        if t.name.lower() == selection.selected_task.lower():
+                            task = t
+                            i = self.config.tasks.index(t)
+                            break
+                    logger.info(f"User selected task: {task.name}")
 
             logger.info(f"Executing task {i + 1}/{len(self.config.tasks)}: {task.name}")
 
@@ -481,6 +660,10 @@ class TaskAgentOrchestrator:
     def _cleanup(self):
         """Clean up resources after execution."""
         logger.info("Cleaning up...")
+
+        # Stop emergency controller
+        if self.emergency_controller is not None:
+            logger.info("Stopping emergency stop controller")
 
         # Stop state monitor
         if self.state_monitor is not None:
