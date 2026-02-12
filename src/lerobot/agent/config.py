@@ -37,6 +37,12 @@ class OrchestratorConfig(TasksOrchestratorConfig):
     policy_server_port: int = 50051
     policy_connection_timeout: float = 10.0  # Seconds
 
+    # New feature settings
+    enable_interactive_mode: bool = False  # Enable interactive task selection before each task
+    enable_emergency_stop: bool = True  # Enable emergency stop with action rollback
+    emergency_history_size: int = 1000  # Number of actions to store for rollback
+    auto_rollback_on_stop: bool = True  # Automatically rollback after emergency stop
+
     # Execution settings
     auto_start: bool = True  # Automatically start execution on init
     continue_on_collision: bool = True  # Continue task sequence after collision

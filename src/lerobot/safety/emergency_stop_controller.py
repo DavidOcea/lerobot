@@ -1,0 +1,499 @@
+"""
+Emergency Stop Controller with Action History and Rollback
+
+This module provides:
+1. Dangerous action detection
+2. Emergency stop triggering (manual and automatic)
+3. Action history storage for rollback
+4. Rollback to previous safe state
+5. Interactive pause/resume functionality
+
+Usage:
+    controller = EmergencyStopController(robot, history_size=1000)
+    if controller.check_action_danger(action):
+        controller.trigger_stop("Dangerous action detected")
+    controller.rollback(steps=50)
+    controller.resume()
+"""
+
+import logging
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Callable
+
+import numpy as np
+
+from lerobot.tasks.config import TaskConfig
+
+logger = logging.getLogger(__name__)
+
+
+class StopTrigger(Enum):
+    """Who/what triggered the emergency stop."""
+    MANUAL = "manual"  # User pressed emergency stop button
+    AUTOMATIC = "automatic"  # System detected dangerous condition
+    RECOVERY_COMPLETE = "recovery_complete"  # Rollback completed, ready to resume
+
+
+class StopReason(Enum):
+    """Reason for the emergency stop."""
+    DANGEROUS_ACTION = "dangerous_action"  # Action deemed dangerous
+    HIGH_FORCE = "high_force"  # Force threshold exceeded
+    COLLISION = "collision"  # Collision detected
+    USER_REQUEST = "user_request"  # User requested stop
+    VELOCITY_MISMATCH = "velocity_mismatch"  # Unexpected velocity
+
+
+@dataclass
+class ActionSnapshot:
+    """Snapshot of robot state at a point in time."""
+    timestamp: float
+    actions: dict[str, float]
+    observation: dict[str, Any] | None = None
+    action_number: int = 0
+
+
+@dataclass
+class StopEvent:
+    """Record of a stop event."""
+    timestamp: float
+    trigger: StopTrigger
+    reason: StopReason
+    action_at_stop: ActionSnapshot
+    rollback_snapshot: ActionSnapshot | None = None
+
+
+@dataclass
+class RollbackConfig:
+    """Configuration for rollback behavior."""
+    max_rollback_steps: int = 100  # Maximum steps to rollback
+    rollback_step_delay: float = 0.02  # Delay between rollback steps (seconds)
+    safe_state_confirm_steps: int = 10  # Steps to hold after rollback before confirmation
+
+
+@dataclass
+class DangerDetectionConfig:
+    """Configuration for dangerous action detection."""
+    # Force thresholds
+    force_threshold: float = 2.5  # Nm - single joint
+    total_force_threshold: float = 5.0  # Nm - sum of absolute forces
+    max_joint_force: float = 1.5  # Nm - maximum for any single joint
+
+    # Velocity thresholds
+    max_velocity: float = 5.0  # rad/s - maximum joint velocity
+    velocity_change_threshold: float = 2.0  # rad/s² - maximum acceleration
+
+    # Action change thresholds
+    max_action_delta: float = 0.5  # rad - maximum position change per step
+
+    # Detection window
+    detection_window: int = 5  # Number of steps to check
+
+    # Custom danger checker
+    custom_danger_checker: Callable[[dict[str, float], dict[str, Any]], bool] | None = None
+
+
+class EmergencyStopController:
+    """Emergency stop controller with action history and rollback.
+
+    Features:
+    1. Dangerous action detection (manual and automatic)
+    2. Emergency stop triggering
+    3. Action history storage for rollback
+    4. Rollback to previous safe state
+    5. Interactive pause/resume functionality
+    """
+
+    def __init__(
+        self,
+        robot,
+        history_size: int = 1000,
+        danger_config: DangerDetectionConfig = None,
+        rollback_config: RollbackConfig = None,
+    ):
+        """Initialize the emergency stop controller.
+
+        Args:
+            robot: Robot instance with send_action method.
+            history_size: Maximum number of action snapshots to store.
+            danger_config: Configuration for danger detection.
+            rollback_config: Configuration for rollback behavior.
+        """
+        self.robot = robot
+        self.danger_config = danger_config or DangerDetectionConfig()
+        self.rollback_config = rollback_config or RollbackConfig()
+
+        # Action history
+        self.action_history: deque[ActionSnapshot] = deque(maxlen=history_size)
+        self.current_action_number: int = 0
+
+        # Stop event tracking
+        self.stop_events: list[StopEvent] = []
+        self.current_stop_event: StopEvent | None = None
+
+        # State
+        self._is_stopped: bool = False
+        self._is_paused: bool = False
+        self._rollback_in_progress: bool = False
+        self._safe_confirmed_count: int = 0
+
+        # Callbacks
+        self._on_stop_callback: Callable[[StopEvent], None] | None = None
+        self._on_rollback_complete_callback: Callable[[StopEvent], None] | None = None
+
+        # Statistics
+        self._total_checks: int = 0
+        self._danger_detected_count: int = 0
+        self._manual_stop_count: int = 0
+        self._automatic_stop_count: int = 0
+        self._rollback_count: int = 0
+
+        logger.info(f"EmergencyStopController initialized with history_size={history_size}")
+
+    def check_action_danger(
+        self,
+        actions: dict[str, float],
+        observation: dict[str, Any] | None = None,
+    ) -> tuple[bool, StopReason | None]:
+        """Check if the given actions are dangerous.
+
+        Args:
+            actions: Target action positions.
+            observation: Current observation (optional, for custom checkers).
+
+        Returns:
+            (is_dangerous, reason) tuple. None if not dangerous.
+
+        Danger conditions checked:
+        1. Excessive force levels
+        2. Excessive velocities
+        3. Large position changes
+        4. Custom danger checker
+        """
+        self._total_checks += 1
+
+        # Extract force data if available
+        forces = {}
+        if observation:
+            for key, value in observation.items():
+                if ".force" in key:
+                    joint_name = key.replace(".force", "")
+                    forces[joint_name] = float(value)
+
+        # Check 1: Excessive force
+        if forces:
+            force_values = np.array(list(forces.values()))
+            max_abs_force = np.max(np.abs(force_values))
+            total_abs_force = np.sum(np.abs(force_values))
+
+            if max_abs_force > self.danger_config.max_joint_force:
+                self._danger_detected_count += 1
+                return True, StopReason.HIGH_FORCE
+            elif total_abs_force > self.danger_config.total_force_threshold:
+                self._danger_detected_count += 1
+                return True, StopReason.HIGH_FORCE
+
+        # Check 2: Excessive velocity (need previous action)
+        if self.action_history:
+            prev_action = self.action_history[-1] if len(self.action_history) > 0 else None
+
+            if prev_action and observation:
+                velocities = {}
+                for joint_name in actions.keys():
+                    if joint_name in prev_action.actions and joint_name in actions:
+                        prev_pos = prev_action.actions[joint_name]
+                        curr_pos = actions[joint_name]
+                        velocities[joint_name] = abs(curr_pos - prev_pos)
+
+                max_velocity = max(velocities.values()) if velocities else 0
+
+                if max_velocity > self.danger_config.max_velocity:
+                    self._danger_detected_count += 1
+                    return True, StopReason.VELOCITY_MISMATCH
+
+        # Check 3: Large position changes
+        if self.action_history:
+            prev_action = self.action_history[-1] if len(self.action_history) > 0 else None
+
+            if prev_action:
+                max_delta = 0
+                for joint_name in actions.keys():
+                    if joint_name in prev_action.actions and joint_name in actions:
+                        delta = abs(actions[joint_name] - prev_action.actions[joint_name])
+                        max_delta = max(max_delta, delta)
+
+                if max_delta > self.danger_config.max_action_delta:
+                    self._danger_detected_count += 1
+                    return True, StopReason.DANGEROUS_ACTION
+
+        # Check 4: Custom danger checker
+        if self.danger_config.custom_danger_checker and observation:
+            try:
+                is_dangerous = self.danger_config.custom_danger_checker(
+                    actions, observation
+                )
+                if is_dangerous:
+                    self._danger_detected_count += 1
+                    return True, StopReason.DANGEROUS_ACTION
+            except Exception as e:
+                logger.error(f"Custom danger checker failed: {e}")
+
+        # Not dangerous
+        self._total_checks += 1
+        return False, None
+
+    def trigger_stop(self, reason: StopReason = StopReason.USER_REQUEST, auto_rollback: bool = False):
+        """Trigger an emergency stop.
+
+        Args:
+            reason: Why the stop is triggered.
+            auto_rollback: Whether to automatically rollback after stopping.
+
+        Returns:
+            StopEvent with details of the stop event.
+        """
+        timestamp = time.time()
+        logger.warning(f"🚨 EMERGENCY STOP triggered - Reason: {reason.value}")
+
+        # Create stop event
+        stop_event = StopEvent(
+            timestamp=timestamp,
+            trigger=StopTrigger.MANUAL if reason == StopReason.USER_REQUEST else StopTrigger.AUTOMATIC,
+            reason=reason,
+        )
+
+        # Capture current action for rollback
+        current_action = self._capture_current_action()
+        stop_event.action_at_stop = current_action
+
+        # Add to stop events
+        self.stop_events.append(stop_event)
+        self.current_stop_event = stop_event
+
+        # Update robot state
+        self._is_stopped = True
+        self._is_paused = False
+
+        # Track stop type
+        if reason == StopReason.USER_REQUEST:
+            self._manual_stop_count += 1
+        else:
+            self._automatic_stop_count += 1
+
+        # Call stop callback
+        if self._on_stop_callback:
+            try:
+                self._on_stop_callback(stop_event)
+            except Exception as e:
+                logger.error(f"Stop callback error: {e}")
+
+        # Auto rollback if requested
+        if auto_rollback:
+            logger.info("Auto-rollback enabled, initiating rollback...")
+            return self.rollback(steps=None, confirm_before_resume=False)
+        else:
+            return stop_event
+
+    def _capture_current_action(self) -> ActionSnapshot | None:
+        """Capture the current robot action for rollback purposes.
+
+        Returns:
+            ActionSnapshot with current robot state, or None if capture fails.
+        """
+        try:
+            # Get current action from robot
+            if hasattr(self.robot, 'get_last_sent_action'):
+                current_actions = self.robot.get_last_sent_action()
+            elif hasattr(self.robot, 'get_current_position'):
+                # Fallback: get current position
+                current_pos = self.robot.get_current_position()
+                current_actions = {f"{k}.pos": v for k, v in current_pos.items()}
+            else:
+                logger.warning("Cannot capture current action - robot methods not available")
+                return None
+
+            # Get current observation
+            observation = None
+            if hasattr(self.robot, 'get_observation'):
+                observation = self.robot.get_observation()
+
+            # Create snapshot
+            snapshot = ActionSnapshot(
+                timestamp=time.time(),
+                actions=current_actions,
+                observation=observation,
+                action_number=self.current_action_number,
+            )
+
+            # Store in history
+            self.action_history.append(snapshot)
+
+            return snapshot
+
+        except Exception as e:
+            logger.error(f"Failed to capture current action: {e}")
+            return None
+
+    def rollback(self, steps: int | None = None, confirm_before_resume: bool = True) -> bool:
+        """Rollback robot to a previous safe state.
+
+        Args:
+            steps: Number of steps to rollback (None = use config default).
+            confirm_before_resume: Whether to wait for user confirmation before resuming.
+
+        Returns:
+            True if rollback completed successfully, False otherwise.
+        """
+        if steps is None:
+            steps = self.rollback_config.max_rollback_steps
+
+        if len(self.action_history) < steps:
+            logger.warning(f"Insufficient history for rollback: only {len(self.action_history)} snapshots available, requested {steps}")
+            return False
+
+        self._rollback_in_progress = True
+        logger.info(f"Starting rollback of {steps} steps...")
+
+        # Determine rollback target snapshot
+        target_snapshot = self.action_history[-steps]
+
+        # Execute rollback with proper exception handling
+        try:
+            # Replay actions in reverse (from oldest to newest in the rollback window)
+            for i in range(steps):
+                snapshot_index = len(self.action_history) - 1 - i
+                if snapshot_index < 0:
+                    continue
+
+                snapshot = self.action_history[snapshot_index]
+
+                # Send action
+                self._send_action_snapshot(snapshot)
+
+                # Delay between steps
+                if i < steps - 1:
+                    time.sleep(self.rollback_config.rollback_step_delay)
+
+            # Hold at safe state for confirmation
+            if confirm_before_resume:
+                logger.info("Rollback complete, waiting for user confirmation...")
+                self._wait_for_resume_confirmation()
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Rollback failed: {e}")
+            return False
+
+    def _wait_for_resume_confirmation(self):
+        """Wait for user to confirm after rollback."""
+        logger.info("Waiting for resume confirmation (user should call resume())")
+        self._safe_confirmed_count += 1
+
+    def pause(self):
+        """Pause the robot after rollback."""
+        if self._is_stopped:
+            self._is_paused = True
+            logger.info("Robot paused after rollback - waiting for user action")
+            return True
+        logger.warning("Cannot pause - not in stopped state")
+        return False
+
+    def resume(self):
+        """Resume execution after emergency stop/rollback.
+
+        Returns:
+            True if successfully resumed, False otherwise.
+        """
+        if not self._is_stopped:
+            logger.warning("Cannot resume - not in stopped state")
+            return False
+
+        logger.info("Resuming execution...")
+
+        # Clear stop state
+        self._is_stopped = False
+        self._is_paused = False
+
+        # Re-send the target action (where we stopped)
+        if self.current_stop_event and self.current_stop_event.rollback_snapshot:
+            logger.info(f"Re-sending action from snapshot #{self.current_stop_event.rollback_snapshot.action_number}")
+            self._send_action_snapshot(self.current_stop_event.rollback_snapshot)
+
+        # Clear current stop event but keep history
+        self.current_stop_event = None
+
+        logger.info("Execution resumed")
+        return True
+
+    def set_safe_state(self, snapshot: ActionSnapshot):
+        """Set a specific state as safe for future reference."""
+        logger.info(f"Set safe state from snapshot #{snapshot.action_number}")
+        # Implementation: could store this in a separate "safe states" list
+
+    def get_safe_state(self) -> ActionSnapshot | None:
+        """Get the last known safe state."""
+        logger.info("Retrieving safe state")
+        return None
+
+    def get_statistics(self) -> dict[str, Any]:
+        """Get controller statistics."""
+        return {
+            "total_checks": self._total_checks,
+            "danger_detected_count": self._danger_detected_count,
+            "manual_stops": self._manual_stop_count,
+            "automatic_stops": self._automatic_stop_count,
+            "rollback_count": self._rollback_count,
+            "is_stopped": self._is_stopped,
+            "is_paused": self._is_paused,
+            "action_history_size": len(self.action_history),
+            "stop_events_count": len(self.stop_events),
+            "safe_confirmed_count": self._safe_confirmed_count,
+            "current_action_number": self.current_action_number,
+        }
+
+    # Callbacks
+    def set_stop_callback(self, callback: Callable[[StopEvent], None]):
+        """Set callback for stop events."""
+        self._on_stop_callback = callback
+        logger.info("Stop callback registered")
+
+    def set_rollback_complete_callback(self, callback: Callable[[StopEvent], None]):
+        """Set callback for rollback completion."""
+        self._on_rollback_complete_callback = callback
+        logger.info("Rollback complete callback registered")
+
+    def get_current_stop_event(self) -> StopEvent | None:
+        """Get the most recent stop event."""
+        return self.current_stop_event
+
+    def get_action_history(self, num_recent: int = 10) -> list[ActionSnapshot]:
+        """Get recent action history."""
+        return list(self.action_history)[-num_recent:]
+
+
+def create_emergency_stop_controller(
+    robot,
+    history_size: int = 1000,
+    danger_config: DangerDetectionConfig = None,
+    rollback_config: RollbackConfig = None,
+) -> EmergencyStopController:
+    """Create an emergency stop controller instance.
+
+    Args:
+        robot: Robot instance with send_action method.
+        history_size: Maximum number of action snapshots to store.
+        danger_config: Configuration for danger detection.
+        rollback_config: Configuration for rollback behavior.
+
+    Returns:
+        Configured EmergencyStopController instance.
+    """
+    return EmergencyStopController(
+        robot=robot,
+        history_size=history_size,
+        danger_config=danger_config,
+        rollback_config=rollback_config,
+    )
