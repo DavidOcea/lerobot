@@ -483,7 +483,7 @@ class TaskAgentOrchestrator:
         )
 
         # Create emergency controller
-        self.emergency_controller = EmergencyStopController(
+        self.intervention_controller = EmergencyStopController(
             robot=robot,
             history_size=getattr(self.config, 'emergency_history_size', 1000),
             danger_config=danger_config,
@@ -525,7 +525,7 @@ class TaskAgentOrchestrator:
         Returns:
             True if emergency stop was triggered, False otherwise.
         """
-        if self.emergency_controller is None:
+        if self.intervention_controller is None:
             return False
 
         # Check for dangerous action
@@ -551,7 +551,7 @@ class TaskAgentOrchestrator:
         Returns:
             True if successfully resumed, False otherwise.
         """
-        if self.emergency_controller is None:
+        if self.intervention_controller is None:
             return True  # No emergency controller, nothing to resume
 
         # Resume execution
