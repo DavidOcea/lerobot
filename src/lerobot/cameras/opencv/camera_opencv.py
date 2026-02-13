@@ -309,16 +309,32 @@ def find_cameras() -> Dict[str, Any]:
 
     logger.info(f"Found {len(camera_indices)} configured camera(s)")
 
-    # Create camera instances (only create found ones)
+    # Create camera instances using name from config
     cameras = {}
     for index in camera_indices:
-        camera_name = f"camera_{index}"
+        # Find the camera config with this index
+        target_cam_config = None
+        for task in config.tasks:
+            for cam in task.cameras:
+                if hasattr(cam, 'index') and cam.index == index:
+                    target_cam_config = cam
+                    break
+            if target_cam_config is not None:
+                break
+
+        if target_cam_config is None:
+            logger.warning(f"No camera config found for index {index}, skipping")
+            continue
+
+        # Use name from config if available, otherwise generate default
+        camera_name = getattr(target_cam_config, 'name', f"camera_{index}")
         camera_config = CameraConfig(
             fps=config.fps if hasattr(config, 'fps') else 30,
             width=config.width if hasattr(config, 'width') else 1280,
             height=config.height if hasattr(config, 'height') else 720,
             color_mode=config.color_mode if hasattr(config, 'color_mode') else ColorMode.RGB,
         )
+
         cameras[camera_name] = Camera(
             config=camera_config,
             index=index,
