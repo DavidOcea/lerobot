@@ -106,27 +106,27 @@ class StateMonitor:
         try:
             from prometheus_client import Counter, Gauge, start_http_server
 
-            # Define metrics
+            # Define metrics with unique names to avoid conflicts
             self._metrics = {
-                "observations_total": Counter(
-                    "robot_observations_total",
+                "lerobot_observations_total": Counter(
+                    "lerobot_robot_observations_total",
                     "Total number of observations received",
                 ),
-                "actions_total": Counter(
-                    "robot_actions_total",
+                "lerobot_actions_total": Counter(
+                    "lerobot_robot_actions_total",
                     "Total number of actions executed",
                 ),
-                "anomalies_total": Counter(
-                    "robot_anomalies_total",
+                "lerobot_anomalies_total": Counter(
+                    "lerobot_robot_anomalies_total",
                     "Total number of anomalies detected",
                 ),
-                "joint_position": Gauge(
-                    "robot_joint_position",
+                "lerobot_joint_position": Gauge(
+                    "lerobot_joint_position",
                     "Current joint position",
                     ["joint_name"],
                 ),
-                "joint_force": Gauge(
-                    "robot_joint_force",
+                "lerobot_joint_force": Gauge(
+                    "lerobot_joint_force",
                     "Current joint force/torque",
                     ["joint_name"],
                 ),
