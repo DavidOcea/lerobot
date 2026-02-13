@@ -50,6 +50,15 @@ class CameraConfig:
     rotation: Cv2Rotation = Cv2Rotation.CLOCKWISE
 
 
+# API constant for OpenCV backend
+def _get_opencv_api():
+    """Get the correct API constant for OpenCV."""
+    # Try V4L2 first (Linux USB cameras), fallback to ANY
+    if hasattr(cv2, 'CAP_V4L2'):
+        return cv2.CAP_V4L2
+    return cv2.CAP_ANY
+
+
 class OpenCVCameraConfig:
     """Configuration for OpenCV camera (index 0)."""
     def __init__(
@@ -59,7 +68,7 @@ class OpenCVCameraConfig:
         self.index = index_or_path
         self.path = str(index_or_path)
         self.name = f"camera_{index_or_path}"
-        self.api = cv2.CAP_OPENCV
+        self.api = _get_opencv_api()
 
     @property
     def backend_name(self) -> str:
@@ -110,8 +119,8 @@ class Camera:
         self.last_frame = None
         self.frame_count = 0
 
-        # Set api from config if available
-        self.api = cv2.CAP_OPENCV
+        # Set api from OpenCV
+        self.api = _get_opencv_api()
 
     def connect(self) -> bool:
         """Connect to camera device.
