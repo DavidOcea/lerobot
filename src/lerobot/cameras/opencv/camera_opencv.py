@@ -50,19 +50,6 @@ class CameraConfig:
     rotation: Cv2Rotation = Cv2Rotation.CLOCKWISE
 
 
-@dataclass
-class CameraConfig:
-    """Camera instance with state."""
-    config: CameraConfig
-    camera: cv2.VideoCapture | cv2.VideoCapture | None = None
-    index: int
-    name: str
-    is_connected: bool = False
-    is_opened: bool = False
-    last_frame: Any = None
-    frame_count: int = 0
-
-
 class OpenCVCameraConfig:
     """Configuration for OpenCV camera (index 0)."""
     def __init__(
@@ -71,7 +58,7 @@ class OpenCVCameraConfig:
     ):
         self.index = index_or_path
         self.path = str(index_or_path)
-        self.name = f"camera_{index}"
+        self.name = f"camera_{index_or_path}"
         self.api = cv2.CAP_OPENCV
 
     @property
@@ -95,16 +82,6 @@ class OpenCVCameraConfig:
         return True  # Always requires /dev/video0
 
 
-@dataclass
-class CameraConfig:
-    """Camera configuration settings."""
-    fps: int = 30
-    width: int = 1280
-    height: int = 720
-    color_mode: ColorMode = ColorMode.RGB
-    rotation: Cv2Rotation = Cv2Rotation.CLOCKWISE
-
-
 class Camera:
     """OpenCV camera instance with caching and state management.
 
@@ -115,21 +92,26 @@ class Camera:
     - Efficient reconnection
     """
 
-    def __init__(self, config: CameraConfig):
+    def __init__(self, config: CameraConfig, index: int, name: str):
         """Initialize camera with configuration.
 
         Args:
             config: Camera configuration settings.
+            index: Camera index or device path.
+            name: Camera name.
         """
         self.config = config
-        self.camera: cv2.VideoCapture | cv2.VideoCapture | None = None
+        self.camera: cv2.VideoCapture | None = None
 
-        self.index = config.index
-        self.name = config.name
+        self.index = index
+        self.name = name
         self.is_connected = False
         self.is_opened = False
         self.last_frame = None
         self.frame_count = 0
+
+        # Set api from config if available
+        self.api = cv2.CAP_OPENCV
 
     def connect(self) -> bool:
         """Connect to camera device.
@@ -137,14 +119,14 @@ class Camera:
         Returns:
             True if connection successful, False otherwise.
         """
-        logger.info(f"Connecting to {self.name} at {self.path}...")
+        logger.info(f"Connecting to {self.name}...")
 
-        # 尝试打开摄像头
+        # Try to open camera
         try:
-            # 使用OpenCV打开设备
+            # Use OpenCV to open device
             self.camera = cv2.VideoCapture(self.index, api=self.api)
 
-            # 检查是否成功打开
+            # Check if successfully opened
             if self.camera.isOpened():
                 self.is_connected = True
                 self.is_opened = True
@@ -217,19 +199,15 @@ def find_cameras() -> Dict[str, Any]:
     Raises:
         RuntimeError: If no cameras found.
     """
-    # 类级别的扫描结果缓存
-    _cached_cameras: dict[str, Camera] | None = None
-    _scan_completed: bool = False
-
     logger.info("Finding available cameras...")
 
-    # 获取配置的摄像头索引（只获取已配置的）
+    # Get configured camera indices (only get configured ones)
     from lerobot.tasks.config import load_config_from_yaml
 
     config = load_config_from_yaml("configs/task_agent_tasks.yaml")
     camera_indices = []
 
-    # 只处理配置中显式定义的摄像头
+    # Only process cameras explicitly defined in config
     for task in config.tasks:
         for cam in task.cameras:
             if hasattr(cam, 'index'):
@@ -237,15 +215,12 @@ def find_cameras() -> Dict[str, Any]:
 
     if not camera_indices:
         logger.warning("No cameras with 'index' field found in task configs")
-        # 返回空字典，不进行扫描
+        # Return empty dict, do not scan
         return {}
-
-    # 标记扫描完成
-    _scan_completed = True
 
     logger.info(f"Found {len(camera_indices)} configured camera(s)")
 
-    # 创建摄像头实例（只创建找到的）
+    # Create camera instances (only create found ones)
     cameras = {}
     for index in camera_indices:
         camera_name = f"camera_{index}"
@@ -258,45 +233,9 @@ def find_cameras() -> Dict[str, Any]:
         cameras[camera_name] = Camera(
             config=camera_config,
             index=index,
+            name=camera_name,
         )
-        # 添加连接摄像头
-        camera = getattr(cameras, f"camera_{index}", None)
-        if camera:
-            cameras[camera_name].connect()
+        # Connect camera
+        cameras[camera_name].connect()
 
     return cameras
-
-
-# 保持原有的其他类和函数不变
-
-
-class OpenCVCameraConfig:
-    """Configuration for OpenCV camera (index 0)."""
-    def __init__(
-        self,
-        index_or_path: str = "/dev/video0",
-    ):
-        self.index = index_or_path
-        self.path = str(index_or_path)
-        self.name = f"camera_{index}"
-        self.api = cv2.CAP_OPENCV
-
-    @property
-    def backend_name(self) -> str:
-        """Get the OpenCV backend name."""
-        return "opencv"
-
-    @property
-    def device_type(self) -> str:
-        """Get the device camera type."""
-        return "OpenCV"
-
-    @property
-    def requires_index(self) -> bool:
-        """Check if this camera requires an index."""
-        return True
-
-    @property
-    def requires_device_path(self) -> bool:
-        """Check if this camera requires a device path."""
-        return True
