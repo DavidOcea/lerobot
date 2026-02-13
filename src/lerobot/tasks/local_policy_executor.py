@@ -211,20 +211,19 @@ class LocalPolicyExecutor:
         elif "state" in observation:
             batch["observation.state"] = torch.from_numpy(observation["state"]).unsqueeze(0)
 
-        # Handle observation.images - collect all camera images
-        batch["observation.images"] = []
-
+        # Handle observation.images - create individual keys for each camera
+        # The ACT model expects: batch["observation.images.{cam_name}"]
         if "observation.images" in observation:
             images_data = observation["observation.images"]
 
             # Check if it's a dict (multiple cameras)
             if isinstance(images_data, dict):
-                # Extract all camera images in order
+                # Extract all camera images and create individual keys for each
                 for cam_name in sorted(images_data.keys()):
                     img = images_data[cam_name]
                     if img is not None:
-                        # Skip None images but maintain order
-                        batch["observation.images"].append(torch.zeros((3, 224, 224)))
+                        # Create placeholder for None images
+                        batch[f"observation.images.{cam_name}"] = torch.zeros((3, 224, 224))
                     else:
                         # Convert to tensor and normalize: H,W,C -> C,H,W
                         if isinstance(img, np.ndarray):
@@ -232,24 +231,18 @@ class LocalPolicyExecutor:
                         else:
                             img_tensor = torch.as_tensor(img, dtype=torch.float32)
 
-                        # Normalize and add: (H,W,C) -> (C,H,W)
+                        # Normalize and permute: (H,W,C) -> (C,H,W)
                         if img_tensor.dim() == 3:
                             img_tensor = img_tensor.permute(2, 0, 1)
                         img_tensor = img_tensor / 255.0
-                        batch["observation.images"].append(img_tensor)
+                        batch[f"observation.images.{cam_name}"] = img_tensor
 
-                # Stack all images: (num_cameras, C, H, W)
-                if batch["observation.images"]:
-                    stacked = torch.stack(batch["observation.images"])
-                    batch["observation.images"] = stacked
-                else:
-                    batch["observation.images"] = None
-
-            # Check if it's a list/tuple (single camera or pre-stacked)
+            # Check if it's a list/tuple (multiple cameras as list)
             elif isinstance(images_data, (list, tuple)):
-                for img in images_data:
+                for i, img in enumerate(images_data):
+                    cam_name = f"cam_{i}"  # Default camera naming
                     if img is not None:
-                        batch["observation.images"].append(torch.zeros((3, 224, 224)))
+                        batch[f"observation.images.{cam_name}"] = torch.zeros((3, 224, 224))
                     else:
                         if isinstance(img, np.ndarray):
                             img_tensor = torch.from_numpy(img).float()
@@ -258,12 +251,10 @@ class LocalPolicyExecutor:
                         if img_tensor.dim() == 3:
                             img_tensor = img_tensor.permute(2, 0, 1)
                         img_tensor = img_tensor / 255.0
-                        batch["observation.images"].append(img_tensor)
+                        batch[f"observation.images.{cam_name}"] = img_tensor
 
-                if batch["observation.images"]:
-                    batch["observation.images"] = torch.stack(batch["observation.images"])
+            # Single numpy array (fallback)
             else:
-                # Single numpy array
                 if isinstance(images_data, np.ndarray):
                     img_tensor = torch.from_numpy(images_data).float()
                     if img_tensor.dim() == 3:
