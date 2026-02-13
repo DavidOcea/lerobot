@@ -184,6 +184,28 @@ class Camera:
         self.camera = None
 
 
+class OpenCVCamera(Camera):
+    """OpenCV camera (index 0) with caching and state management.
+
+    This is the main camera class used by the robot system.
+    """
+
+    def __init__(self, config: OpenCVCameraConfig):
+        """Initialize camera with configuration.
+
+        Args:
+            config: OpenCVCameraConfig
+        """
+        # Initialize base Camera class with minimal config
+        base_config = CameraConfig()
+        super().__init__(
+            config=base_config,
+            index=config.index,
+            name=config.name,
+        )
+        self.api = config.api
+
+
 def find_cameras() -> Dict[str, Any]:
     """Find and return all available cameras.
 
