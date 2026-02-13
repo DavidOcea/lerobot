@@ -213,8 +213,10 @@ class LocalPolicyExecutor:
 
         # Handle observation.images - create individual keys for each camera
         # The ACT model expects: batch["observation.images.{cam_name}"]
-        if "observation.images" in observation:
-            images_data = observation["observation.images"]
+        # Robot returns observation as: {"images": {"head_cam": ..., "right_wrist_cam": ...}}
+        # Note: images is directly under observation, NOT under observation.images
+        if "images" in observation:
+            images_data = observation["images"]
 
             # Check if it's a dict (multiple cameras)
             if isinstance(images_data, dict):
