@@ -445,117 +445,6 @@ class TaskAgentOrchestrator:
 
         logger.info("Manual intervention controller initialized")
 
-    def _init_emergency_controller(self):
-        """Initialize the emergency stop controller."""
-        if self.emergency_controller is not None:
-            logger.info("Emergency controller already initialized")
-            return
-
-        # Get robot reference
-        robot = self.robot if self.use_local_execution else self.robot_client
-        if robot is None:
-            logger.warning("Cannot initialize emergency controller - no robot available")
-            return
-
-        # Create danger detection config
-        danger_config = DangerDetectionConfig(
-            force_threshold=getattr(self.config, 'emergency_force_threshold', 2.5),
-            total_force_threshold=getattr(self.config, 'emergency_total_force_threshold', 5.0),
-            max_joint_force=getattr(self.config, 'emergency_max_joint_force', 1.5),
-            max_velocity=getattr(self.config, 'emergency_max_velocity', 5.0),
-            velocity_change_threshold=getattr(self.config, 'emergency_velocity_change_threshold', 2.0),
-            max_action_delta=getattr(self.config, 'emergency_max_action_delta', 0.5),
-            detection_window=getattr(self.config, 'emergency_detection_window', 5),
-        )
-
-        # Create rollback config
-        from lerobot.safety.emergency_stop_controller import RollbackConfig
-        rollback_config = RollbackConfig(
-            max_rollback_steps=getattr(self.config, 'emergency_max_rollback_steps', 100),
-            rollback_step_delay=getattr(self.config, 'emergency_rollback_step_delay', 0.02),
-            safe_state_confirm_steps=getattr(self.config, 'emergency_safe_confirm_steps', 10),
-        )
-
-        # Create emergency controller
-        self.intervention_controller = EmergencyStopController(
-            robot=robot,
-            history_size=getattr(self.config, 'emergency_history_size', 1000),
-            danger_config=danger_config,
-            rollback_config=rollback_config,
-        )
-
-        # Set stop callback
-        self.emergency_controller.set_stop_callback(self._on_emergency_stop)
-
-        logger.info("Emergency stop controller initialized")
-
-    def _handle_exit_request(self) -> bool:
-        """Handle user request to exit.
-
-        Returns:
-            True if exit should proceed.
-        """
-        logger.info("Exit requested by user")
-        return True
-
-    def _on_emergency_stop(self, stop_event):
-        """Callback when emergency stop is triggered.
-
-        Args:
-            stop_event: StopEvent with details of the stop.
-        """
-        logger.warning(f"Emergency stop triggered: {stop_event.reason.value}")
-
-        # Update collision count for tracking
-        self.total_collision_count += 1
-
-    def _check_emergency_stop(self, observation: dict[str, Any], action: dict[str, float]) -> bool:
-        """Check if emergency stop should be triggered.
-
-        Args:
-            observation: Current observation from robot.
-            action: Current action being executed.
-
-        Returns:
-            True if emergency stop was triggered, False otherwise.
-        """
-        if self.intervention_controller is None:
-            return False
-
-        # Check for dangerous action
-        is_dangerous, reason = self.emergency_controller.check_action_danger(action, observation)
-
-        if is_dangerous:
-            logger.warning(f"Dangerous action detected: {reason.value if reason else 'unknown'}")
-
-            # Trigger emergency stop
-            auto_rollback = getattr(self.config, 'auto_rollback_on_stop', True)
-            self.emergency_controller.trigger_stop(
-                reason=reason or StopReason.DANGEROUS_ACTION,
-                auto_rollback=auto_rollback
-            )
-
-            return True
-
-        return False
-
-    def _handle_emergency_resume(self) -> bool:
-        """Handle resuming after emergency stop.
-
-        Returns:
-            True if successfully resumed, False otherwise.
-        """
-        if self.intervention_controller is None:
-            return True  # No emergency controller, nothing to resume
-
-        # Resume execution
-        success = self.emergency_controller.resume()
-
-        if success:
-            logger.info("Successfully resumed after emergency stop")
-
-        return success
-
     def _get_observation(self) -> dict[str, Any]:
         """Get current observation from robot.
 
@@ -721,7 +610,7 @@ class TaskAgentOrchestrator:
         logger.info("Cleaning up...")
 
         # Stop emergency controller
-        if self.emergency_controller is not None:
+        if self.intervention_controller is not None:
             logger.info("Stopping emergency stop controller")
 
         # Stop state monitor
