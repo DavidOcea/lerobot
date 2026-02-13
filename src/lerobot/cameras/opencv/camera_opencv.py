@@ -194,16 +194,20 @@ class OpenCVCamera(Camera):
         """Initialize camera with configuration.
 
         Args:
-            config: OpenCVCameraConfig
+            config: OpenCVCameraConfig from configuration_opencv.py
         """
         # Initialize base Camera class with minimal config
         base_config = CameraConfig()
+        # Generate name from index_or_path
+        camera_name = f"camera_{config.index_or_path}"
+
         super().__init__(
             config=base_config,
-            index=config.index,
-            name=config.name,
+            index=config.index_or_path,
+            name=camera_name,
         )
-        self.api = config.api
+        # Store additional attributes from config
+        self.config_obj = config
 
 
 def find_cameras() -> Dict[str, Any]:
