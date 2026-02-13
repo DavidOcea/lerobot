@@ -132,8 +132,12 @@ class Camera:
 
         # Try to open camera
         try:
-            # Use OpenCV to open device
-            self.camera = cv2.VideoCapture(self.index, api=self.api)
+            # For string paths (like /dev/video0), don't use api parameter
+            # For integer indices, we can use the api parameter
+            if isinstance(self.index, str):
+                self.camera = cv2.VideoCapture(self.index)
+            else:
+                self.camera = cv2.VideoCapture(self.index, api=self.api)
 
             # Check if successfully opened
             if self.camera.isOpened():
@@ -153,8 +157,11 @@ class Camera:
             self.camera = None
             return False
 
-    def read(self) -> Any:
+    def read(self, color_mode: ColorMode | None = None) -> Any:
         """Read a frame from camera.
+
+        Args:
+            color_mode: Desired color mode (RGB/BGR). If None, uses default.
 
         Returns:
             Frame data or None if error.
@@ -168,6 +175,14 @@ class Camera:
             if success:
                 self.frame_count += 1
                 self.last_frame = frame
+
+                # Apply color mode conversion if needed
+                if color_mode is not None and frame is not None:
+                    if color_mode == ColorMode.RGB and self.config.color_mode == ColorMode.BGR:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    elif color_mode == ColorMode.BGR and self.config.color_mode == ColorMode.RGB:
+                        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
                 return frame
             else:
                 logger.error(f"Failed to read from {self.name}")
@@ -175,6 +190,28 @@ class Camera:
         except Exception as e:
             logger.error(f"Error reading from {self.name}: {e}")
             return None
+
+    def async_read(self, timeout_ms: float = 200) -> Any:
+        """Asynchronously read a frame from camera.
+
+        Args:
+            timeout_ms: Maximum time to wait for a frame in milliseconds.
+
+        Returns:
+            Frame data or None if error.
+        """
+        # For OpenCV camera, async_read is same as regular read
+        # OpenCV's read() is blocking, so this is a simple wrapper
+        return self.read()
+
+    def disconnect(self) -> None:
+        """Disconnect from camera and release resources."""
+        if self.camera is not None:
+            self.camera.release()
+            logger.info(f"Disconnected {self.name}")
+        self.is_connected = False
+        self.is_opened = False
+        self.camera = None
 
     def is_opened(self) -> bool:
         """Check if camera is open.
@@ -185,12 +222,8 @@ class Camera:
         return self.camera is not None and self.camera.isOpened()
 
     def release(self):
-        """Release camera resources."""
-        if self.camera is not None:
-            self.camera.release()
-            logger.info(f"Released {self.name}")
-        self.is_opened = False
-        self.camera = None
+        """Release camera resources (alias for disconnect)."""
+        self.disconnect()
 
 
 class OpenCVCamera(Camera):
@@ -217,6 +250,27 @@ class OpenCVCamera(Camera):
         )
         # Store additional attributes from config
         self.config_obj = config
+
+    def async_read(self, timeout_ms: float = 200) -> Any:
+        """Asynchronously read a frame from camera.
+
+        For OpenCV camera, this wraps the regular read() method
+        since OpenCV's read() is blocking by default.
+
+        Args:
+            timeout_ms: Maximum time to wait for a frame in milliseconds.
+
+        Returns:
+            Frame data or None if error.
+        """
+        return self.read()
+
+    def disconnect(self) -> None:
+        """Disconnect from camera and release resources.
+
+        Overrides base Camera.disconnect() for specific behavior.
+        """
+        super().disconnect()
 
 
 def find_cameras() -> Dict[str, Any]:
