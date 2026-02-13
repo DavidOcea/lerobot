@@ -488,11 +488,9 @@ class LocalTaskScheduler:
         Args:
             tasks: List of task configurations to execute.
             robot: Robot instance for executing actions.
-            policy_executor: LocalPolicyExecutor for inference.
+            policy_executor: LocalPolicyExecutor instance for policy inference.
             completion_detector: Optional completion detector for early termination.
         """
-        from .local_policy_executor import LocalPolicyExecutor
-
         self.tasks = tasks
         self.robot = robot
         self.policy_executor: LocalPolicyExecutor = policy_executor
