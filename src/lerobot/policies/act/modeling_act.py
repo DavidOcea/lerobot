@@ -756,7 +756,7 @@ class ACT(nn.Module):
                 cam_features = einops.rearrange(cam_features, "b c h w -> (h w) b c")
                 cam_pos_embed = einops.rearrange(cam_pos_embed, "b c h w -> (h w) b c")
 
-                if self.head_dropout and (torch.equal(img, batch['observation.images.head_cam']) and self.training):
+                if self.head_dropout and 'head_cam' in batch['observation.images'] and (torch.equal(img, batch['observation.images.head_cam']) and self.training):
                     cam_features = self.head_dp(cam_features)
 
                 # Extend immediately instead of accumulating and concatenating
