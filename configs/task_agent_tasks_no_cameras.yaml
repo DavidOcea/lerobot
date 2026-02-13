@@ -1,0 +1,28 @@
+# Task Agent Configuration - No Cameras (for testing)
+
+tasks:
+  - name: "pick_short_workpiece"
+    policy_path: "/path/to/act_model_short_piece"
+    policy_type: "act"
+    max_duration: 30.0
+    max_retries: 3
+    enabled: true
+    # NO CAMERAS - DISABLED FOR TESTING
+
+  - name: "place_short_workpiece"
+    policy_path: "/path/to/act_model_place_short"
+    policy_type: "act"
+    max_duration: 30.0
+    max_retries: 3
+    enabled: true
+
+robot_config:
+  type: "supre_robot_follower"
+  camera_enabled: false  # DISABLE CAMERAS
+  force_sensing_enabled: true
+
+collision_config:
+  collision_threshold: 2.0
+  detection_window: 5
+  adaptive_mode: true
+  auto_calibrate: true

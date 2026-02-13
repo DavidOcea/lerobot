@@ -28,8 +28,8 @@ from functools import cached_property
 from pprint import pformat
 from typing import Protocol, TypeAlias
 
-import serial
-from deepdiff import DeepDiff
+# Temporarily comment out serial import
+# Temporarily disable deepdiff
 from tqdm import tqdm
 
 from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
