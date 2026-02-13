@@ -234,12 +234,6 @@ class TaskAgentOrchestrator:
         if getattr(self.config, 'enable_interactive_mode', False):
             self._init_interactive_selector()
 
-        # 9. Initialize emergency stop controller if enabled
-        if getattr(self.config, 'enable_emergency_stop', True):
-            self._init_intervention_controller()
-
-        self.is_initialized = True
-        logger.info("Initialization complete (LOCAL mode)")
         return True
 
     def _initialize_remote_mode(self) -> bool:
