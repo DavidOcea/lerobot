@@ -52,6 +52,7 @@ class AdaptiveTaskScheduler:
         enable_action_smoothing: bool = True,
         smoothing_level: str = "medium",
         collision_detector_type: str = "adaptive",  # "basic", "enhanced", "temporal", "adaptive"
+        emergency_check_callback: Callable[[dict[str, Any], dict[str, float], str], Any] | None = None,
     ):
         """Initialize the adaptive scheduler.
 
@@ -65,12 +66,15 @@ class AdaptiveTaskScheduler:
                 - "enhanced": Enhanced with rate and immediate detection
                 - "temporal": Temporal pattern analysis (most sensitive)
                 - "adaptive": Motion-aware thresholds (fewest false positives)
+            emergency_check_callback: Optional callback for emergency stop checking
+                Signature: (observation, action, task_name) -> RecoveryAction | None
         """
         self.scheduler = scheduler
         self.gripper_config = gripper_config or {}
         self.enable_action_smoothing = enable_action_smoothing
         self.smoothing_level = smoothing_level
         self.collision_detector_type = collision_detector_type
+        self.emergency_check_callback = emergency_check_callback
 
         # Initialize action post-processor
         self.action_post_processor: Optional[ActionPostProcessor] = None
@@ -307,6 +311,29 @@ class AdaptiveTaskScheduler:
                         f"Action smoothing stats: limit_rate={stats['limit_rate']:.2%}, "
                         f"total_processed={stats['total_processed']}"
                     )
+
+                # Check emergency stop callback before sending action
+                if self.emergency_check_callback is not None:
+                    recovery_action = self.emergency_check_callback(observation, action, task.name)
+                    if recovery_action is not None:
+                        # Emergency stop was triggered
+                        from lerobot.safety.emergency_stop_controller import RecoveryAction
+                        if recovery_action == RecoveryAction.STOP_PROGRAM:
+                            result.status = TaskStatus.FATAL_FAILURE
+                            result.error_message = "Emergency stop: User requested to stop program"
+                            result.collision_detected = True
+                            return result
+                        elif recovery_action == RecoveryAction.ROLLBACK_AND_CONTINUE:
+                            # Continue execution after rollback
+                            logger.info("Continuing task after rollback")
+                            continue
+                        elif recovery_action == RecoveryAction.ROLLBACK_AND_RETRY_MODEL:
+                            # Need to reload with new model - exit and let orchestrator handle
+                            result.status = TaskStatus.FAILED
+                            result.error_message = "Emergency stop: User requested to retry with new model"
+                            result.collision_detected = True
+                            result.retry_with_new_model = True
+                            return result
 
                 # Send action to robot
                 try:
