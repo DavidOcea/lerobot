@@ -29,6 +29,18 @@ from lerobot.tasks.config import TaskConfig
 
 logger = logging.getLogger(__name__)
 
+__all__ = [
+    "EmergencyStopController",
+    "StopTrigger",
+    "StopReason",
+    "RecoveryAction",
+    "ActionSnapshot",
+    "StopEvent",
+    "RollbackConfig",
+    "DangerDetectionConfig",
+    "create_emergency_stop_controller",
+]
+
 
 class StopTrigger(Enum):
     """Who/what triggered the emergency stop."""
@@ -44,6 +56,13 @@ class StopReason(Enum):
     COLLISION = "collision"  # Collision detected
     USER_REQUEST = "user_request"  # User requested stop
     VELOCITY_MISMATCH = "velocity_mismatch"  # Unexpected velocity
+
+
+class RecoveryAction(Enum):
+    """User-selected recovery action after emergency stop."""
+    STOP_PROGRAM = "stop_program"  # Stop the entire program
+    ROLLBACK_AND_CONTINUE = "rollback_and_continue"  # Rollback and continue with same task
+    ROLLBACK_AND_RETRY_MODEL = "rollback_and_retry_model"  # Rollback and retry with new model
 
 
 @dataclass
@@ -400,6 +419,65 @@ class EmergencyStopController:
             return True
         logger.warning("Cannot pause - not in stopped state")
         return False
+
+    def prompt_recovery_action(self, task_name: str = None) -> RecoveryAction:
+        """Prompt user to select recovery action after emergency stop.
+
+        Args:
+            task_name: Name of the task that was interrupted (optional).
+
+        Returns:
+            RecoveryAction selected by user.
+        """
+        print("\n" + "=" * 60)
+        print("🚨 EMERGENCY STOP TRIGGERED")
+        print("=" * 60)
+        if task_name:
+            print(f"Interrupted task: {task_name}")
+        if self.current_stop_event:
+            print(f"Stop reason: {self.current_stop_event.reason.value}")
+        print("")
+        print("Available recovery actions:")
+        print("  1 - Stop program completely")
+        print("  2 - Rollback to safe position and continue with same task")
+        print("  3 - Rollback to safe position and retry with new model")
+        print("=" * 60)
+
+        while True:
+            try:
+                user_input = input("Select recovery action (1/2/3): ").strip()
+                if not user_input:
+                    user_input = "2"  # Default: rollback and continue
+
+                if user_input == "1":
+                    logger.info("User selected: Stop program")
+                    return RecoveryAction.STOP_PROGRAM
+                elif user_input == "2":
+                    logger.info("User selected: Rollback and continue")
+                    return RecoveryAction.ROLLBACK_AND_CONTINUE
+                elif user_input == "3":
+                    logger.info("User selected: Rollback and retry with new model")
+                    return RecoveryAction.ROLLBACK_AND_RETRY_MODEL
+                else:
+                    print("Invalid input. Please enter 1, 2, or 3.")
+            except (KeyboardInterrupt, EOFError):
+                logger.info("User interrupted, defaulting to stop program")
+                return RecoveryAction.STOP_PROGRAM
+
+    def get_suggested_rollback_steps(self) -> int:
+        """Get suggested number of steps to rollback based on stop reason.
+
+        Returns:
+            Suggested rollback steps.
+        """
+        if self.current_stop_event and self.current_stop_event.reason == StopReason.HIGH_FORCE:
+            # For high force collisions, rollback more steps
+            return min(self.rollback_config.max_rollback_steps, 50)
+        elif self.current_stop_event and self.current_stop_event.reason == StopReason.COLLISION:
+            return min(self.rollback_config.max_rollback_steps, 30)
+        else:
+            # Default: smaller rollback
+            return min(self.rollback_config.max_rollback_steps, 20)
 
     def resume(self):
         """Resume execution after emergency stop/rollback.

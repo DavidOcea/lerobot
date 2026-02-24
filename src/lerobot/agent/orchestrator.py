@@ -42,6 +42,7 @@ from lerobot.safety.emergency_stop_controller import (
     DangerDetectionConfig,
     StopEvent,
     StopReason,
+    RecoveryAction,
 )
 
 from .config import OrchestratorConfig
@@ -221,7 +222,8 @@ class TaskAgentOrchestrator:
             gripper_config = getattr(self.config, 'gripper_config', None)
             self.task_scheduler = AdaptiveTaskScheduler(
                 scheduler=base_scheduler,
-                gripper_config=gripper_config or {}
+                gripper_config=gripper_config or {},
+                emergency_check_callback=self._check_emergency_stop if self.emergency_controller else None,
             )
             logger.info("Using AdaptiveTaskScheduler with force feedback and adaptive speed control")
         else:
@@ -477,18 +479,19 @@ class TaskAgentOrchestrator:
         # Update collision count for tracking
         self.total_collision_count += 1
 
-    def _check_emergency_stop(self, observation: dict[str, Any], action: dict[str, float]) -> bool:
-        """Check if emergency stop should be triggered.
+    def _check_emergency_stop(self, observation: dict[str, Any], action: dict[str, float], task_name: str = None) -> RecoveryAction | None:
+        """Check if emergency stop should be triggered and handle recovery.
 
         Args:
             observation: Current observation from robot.
             action: Current action being executed.
+            task_name: Name of the current task (optional).
 
         Returns:
-            True if emergency stop was triggered, False otherwise.
+            RecoveryAction if emergency stop was triggered, None otherwise.
         """
         if self.emergency_controller is None:
-            return False
+            return None
 
         # Check for dangerous action
         is_dangerous, reason = self.emergency_controller.check_action_danger(action, observation)
@@ -496,33 +499,122 @@ class TaskAgentOrchestrator:
         if is_dangerous:
             logger.warning(f"Dangerous action detected: {reason.value if reason else 'unknown'}")
 
-            # Trigger emergency stop
-            auto_rollback = getattr(self.config, 'auto_rollback_on_stop', True)
+            # Trigger emergency stop (without auto-rollback)
             self.emergency_controller.trigger_stop(
                 reason=reason or StopReason.DANGEROUS_ACTION,
-                auto_rollback=auto_rollback
+                auto_rollback=False  # We'll handle rollback after user selection
             )
 
-            return True
+            # Prompt user for recovery action
+            recovery_action = self.emergency_controller.prompt_recovery_action(task_name)
 
-        return False
+            # Handle the selected recovery action
+            return self._handle_recovery_action(recovery_action, task_name)
 
-    def _handle_emergency_resume(self) -> bool:
-        """Handle resuming after emergency stop.
+        return None
+
+    def _handle_recovery_action(self, recovery_action: RecoveryAction, task_name: str = None) -> RecoveryAction:
+        """Handle the user-selected recovery action.
+
+        Args:
+            recovery_action: The recovery action selected by user.
+            task_name: Name of the task that was interrupted.
 
         Returns:
-            True if successfully resumed, False otherwise.
+            The recovery action for further processing by caller.
         """
-        if self.emergency_controller is None:
-            return True  # No emergency controller, nothing to resume
+        if recovery_action == RecoveryAction.STOP_PROGRAM:
+            logger.info("User selected to stop the program")
+            # Stop the program
+            self.is_running = False
 
-        # Resume execution
-        success = self.emergency_controller.resume()
+        elif recovery_action == RecoveryAction.ROLLBACK_AND_CONTINUE:
+            logger.info("User selected to rollback and continue")
+            # Get suggested rollback steps
+            steps = self.emergency_controller.get_suggested_rollback_steps()
+            logger.info(f"Rolling back {steps} steps...")
 
-        if success:
-            logger.info("Successfully resumed after emergency stop")
+            # Execute rollback
+            success = self.emergency_controller.rollback(steps=steps, confirm_before_resume=False)
+            if success:
+                logger.info("Rollback complete, resuming task")
+                # Clear stop state to allow continuation
+                self.emergency_controller.resume()
 
-        return success
+        elif recovery_action == RecoveryAction.ROLLBACK_AND_RETRY_MODEL:
+            logger.info("User selected to rollback and retry with new model")
+            # Get suggested rollback steps
+            steps = self.emergency_controller.get_suggested_rollback_steps()
+            logger.info(f"Rolling back {steps} steps...")
+
+            # Execute rollback
+            success = self.emergency_controller.rollback(steps=steps, confirm_before_resume=False)
+            if success:
+                logger.info("Rollback complete, ready for new model selection")
+                # Clear stop state
+                self.emergency_controller.resume()
+
+                # Prompt for alternative model
+                new_model_path = self._prompt_alternative_model(task_name)
+                if new_model_path:
+                    # Update task with new model path
+                    # This will be handled by the task scheduler
+                    logger.info(f"New model selected: {new_model_path}")
+                    return recovery_action
+                else:
+                    logger.info("No new model selected, stopping")
+                    return RecoveryAction.STOP_PROGRAM
+
+        return recovery_action
+
+    def _prompt_alternative_model(self, task_name: str = None) -> str | None:
+        """Prompt user to select an alternative model for task retry.
+
+        Args:
+            task_name: Name of the task that failed.
+
+        Returns:
+            Path to the selected model, or None if user cancelled.
+        """
+        print("\n" + "=" * 60)
+        print("SELECT ALTERNATIVE MODEL")
+        print("=" * 60)
+        if task_name:
+            print(f"Task: {task_name}")
+        print("")
+        print("Available models:")
+        print("  1 - Default model (from config)")
+        print("  2 - Enter custom model path")
+        print("  0 - Cancel (stop program)")
+        print("=" * 60)
+
+        try:
+            user_input = input("Select model (1/2/0): ").strip()
+
+            if user_input == "1":
+                # Use default model from config
+                if task_name:
+                    for task in self.config.tasks:
+                        if task.name == task_name:
+                            logger.info(f"Using default model: {task.policy_path}")
+                            return task.policy_path
+                return None
+            elif user_input == "2":
+                # Custom model path
+                custom_path = input("Enter model path: ").strip()
+                if custom_path:
+                    logger.info(f"Using custom model: {custom_path}")
+                    return custom_path
+                return None
+            elif user_input == "0":
+                return None
+            else:
+                print("Invalid input, using default model")
+                return None
+
+        except (KeyboardInterrupt, EOFError):
+            logger.info("Input interrupted, cancelling model selection")
+            return None
 
     def run(self) -> ExecutionSummary:
         """Execute the complete task sequence.
@@ -611,6 +703,29 @@ class TaskAgentOrchestrator:
                     collision_handler=self.collision_handler,
                     state_monitor=self.state_monitor,
                 )
+
+                # Handle emergency stop with new model retry
+                if hasattr(result, 'retry_with_new_model') and result.retry_with_new_model:
+                    # User wants to retry with a new model
+                    new_model = self._prompt_alternative_model(task.name)
+                    if new_model:
+                        # Create a new task config with the new model
+                        from copy import deepcopy
+                        retry_task = deepcopy(task)
+                        retry_task.policy_path = new_model
+                        retry_task.name = f"{task.name}_retry"
+
+                        logger.info(f"Retrying task with new model: {new_model}")
+                        result = self.task_scheduler.execute_task_adaptive(
+                            retry_task,
+                            collision_detector=self.collision_detector,
+                            collision_handler=self.collision_handler,
+                            state_monitor=self.state_monitor,
+                        )
+                    else:
+                        # No new model selected, mark as failed
+                        result.status = TaskStatus.FATAL_FAILURE
+                        result.error_message = "Emergency stop: No alternative model selected"
             else:
                 result = self.task_scheduler.execute_task_with_safety(
                     task,

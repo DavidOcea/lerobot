@@ -51,6 +51,7 @@ class TaskResult:
     collision_detected: bool = False
     start_time: float = field(default_factory=time.time)
     end_time: float = 0.0
+    retry_with_new_model: bool = False  # Set when user wants to retry with alternative model
 
     def __post_init__(self):
         if self.end_time == 0:
