@@ -206,6 +206,7 @@ class AdaptiveTaskScheduler:
         result = TaskResult(
             task_name=task.name,
             status=TaskStatus.PENDING,
+            attempts=1,  # Initialize to 1 (first attempt)
             start_time=start_time,
         )
 

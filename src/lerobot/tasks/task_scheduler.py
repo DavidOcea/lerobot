@@ -184,7 +184,9 @@ class TaskScheduler:
             )
 
             task_results.append(result)
-            total_retries += result.attempts - 1  # Subtract 1 for initial attempt
+            # Only count retries if there were multiple attempts
+            if result.attempts > 1:
+                total_retries += result.attempts - 1
 
             if result.collision_detected:
                 collision_count += 1
@@ -197,7 +199,7 @@ class TaskScheduler:
         # Compute summary
         end_time = time.time()
         completed = sum(1 for r in task_results if r.status == TaskStatus.COMPLETED)
-        failed = sum(1 for r in task_results if r.status == TaskStatus.FAILED)
+        failed = sum(1 for r in task_results if r.status in (TaskStatus.FAILED, TaskStatus.FATAL_FAILURE))
         skipped = sum(1 for r in task_results if r.status == TaskStatus.SKIPPED)
 
         summary = ExecutionSummary(
@@ -240,6 +242,7 @@ class TaskScheduler:
         result = TaskResult(
             task_name=task.name,
             status=TaskStatus.PENDING,
+            attempts=1,  # Initialize to 1 (first attempt)
             start_time=time.time(),
         )
 
@@ -580,7 +583,9 @@ class LocalTaskScheduler:
             )
 
             task_results.append(result)
-            total_retries += result.attempts - 1
+            # Only count retries if there were multiple attempts
+            if result.attempts > 1:
+                total_retries += result.attempts - 1
 
             if result.collision_detected:
                 collision_count += 1
@@ -593,7 +598,7 @@ class LocalTaskScheduler:
         # Compute summary
         end_time = time.time()
         completed = sum(1 for r in task_results if r.status == TaskStatus.COMPLETED)
-        failed = sum(1 for r in task_results if r.status == TaskStatus.FAILED)
+        failed = sum(1 for r in task_results if r.status in (TaskStatus.FAILED, TaskStatus.FATAL_FAILURE))
         skipped = sum(1 for r in task_results if r.status == TaskStatus.SKIPPED)
 
         summary = ExecutionSummary(
@@ -636,6 +641,7 @@ class LocalTaskScheduler:
         result = TaskResult(
             task_name=task.name,
             status=TaskStatus.PENDING,
+            attempts=1,  # Initialize to 1 (first attempt)
             start_time=time.time(),
         )
 
