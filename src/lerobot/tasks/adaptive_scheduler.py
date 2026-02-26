@@ -245,6 +245,7 @@ class AdaptiveTaskScheduler:
                     state_monitor.update(observation, last_action)
 
                 # Check collision with per-joint thresholds
+                # NOTE: This is the primary collision detection for physical collisions
                 if collision_detector is not None:
                     collision_result = self._check_collision_with_thresholds(
                         observation, last_action, collision_detector
@@ -313,6 +314,10 @@ class AdaptiveTaskScheduler:
                     )
 
                 # Check emergency stop callback before sending action
+                # NOTE: This is a secondary safety check that monitors for dangerous commands
+                # (e.g., sudden large position changes, excessive forces). It complements the
+                # primary collision detection above by catching issues before they become collisions.
+                # If emergency stop is triggered, it takes precedence and the action is not sent.
                 if self.emergency_check_callback is not None:
                     recovery_action = self.emergency_check_callback(observation, action, task.name)
                     if recovery_action is not None:
@@ -326,7 +331,11 @@ class AdaptiveTaskScheduler:
                         elif recovery_action == RecoveryAction.ROLLBACK_AND_CONTINUE:
                             # Continue execution after rollback
                             logger.info("Continuing task after rollback")
-                            continue
+                            # Reset policy executor to avoid state inconsistency
+                            if hasattr(self.scheduler, 'policy_executor'):
+                                self.scheduler.policy_executor.reset()
+                                logger.debug("Policy executor reset after rollback")
+                            continue  # Go to next control loop iteration
                         elif recovery_action == RecoveryAction.ROLLBACK_AND_RETRY_MODEL:
                             # Need to reload with new model - exit and let orchestrator handle
                             result.status = TaskStatus.FAILED
