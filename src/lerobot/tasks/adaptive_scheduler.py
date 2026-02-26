@@ -212,8 +212,8 @@ class AdaptiveTaskScheduler:
         # Load policy for this task first
         logger.info(f"Loading policy for task {task.name}: {task.policy_path}")
         if not self.scheduler.policy_executor.load_policy(task.policy_path, task.policy_type):
+            result.mark_failed(f"Failed to load policy from {task.policy_path}")
             result.status = TaskStatus.FATAL_FAILURE
-            result.error_message = f"Failed to load policy from {task.policy_path}"
             return result
 
         # Reset state
@@ -234,8 +234,8 @@ class AdaptiveTaskScheduler:
                 try:
                     observation = self.scheduler.robot.get_observation()
                 except Exception as e:
+                    result.mark_failed(f"Failed to get observation: {e}")
                     result.status = TaskStatus.FATAL_FAILURE
-                    result.error_message = f"Failed to get observation: {e}"
                     return result
 
                 last_observation = observation
@@ -265,8 +265,8 @@ class AdaptiveTaskScheduler:
                             ):
                                 continue
                             else:
+                                result.mark_failed("Severe collision - cannot continue")
                                 result.status = TaskStatus.FATAL_FAILURE
-                                result.error_message = "Severe collision - cannot continue"
                                 return result
                         else:
                             # Low/medium severity - pause and continue
@@ -288,13 +288,14 @@ class AdaptiveTaskScheduler:
                     result.success = True
                     result.completion_confidence = 1.0
                     result.final_observation = observation
+                    result.mark_completed()
                     logger.info(f"Task {task.name} completed successfully")
                     return result
 
                 # Get action from policy
                 action = self.scheduler.policy_executor.get_action(observation)
                 if action is None:
-                    result.error_message = "Failed to get action from policy"
+                    result.mark_failed("Failed to get action from policy")
                     return result
 
                 # Apply adaptive speed control
@@ -324,8 +325,8 @@ class AdaptiveTaskScheduler:
                         # Emergency stop was triggered
                         from lerobot.safety.emergency_stop_controller import RecoveryAction
                         if recovery_action == RecoveryAction.STOP_PROGRAM:
+                            result.mark_failed("Emergency stop: User requested to stop program")
                             result.status = TaskStatus.FATAL_FAILURE
-                            result.error_message = "Emergency stop: User requested to stop program"
                             result.collision_detected = True
                             return result
                         elif recovery_action == RecoveryAction.ROLLBACK_AND_CONTINUE:
@@ -338,8 +339,8 @@ class AdaptiveTaskScheduler:
                             continue  # Go to next control loop iteration
                         elif recovery_action == RecoveryAction.ROLLBACK_AND_RETRY_MODEL:
                             # Need to reload with new model - exit and let orchestrator handle
+                            result.mark_failed("Emergency stop: User requested to retry with new model")
                             result.status = TaskStatus.FAILED
-                            result.error_message = "Emergency stop: User requested to retry with new model"
                             result.collision_detected = True
                             result.retry_with_new_model = True
                             return result
@@ -351,7 +352,7 @@ class AdaptiveTaskScheduler:
                     self.scheduler.observation_history.append(observation)
                     last_action = sent_action
                 except Exception as e:
-                    result.error_message = f"Failed to send action: {e}"
+                    result.mark_failed(f"Failed to send action: {e}")
                     return result
 
                 # Maintain control frequency
@@ -361,15 +362,13 @@ class AdaptiveTaskScheduler:
                     time.sleep(sleep_time)
 
             # Timeout
-            result.status = TaskStatus.FAILED
-            result.error_message = f"Task timeout after {task.max_duration}s"
+            result.mark_failed(f"Task timeout after {task.max_duration}s")
 
         except Exception as e:
+            result.mark_failed(f"Exception during execution: {e}")
             result.status = TaskStatus.FATAL_FAILURE
-            result.error_message = f"Exception during execution: {e}"
             logger.exception("Exception during adaptive task execution")
 
-        result.end_time = time.time()
         return result
 
     def _check_collision_with_thresholds(

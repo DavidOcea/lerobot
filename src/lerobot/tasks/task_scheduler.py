@@ -54,8 +54,26 @@ class TaskResult:
     retry_with_new_model: bool = False  # Set when user wants to retry with alternative model
 
     def __post_init__(self):
-        if self.end_time == 0:
-            self.end_time = time.time()
+        # Only calculate duration if end_time is explicitly set (non-zero)
+        # If end_time is 0, the task is still running or just started
+        if self.end_time != 0:
+            self.duration = self.end_time - self.start_time
+        else:
+            # Duration will be updated when end_time is set
+            self.duration = 0.0
+
+    def mark_completed(self):
+        """Mark the task as completed and set end_time."""
+        self.end_time = time.time()
+        self.duration = self.end_time - self.start_time
+
+    def mark_failed(self, error_message: str = ""):
+        """Mark the task as failed and set end_time."""
+        self.status = TaskStatus.FAILED
+        self.success = False
+        if error_message:
+            self.error_message = error_message
+        self.end_time = time.time()
         self.duration = self.end_time - self.start_time
 
 
