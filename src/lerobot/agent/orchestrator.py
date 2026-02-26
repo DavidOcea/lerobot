@@ -28,6 +28,7 @@ from lerobot.safety import (
 )
 from lerobot.safety.collision_detector import CollisionConfig
 from lerobot.tasks.completion_detector import TaskCompletionDetector
+from lerobot.tasks.config import TaskConfig
 from lerobot.tasks.local_policy_executor import LocalPolicyExecutor
 from lerobot.tasks.task_scheduler import ExecutionSummary, TaskScheduler, TaskStatus
 
