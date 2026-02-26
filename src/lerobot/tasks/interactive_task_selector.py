@@ -174,17 +174,24 @@ class InteractiveTaskSelector:
         lines.extend([
             "Options:",
             "  1 - Execute next task in sequence",
-            "  2 - Create custom task",
+            "  2 - Create custom task or select existing task",
             "  3 - Toggle automatic/interactive mode",
             "  0 - Exit",
             "",
         ])
 
-        # Show task list
+        # Show task list with execution status
         lines.append("Available tasks:")
         for i, task in enumerate(self.config_tasks):
             current = " <- NEXT" if i == self._current_task_index else ""
-            lines.append(f"  {i+1}. {task.name}{current}")
+
+            # Add execution status
+            status = ""
+            if task.name in self._task_execution_counts:
+                count = self._task_execution_counts[task.name]
+                status = f" (executed {count}x)"
+
+            lines.append(f"  {i+1}. {task.name}{status}{current}")
 
         lines.extend([
             "",
@@ -243,10 +250,104 @@ class InteractiveTaskSelector:
                 selected_task=None,  # Next task
             )
         elif input_lower == "2":
-            return TaskSelection(
-                execution_mode=ExecutionMode.INTERACTIVE,
-                custom_task_name="",  # Prompt for task name
-            )
+            # Create custom task or select existing task
+            # Show sub-menu for task selection
+            print("\n" + "=" * 60)
+            print("TASK SELECTION")
+            print("=" * 60)
+            print("Options:")
+            print("  1 - Select from existing tasks")
+            print("  2 - Create new custom task")
+            print("  0 - Cancel")
+            print("=" * 60)
+
+            try:
+                choice = input("Select option (1/2/0): ").strip()
+
+                if choice == "1":
+                    # Select from existing tasks
+                    print("\nAvailable tasks:")
+                    task_names = {task.name.lower(): task for task in self.config_tasks}
+
+                    for i, task in enumerate(self.config_tasks):
+                        # Show execution status
+                        status_info = ""
+                        if task.name in self._task_execution_counts:
+                            count = self._task_execution_counts[task.name]
+                            status_info = f" [executed {count}x]"
+                        current = " <- NEXT" if i == self._current_task_index else ""
+                        print(f"  {i+1}. {task.name}{status_info}{current}")
+
+                    task_input = input("Enter task number or name: ").strip()
+
+                    # Try to parse as number first
+                    try:
+                        task_idx = int(task_input) - 1
+                        if 0 <= task_idx < len(self.config_tasks):
+                            selected_task = self.config_tasks[task_idx]
+                            logger.info(f"User selected existing task: {selected_task.name}")
+                            return TaskSelection(
+                                execution_mode=ExecutionMode.INTERACTIVE,
+                                selected_task=selected_task.name,
+                            )
+                        else:
+                            print(f"Invalid task number: {task_input}")
+                            return TaskSelection(
+                                execution_mode=ExecutionMode.INTERACTIVE,
+                                selected_task=None,  # Stay in interactive mode
+                            )
+                    except ValueError:
+                        # Not a number, treat as task name
+                        task_name_lower = task_input.lower()
+                        if task_name_lower in task_names:
+                            logger.info(f"User selected existing task: {task_input}")
+                            return TaskSelection(
+                                execution_mode=ExecutionMode.INTERACTIVE,
+                                selected_task=task_input,
+                            )
+                        else:
+                            print(f"Task '{task_input}' not found")
+                            return TaskSelection(
+                                execution_mode=ExecutionMode.INTERACTIVE,
+                                selected_task=None,  # Stay in interactive mode
+                            )
+
+                elif choice == "2":
+                    # Create new custom task
+                    custom_name = input("Enter new task name: ").strip()
+                    if custom_name:
+                        logger.info(f"User creating custom task: {custom_name}")
+                        return TaskSelection(
+                            execution_mode=ExecutionMode.INTERACTIVE,
+                            custom_task_name=custom_name,
+                        )
+                    else:
+                        print("Task name cannot be empty")
+                        return TaskSelection(
+                            execution_mode=ExecutionMode.INTERACTIVE,
+                            selected_task=None,  # Stay in interactive mode
+                        )
+
+                elif choice == "0":
+                    # Cancel
+                    return TaskSelection(
+                        execution_mode=ExecutionMode.INTERACTIVE,
+                        selected_task=None,  # Stay in interactive mode
+                    )
+
+                else:
+                    print(f"Invalid choice: {choice}")
+                    return TaskSelection(
+                        execution_mode=ExecutionMode.INTERACTIVE,
+                        selected_task=None,  # Stay in interactive mode
+                    )
+
+            except (KeyboardInterrupt, EOFError):
+                logger.info("Input interrupted")
+                return TaskSelection(
+                    execution_mode=ExecutionMode.INTERACTIVE,
+                    selected_task=None,  # Stay in interactive mode
+                )
         elif input_lower == "3":
             # Toggle mode
             new_mode = (
@@ -322,6 +423,26 @@ class InteractiveTaskSelector:
         Args:
             task_name: Name of the custom task.
         """
+        # Validate task name
+        if not task_name or not task_name.strip():
+            logger.warning("Empty task name provided, ignoring custom task creation")
+            return TaskSelection(
+                execution_mode=ExecutionMode.INTERACTIVE,
+                selected_task=None,
+            )
+
+        task_name = task_name.strip()
+
+        # Check if task already exists
+        for existing_task in self.config_tasks:
+            if existing_task.name == task_name:
+                logger.info(f"Task '{task_name}' already exists, selecting it instead of creating duplicate")
+                # Return selection for the existing task
+                return TaskSelection(
+                    execution_mode=ExecutionMode.INTERACTIVE,
+                    selected_task=task_name,
+                )
+
         # Import CameraConfig for creating empty cameras list
         from lerobot.tasks.config import CameraConfig
 
@@ -335,15 +456,27 @@ class InteractiveTaskSelector:
             enabled=True,
         )
 
-        # Add to queue
+        # Add to queue and config
         self.task_queue.append(custom_task)
         self.config_tasks.append(custom_task)
         logger.info(f"Created custom task '{task_name}' and added to queue")
 
+        # Return selection for the newly created task
         return TaskSelection(
             execution_mode=ExecutionMode.INTERACTIVE,
             selected_task=task_name,
         )
+
+    def record_task_execution(self, task_name: str):
+        """Record that a task has been executed.
+
+        Args:
+            task_name: Name of the task that was executed.
+        """
+        if task_name not in self._task_execution_counts:
+            self._task_execution_counts[task_name] = 0
+        self._task_execution_counts[task_name] += 1
+        logger.info(f"Task '{task_name}' execution recorded (count: {self._task_execution_counts[task_name]})")
 
     def skip_current_task(self):
         """Skip the current task and move to next one.
