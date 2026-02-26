@@ -17,6 +17,7 @@ Usage:
 """
 
 import logging
+import signal
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -355,6 +356,42 @@ class EmergencyStopController:
             logger.error(f"Failed to capture current action: {e}")
             return None
 
+    def _send_action_snapshot(self, snapshot: ActionSnapshot) -> bool:
+        """Send an action from a historical snapshot to the robot.
+
+        Args:
+            snapshot: ActionSnapshot containing the action to send.
+
+        Returns:
+            True if action was sent successfully, False otherwise.
+        """
+        try:
+            if snapshot.actions is None:
+                logger.warning("Snapshot has no actions to send")
+                return False
+
+            # Convert snapshot actions to robot format
+            # The snapshot.actions may contain keys with or without ".pos" suffix
+            action_dict = {}
+            for key, value in snapshot.actions.items():
+                # Remove ".pos" suffix if present to get joint name
+                joint_name = key.replace(".pos", "") if ".pos" in key else key
+                # Add ".pos" suffix for robot.send_action format
+                action_dict[f"{joint_name}.pos"] = value
+
+            # Send action to robot
+            if hasattr(self.robot, 'send_action'):
+                self.robot.send_action(action_dict)
+                logger.debug(f"Sent snapshot action #{snapshot.action_number}")
+                return True
+            else:
+                logger.error("Robot does not have send_action method")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to send snapshot action: {e}")
+            return False
+
     def rollback(self, steps: int | None = None, confirm_before_resume: bool = True) -> bool:
         """Rollback robot to a previous safe state.
 
@@ -370,41 +407,52 @@ class EmergencyStopController:
 
         if len(self.action_history) < steps:
             logger.warning(f"Insufficient history for rollback: only {len(self.action_history)} snapshots available, requested {steps}")
+            # Use available steps instead
+            steps = len(self.action_history)
+
+        if steps == 0:
+            logger.warning("No steps to rollback")
             return False
 
         self._rollback_in_progress = True
         logger.info(f"Starting rollback of {steps} steps...")
 
-        # Determine rollback target snapshot
-        target_snapshot = self.action_history[-steps]
+        # Find the target snapshot (the state we want to restore)
+        # We want to go back 'steps' actions in history
+        target_index = len(self.action_history) - steps
+        if target_index < 0:
+            target_index = 0
+
+        target_snapshot = self.action_history[target_index]
+        logger.info(f"Rolling back to snapshot #{target_snapshot.action_number} from {steps} steps ago")
 
         # Execute rollback with proper exception handling
         try:
-            # Replay actions in reverse (from oldest to newest in the rollback window)
-            for i in range(steps):
-                snapshot_index = len(self.action_history) - 1 - i
-                if snapshot_index < 0:
-                    continue
+            # Method 1: Directly send the target snapshot action
+            # This moves the robot directly to the historical position
+            success = self._send_action_snapshot(target_snapshot)
 
-                snapshot = self.action_history[snapshot_index]
+            if success:
+                # Hold at safe state for confirmation
+                if confirm_before_resume:
+                    logger.info("Rollback complete, waiting for user confirmation...")
+                    self._wait_for_resume_confirmation()
 
-                # Send action
-                self._send_action_snapshot(snapshot)
+                # Store the rollback snapshot for resume reference
+                if self.current_stop_event:
+                    self.current_stop_event.rollback_snapshot = target_snapshot
 
-                # Delay between steps
-                if i < steps - 1:
-                    time.sleep(self.rollback_config.rollback_step_delay)
-
-            # Hold at safe state for confirmation
-            if confirm_before_resume:
-                logger.info("Rollback complete, waiting for user confirmation...")
-                self._wait_for_resume_confirmation()
-
-            return True
+                self._rollback_count += 1
+                return True
+            else:
+                logger.error("Failed to send target snapshot during rollback")
+                return False
 
         except Exception as e:
             logger.error(f"Rollback failed: {e}")
             return False
+        finally:
+            self._rollback_in_progress = False
 
     def _wait_for_resume_confirmation(self):
         """Wait for user to confirm after rollback."""
@@ -420,11 +468,12 @@ class EmergencyStopController:
         logger.warning("Cannot pause - not in stopped state")
         return False
 
-    def prompt_recovery_action(self, task_name: str = None) -> RecoveryAction:
+    def prompt_recovery_action(self, task_name: str = None, timeout: float = 60.0) -> RecoveryAction:
         """Prompt user to select recovery action after emergency stop.
 
         Args:
             task_name: Name of the task that was interrupted (optional).
+            timeout: Maximum time to wait for user input in seconds (default: 60s).
 
         Returns:
             RecoveryAction selected by user.
@@ -442,27 +491,45 @@ class EmergencyStopController:
         print("  2 - Rollback to safe position and continue with same task")
         print("  3 - Rollback to safe position and retry with new model")
         print("=" * 60)
+        print(f"Auto-selecting option 2 (rollback and continue) in {timeout:.0f} seconds if no input...")
 
-        while True:
-            try:
-                user_input = input("Select recovery action (1/2/3): ").strip()
-                if not user_input:
-                    user_input = "2"  # Default: rollback and continue
+        # Use a non-blocking approach with timeout
+        import select
+        import sys
 
-                if user_input == "1":
-                    logger.info("User selected: Stop program")
-                    return RecoveryAction.STOP_PROGRAM
-                elif user_input == "2":
-                    logger.info("User selected: Rollback and continue")
+        user_input = ""
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            # Check if there's input available (non-blocking)
+            if select.select([sys.stdin], [], [], 0)[0]:
+                try:
+                    user_input = sys.stdin.readline().strip()
+                    if user_input:
+                        break
+                except (EOFError, KeyboardInterrupt):
+                    logger.info("Input interrupted, defaulting to option 2 (rollback and continue)")
                     return RecoveryAction.ROLLBACK_AND_CONTINUE
-                elif user_input == "3":
-                    logger.info("User selected: Rollback and retry with new model")
-                    return RecoveryAction.ROLLBACK_AND_RETRY_MODEL
-                else:
-                    print("Invalid input. Please enter 1, 2, or 3.")
-            except (KeyboardInterrupt, EOFError):
-                logger.info("User interrupted, defaulting to stop program")
-                return RecoveryAction.STOP_PROGRAM
+            else:
+                time.sleep(0.1)  # Small delay to prevent busy waiting
+
+        # Timeout or input received
+        if not user_input or time.time() - start_time >= timeout:
+            logger.info(f"Timeout after {timeout:.0f}s, defaulting to option 2 (rollback and continue)")
+            user_input = "2"  # Default: rollback and continue
+
+        if user_input == "1":
+            logger.info("User selected: Stop program")
+            return RecoveryAction.STOP_PROGRAM
+        elif user_input == "2":
+            logger.info("User selected: Rollback and continue")
+            return RecoveryAction.ROLLBACK_AND_CONTINUE
+        elif user_input == "3":
+            logger.info("User selected: Rollback and retry with new model")
+            return RecoveryAction.ROLLBACK_AND_RETRY_MODEL
+        else:
+            logger.warning(f"Invalid input '{user_input}', defaulting to option 2 (rollback and continue)")
+            return RecoveryAction.ROLLBACK_AND_CONTINUE
 
     def get_suggested_rollback_steps(self) -> int:
         """Get suggested number of steps to rollback based on stop reason.
@@ -495,15 +562,13 @@ class EmergencyStopController:
         self._is_stopped = False
         self._is_paused = False
 
-        # Re-send the target action (where we stopped)
-        if self.current_stop_event and self.current_stop_event.rollback_snapshot:
-            logger.info(f"Re-sending action from snapshot #{self.current_stop_event.rollback_snapshot.action_number}")
-            self._send_action_snapshot(self.current_stop_event.rollback_snapshot)
+        # Note: The robot is already at the rollback position from the rollback() call
+        # We don't need to re-send the action, just clear the stop event
 
         # Clear current stop event but keep history
         self.current_stop_event = None
 
-        logger.info("Execution resumed")
+        logger.info("Execution resumed - robot at rollback position, ready for new actions")
         return True
 
     def set_safe_state(self, snapshot: ActionSnapshot):
