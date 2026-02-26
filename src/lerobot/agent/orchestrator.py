@@ -207,7 +207,11 @@ class TaskAgentOrchestrator:
                     task.completion_criteria
                 )
 
-        # 7. Initialize task scheduler with local executor
+        # 7. Initialize emergency stop controller FIRST (needed by adaptive scheduler)
+        if getattr(self.config, 'enable_emergency_stop', True):
+            self._init_emergency_controller()
+
+        # 8. Initialize task scheduler with local executor
         from lerobot.tasks.task_scheduler import LocalTaskScheduler
         from lerobot.tasks.adaptive_scheduler import AdaptiveTaskScheduler
 
@@ -225,19 +229,16 @@ class TaskAgentOrchestrator:
                 scheduler=base_scheduler,
                 gripper_config=gripper_config or {},
                 emergency_check_callback=self._check_emergency_stop if self.emergency_controller else None,
+                emergency_controller=self.emergency_controller,  # Pass controller for auto recording
             )
             logger.info("Using AdaptiveTaskScheduler with force feedback and adaptive speed control")
         else:
             self.task_scheduler = base_scheduler
             logger.info("Using standard LocalTaskScheduler")
 
-        # 8. Initialize interactive task selector if enabled
+        # 9. Initialize interactive task selector if enabled
         if getattr(self.config, 'enable_interactive_mode', False):
             self._init_interactive_selector()
-
-        # 9. Initialize emergency stop controller if enabled
-        if getattr(self.config, 'enable_emergency_stop', True):
-            self._init_emergency_controller()
 
         self.is_initialized = True
         logger.info("Initialization complete (LOCAL mode)")
@@ -691,8 +692,7 @@ class TaskAgentOrchestrator:
                     # Use the current task from selector
                     logger.info(f"Executing next task in sequence: {task.name} (index {current_idx})")
 
-                # Move to next task after execution
-                self.interactive_selector.current_task_index += 1
+                # Note: Index increment is now AFTER task execution, based on result
             else:
                 # No interactive selector, use simple for loop
                 for i, task in enumerate(self.config.tasks):
@@ -731,6 +731,8 @@ class TaskAgentOrchestrator:
             # Skip disabled tasks
             if not task.enabled:
                 logger.info(f"Skipping disabled task: {task.name}")
+                # Advance index for disabled tasks
+                self.interactive_selector.current_task_index += 1
                 continue
 
             logger.info(f"Executing task {current_idx + 1}/{len(self.config.tasks)}: {task.name}")
@@ -758,6 +760,19 @@ class TaskAgentOrchestrator:
                     f"Maximum collision count reached ({self.config.max_total_collisions}), aborting"
                 )
                 break
+
+            # P0 FIX: Only advance task index if task completed successfully
+            # If task failed (e.g., after emergency stop with rollback), keep index
+            # so user can retry the same task or choose a different action
+            if result.status == TaskStatus.COMPLETED:
+                self.interactive_selector.current_task_index += 1
+                logger.info(f"Task {task.name} completed, moving to next task")
+            elif result.status == TaskStatus.FAILED:
+                # Task failed but not fatal - keep index to allow retry
+                logger.info(f"Task {task.name} failed, keeping index for potential retry")
+                # User can manually advance via interactive menu, or retry the same task
+            # FATAL_FAILURE already broke out of the loop above
+            # SKIPPED is handled before this point
 
         # Build summary
         completed = sum(1 for r in results if r.status == TaskStatus.COMPLETED)

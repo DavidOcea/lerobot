@@ -53,6 +53,7 @@ class AdaptiveTaskScheduler:
         smoothing_level: str = "medium",
         collision_detector_type: str = "adaptive",  # "basic", "enhanced", "temporal", "adaptive"
         emergency_check_callback: Callable[[dict[str, Any], dict[str, float], str], Any] | None = None,
+        emergency_controller=None,
     ):
         """Initialize the adaptive scheduler.
 
@@ -68,6 +69,7 @@ class AdaptiveTaskScheduler:
                 - "adaptive": Motion-aware thresholds (fewest false positives)
             emergency_check_callback: Optional callback for emergency stop checking
                 Signature: (observation, action, task_name) -> RecoveryAction | None
+            emergency_controller: Optional EmergencyStopController for action recording
         """
         self.scheduler = scheduler
         self.gripper_config = gripper_config or {}
@@ -75,6 +77,7 @@ class AdaptiveTaskScheduler:
         self.smoothing_level = smoothing_level
         self.collision_detector_type = collision_detector_type
         self.emergency_check_callback = emergency_check_callback
+        self.emergency_controller = emergency_controller
 
         # Initialize action post-processor
         self.action_post_processor: Optional[ActionPostProcessor] = None
@@ -221,7 +224,7 @@ class AdaptiveTaskScheduler:
         self.scheduler.policy_executor.reset()
         self._reset_grasp_state()
 
-        # Get control frequency
+        # Control frequency from config
         control_dt = 1.0 / self.scheduler.robot.config.control_frequency
 
         try:
@@ -349,9 +352,15 @@ class AdaptiveTaskScheduler:
                 # Send action to robot
                 try:
                     sent_action = self.scheduler.robot.send_action(action)
+                    last_action = sent_action
+
+                    # Record action for emergency rollback (automatic integration)
+                    if self.emergency_controller is not None:
+                        self.emergency_controller.record_action(sent_action, observation)
+
+                    # Also maintain scheduler's history for other uses
                     self.scheduler.action_history.append(sent_action)
                     self.scheduler.observation_history.append(observation)
-                    last_action = sent_action
                 except Exception as e:
                     result.mark_failed(f"Failed to send action: {e}")
                     return result
