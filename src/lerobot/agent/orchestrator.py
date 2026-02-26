@@ -645,13 +645,22 @@ class TaskAgentOrchestrator:
         """Execute task sequence with collision monitoring and interactive selection."""
         results = []
 
-        for i, task in enumerate(self.config.tasks):
-            if not task.enabled:
-                logger.info(f"Skipping disabled task: {task.name}")
-                continue
-
-            # Interactive task selection before each task
+        # Use while loop to properly handle interactive task selection
+        # The interactive_selector maintains the current task index
+        while True:
+            # Get current task from interactive selector
             if self.interactive_selector is not None:
+                # Get the current task index from the selector
+                current_idx = self.interactive_selector.current_task_index
+
+                # Check if we've reached the end of the task list
+                if current_idx >= len(self.config.tasks):
+                    logger.info("All tasks completed or end of task list reached")
+                    break
+
+                task = self.config.tasks[current_idx]
+
+                # Prompt user for task selection
                 selection = self.interactive_selector.prompt_next_task()
 
                 # Handle exit request
@@ -671,72 +680,58 @@ class TaskAgentOrchestrator:
                     for t in self.config.tasks:
                         if t.name.lower() == selection.selected_task.lower():
                             task = t
-                            i = self.config.tasks.index(t)
+                            current_idx = self.config.tasks.index(t)
+                            # Update the selector's index to match
+                            self.interactive_selector.current_task_index = current_idx
                             break
-                    logger.info(f"User selected task: {task.name}")
+                    logger.info(f"User selected task: {task.name} (index {current_idx})")
+                else:
+                    # User selected "Execute next task in sequence"
+                    # Use the current task from selector
+                    logger.info(f"Executing next task in sequence: {task.name} (index {current_idx})")
 
-            logger.info(f"Executing task {i + 1}/{len(self.config.tasks)}: {task.name}")
-
-            # Switch cameras for this task
-            self._switch_cameras_for_task(task)
-
-            # Set completion detector for this task
-            self.task_scheduler.completion_detector = self.completion_detectors.get(
-                task.name
-            )
-
-            # Override settings if specified
-            original_max_retries = task.max_retries
-            original_max_duration = task.max_duration
-
-            if self.config.override_max_retries is not None:
-                task.max_retries = self.config.override_max_retries
-            if self.config.override_max_duration is not None:
-                task.max_duration = self.config.override_max_duration
-
-            # Execute task
-            # Check if using adaptive scheduler
-            if hasattr(self.task_scheduler, 'execute_task_adaptive'):
-                result = self.task_scheduler.execute_task_adaptive(
-                    task,
-                    collision_detector=self.collision_detector,
-                    collision_handler=self.collision_handler,
-                    state_monitor=self.state_monitor,
-                )
-
-                # Handle emergency stop with new model retry
-                if hasattr(result, 'retry_with_new_model') and result.retry_with_new_model:
-                    # User wants to retry with a new model
-                    new_model = self._prompt_alternative_model(task.name)
-                    if new_model:
-                        # Create a new task config with the new model
-                        from copy import deepcopy
-                        retry_task = deepcopy(task)
-                        retry_task.policy_path = new_model
-                        retry_task.name = f"{task.name}_retry"
-
-                        logger.info(f"Retrying task with new model: {new_model}")
-                        result = self.task_scheduler.execute_task_adaptive(
-                            retry_task,
-                            collision_detector=self.collision_detector,
-                            collision_handler=self.collision_handler,
-                            state_monitor=self.state_monitor,
-                        )
-                    else:
-                        # No new model selected, mark as failed
-                        result.status = TaskStatus.FATAL_FAILURE
-                        result.error_message = "Emergency stop: No alternative model selected"
+                # Move to next task after execution
+                self.interactive_selector.current_task_index += 1
             else:
-                result = self.task_scheduler.execute_task_with_safety(
-                    task,
-                    collision_detector=self.collision_detector,
-                    collision_handler=self.collision_handler,
-                    state_monitor=self.state_monitor,
-                )
+                # No interactive selector, use simple for loop
+                for i, task in enumerate(self.config.tasks):
+                    if not task.enabled:
+                        logger.info(f"Skipping disabled task: {task.name}")
+                        continue
 
-            # Restore original settings
-            task.max_retries = original_max_retries
-            task.max_duration = original_max_duration
+                    logger.info(f"Executing task {i + 1}/{len(self.config.tasks)}: {task.name}")
+
+                    # Execute the task
+                    result = self._execute_single_task(task)
+
+                    results.append(result)
+
+                    # Update collision count
+                    if result.collision_detected:
+                        self.total_collision_count += 1
+
+                    # Check if we should continue
+                    if result.status == TaskStatus.FATAL_FAILURE:
+                        logger.error(f"Fatal failure in task {task.name}, aborting sequence")
+                        break
+
+                    if self.total_collision_count >= self.config.max_total_collisions:
+                        logger.error(
+                            f"Maximum collision count reached ({self.config.max_total_collisions}), aborting"
+                        )
+                        break
+                # Exit while loop when no interactive selector
+                break
+
+            # Skip disabled tasks
+            if not task.enabled:
+                logger.info(f"Skipping disabled task: {task.name}")
+                continue
+
+            logger.info(f"Executing task {current_idx + 1}/{len(self.config.tasks)}: {task.name}")
+
+            # Execute the task
+            result = self._execute_single_task(task)
 
             results.append(result)
 
@@ -771,6 +766,78 @@ class TaskAgentOrchestrator:
             collision_count=self.total_collision_count,
             total_retries=sum(r.attempts - 1 for r in results),
         )
+
+    def _execute_single_task(self, task: TaskConfig) -> TaskResult:
+        """Execute a single task with all necessary setup and monitoring.
+
+        Args:
+            task: The task configuration to execute.
+
+        Returns:
+            TaskResult with execution outcome.
+        """
+        # Switch cameras for this task
+        self._switch_cameras_for_task(task)
+
+        # Set completion detector for this task
+        self.task_scheduler.completion_detector = self.completion_detectors.get(
+            task.name
+        )
+
+        # Override settings if specified
+        original_max_retries = task.max_retries
+        original_max_duration = task.max_duration
+
+        if self.config.override_max_retries is not None:
+            task.max_retries = self.config.override_max_retries
+        if self.config.override_max_duration is not None:
+            task.max_duration = self.config.override_max_duration
+
+        # Execute task
+        # Check if using adaptive scheduler
+        if hasattr(self.task_scheduler, 'execute_task_adaptive'):
+            result = self.task_scheduler.execute_task_adaptive(
+                task,
+                collision_detector=self.collision_detector,
+                collision_handler=self.collision_handler,
+                state_monitor=self.state_monitor,
+            )
+
+            # Handle emergency stop with new model retry
+            if hasattr(result, 'retry_with_new_model') and result.retry_with_new_model:
+                # User wants to retry with a new model
+                new_model = self._prompt_alternative_model(task.name)
+                if new_model:
+                    # Create a new task config with the new model
+                    from copy import deepcopy
+                    retry_task = deepcopy(task)
+                    retry_task.policy_path = new_model
+                    retry_task.name = f"{task.name}_retry"
+
+                    logger.info(f"Retrying task with new model: {new_model}")
+                    result = self.task_scheduler.execute_task_adaptive(
+                        retry_task,
+                        collision_detector=self.collision_detector,
+                        collision_handler=self.collision_handler,
+                        state_monitor=self.state_monitor,
+                    )
+                else:
+                    # No new model selected, mark as failed
+                    result.status = TaskStatus.FATAL_FAILURE
+                    result.error_message = "Emergency stop: No alternative model selected"
+        else:
+            result = self.task_scheduler.execute_task_with_safety(
+                task,
+                collision_detector=self.collision_detector,
+                collision_handler=self.collision_handler,
+                state_monitor=self.state_monitor,
+            )
+
+        # Restore original settings
+        task.max_retries = original_max_retries
+        task.max_duration = original_max_duration
+
+        return result
 
     def _cleanup(self):
         """Clean up resources after execution."""

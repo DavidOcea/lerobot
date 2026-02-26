@@ -78,6 +78,17 @@ class InteractiveTaskSelector:
 
         logger.info("InteractiveTaskSelector initialized")
 
+    @property
+    def current_task_index(self) -> int:
+        """Get the current task index."""
+        return self._current_task_index
+
+    @current_task_index.setter
+    def current_task_index(self, value: int):
+        """Set the current task index."""
+        self._current_task_index = max(0, min(value, len(self.config_tasks)))
+        logger.debug(f"Task index set to {self._current_task_index}")
+
     def set_task_queue(self, tasks: list[TaskConfig]) -> None:
         """Set a new task queue.
 
