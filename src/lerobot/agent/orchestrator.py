@@ -707,6 +707,10 @@ class TaskAgentOrchestrator:
 
                     results.append(result)
 
+                    # Record task execution
+                    if self.interactive_selector is not None:
+                        self.interactive_selector.record_task_execution(task.name)
+
                     # Update collision count
                     if result.collision_detected:
                         self.total_collision_count += 1
@@ -735,6 +739,10 @@ class TaskAgentOrchestrator:
             result = self._execute_single_task(task)
 
             results.append(result)
+
+            # Record task execution
+            if self.interactive_selector is not None:
+                self.interactive_selector.record_task_execution(task.name)
 
             # Update collision count
             if result.collision_detected:
