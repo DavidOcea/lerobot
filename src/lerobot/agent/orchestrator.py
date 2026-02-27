@@ -16,6 +16,7 @@ New Features:
 """
 
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -569,15 +570,19 @@ class TaskAgentOrchestrator:
 
         return recovery_action
 
-    def _prompt_alternative_model(self, task_name: str = None) -> str | None:
+    def _prompt_alternative_model(self, task_name: str = None, timeout: float = 30.0) -> str | None:
         """Prompt user to select an alternative model for task retry.
 
         Args:
             task_name: Name of the task that failed.
+            timeout: Maximum time to wait for user input.
 
         Returns:
             Path to the selected model, or None if user cancelled.
         """
+        import select
+        import sys
+
         print("\n" + "=" * 60)
         print("SELECT ALTERNATIVE MODEL")
         print("=" * 60)
@@ -589,21 +594,63 @@ class TaskAgentOrchestrator:
         print("  2 - Enter custom model path")
         print("  0 - Cancel (stop program)")
         print("=" * 60)
+        print(f"Auto-selecting default model in {timeout:.0f} seconds...", flush=True)
+
+        user_input = ""
+        start_time = time.time()
+
+        # Use non-blocking input with timeout
+        while time.time() - start_time < timeout:
+            try:
+                if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0.1)[0]:
+                    try:
+                        line = sys.stdin.readline()
+                        if line:
+                            cleaned = line.strip()
+                            # Only accept single digit commands
+                            if cleaned and len(cleaned) <= 2 and cleaned.isdigit():
+                                user_input = cleaned
+                                logger.info(f"Model selection input: {user_input}")
+                                break
+                            elif cleaned:
+                                logger.debug(f"Ignoring non-numeric input: {cleaned[:30]}...")
+                    except (EOFError, KeyboardInterrupt):
+                        logger.info("Input interrupted, using default model")
+                        user_input = "1"
+                        break
+            except (OSError, ValueError):
+                time.sleep(0.1)
+                continue
+
+        # Timeout - use default
+        if not user_input:
+            logger.info(f"Timeout, using default model")
+            user_input = "1"
 
         try:
-            user_input = input("Select model (1/2/0): ").strip()
-
             if user_input == "1":
                 # Use default model from config
                 if task_name:
                     for task in self.config.tasks:
-                        if task.name == task_name:
+                        if task.name == task_name or task.name == f"{task_name}_retry":
                             logger.info(f"Using default model: {task.policy_path}")
                             return task.policy_path
                 return None
             elif user_input == "2":
-                # Custom model path
-                custom_path = input("Enter model path: ").strip()
+                # Custom model path - need to get another input
+                print("Enter model path: ", flush=True)
+                custom_path = ""
+                custom_start = time.time()
+                while time.time() - custom_start < 30.0:
+                    try:
+                        if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0.1)[0]:
+                            line = sys.stdin.readline()
+                            if line:
+                                custom_path = line.strip()
+                                break
+                    except (OSError, ValueError):
+                        time.sleep(0.1)
+                        continue
                 if custom_path:
                     logger.info(f"Using custom model: {custom_path}")
                     return custom_path
@@ -611,7 +658,7 @@ class TaskAgentOrchestrator:
             elif user_input == "0":
                 return None
             else:
-                print("Invalid input, using default model")
+                print(f"Invalid input '{user_input}', using default model")
                 return None
 
         except (KeyboardInterrupt, EOFError):

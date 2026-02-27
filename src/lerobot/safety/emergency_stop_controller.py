@@ -97,19 +97,27 @@ class RollbackConfig:
 class DangerDetectionConfig:
     """Configuration for dangerous action detection."""
     # Force thresholds
-    force_threshold: float = 2.5  # Nm - single joint
-    total_force_threshold: float = 5.0  # Nm - sum of absolute forces
-    max_joint_force: float = 1.5  # Nm - maximum for any single joint
+    force_threshold: float = 3.0  # Nm - single joint (increased from 2.5)
+    total_force_threshold: float = 8.0  # Nm - sum of absolute forces (increased from 5.0)
+    max_joint_force: float = 2.5  # Nm - maximum for any single joint (increased from 1.5)
 
-    # Velocity thresholds
-    max_velocity: float = 5.0  # rad/s - maximum joint velocity
-    velocity_change_threshold: float = 2.0  # rad/s² - maximum acceleration
+    # Velocity thresholds - adjusted for realistic robot motion
+    # Note: velocity here is position change per control step, not actual velocity
+    # With control_dt ~0.1s, max_velocity=5.0 means 50 rad/s which is too sensitive
+    max_velocity: float = 0.5  # rad per control step (was 5.0, too sensitive)
+    velocity_change_threshold: float = 1.0  # rad per step² - maximum acceleration
 
-    # Action change thresholds
-    max_action_delta: float = 0.5  # rad - maximum position change per step
+    # Action change thresholds - adjusted for normal robot operation
+    # A typical robot joint can move several radians, so 0.5 was too restrictive
+    max_action_delta: float = 0.3  # rad per control step - maximum position change
 
     # Detection window
     detection_window: int = 5  # Number of steps to check
+
+    # Enable/disable specific checks
+    enable_velocity_check: bool = False  # Disable velocity check by default (too sensitive)
+    enable_action_delta_check: bool = True  # Keep action delta check
+    enable_force_check: bool = True  # Keep force check
 
     # Custom danger checker
     custom_danger_checker: Callable[[dict[str, float], dict[str, Any]], bool] | None = None
@@ -202,21 +210,25 @@ class EmergencyStopController:
                     joint_name = key.replace(".force", "")
                     forces[joint_name] = float(value)
 
-        # Check 1: Excessive force
-        if forces:
+        # Check 1: Excessive force (only if enabled)
+        if forces and self.danger_config.enable_force_check:
             force_values = np.array(list(forces.values()))
             max_abs_force = np.max(np.abs(force_values))
             total_abs_force = np.sum(np.abs(force_values))
 
             if max_abs_force > self.danger_config.max_joint_force:
+                logger.warning(f"High force detected: max_abs_force={max_abs_force:.3f} > {self.danger_config.max_joint_force:.3f}")
                 self._danger_detected_count += 1
                 return True, StopReason.HIGH_FORCE
             elif total_abs_force > self.danger_config.total_force_threshold:
+                logger.warning(f"High total force detected: total={total_abs_force:.3f} > {self.danger_config.total_force_threshold:.3f}")
                 self._danger_detected_count += 1
                 return True, StopReason.HIGH_FORCE
 
-        # Check 2: Excessive velocity (need previous action)
-        if self.action_history:
+        # Check 2: Excessive velocity (only if enabled)
+        # Note: This is position change per step, not actual velocity
+        # Disabled by default as it's too sensitive for normal operation
+        if self.danger_config.enable_velocity_check and self.action_history:
             prev_action = self.action_history[-1] if len(self.action_history) > 0 else None
 
             if prev_action and observation:
@@ -230,11 +242,12 @@ class EmergencyStopController:
                 max_velocity = max(velocities.values()) if velocities else 0
 
                 if max_velocity > self.danger_config.max_velocity:
+                    logger.warning(f"High velocity detected: max_velocity={max_velocity:.3f} > {self.danger_config.max_velocity:.3f}")
                     self._danger_detected_count += 1
                     return True, StopReason.VELOCITY_MISMATCH
 
-        # Check 3: Large position changes
-        if self.action_history:
+        # Check 3: Large position changes (only if enabled)
+        if self.danger_config.enable_action_delta_check and self.action_history:
             prev_action = self.action_history[-1] if len(self.action_history) > 0 else None
 
             if prev_action:
@@ -245,6 +258,7 @@ class EmergencyStopController:
                         max_delta = max(max_delta, delta)
 
                 if max_delta > self.danger_config.max_action_delta:
+                    logger.warning(f"Large action delta detected: max_delta={max_delta:.3f} > {self.danger_config.max_action_delta:.3f}")
                     self._danger_detected_count += 1
                     return True, StopReason.DANGEROUS_ACTION
 
@@ -492,6 +506,7 @@ class EmergencyStopController:
         print("  3 - Rollback to safe position and retry with new model")
         print("=" * 60)
         print(f"Auto-selecting option 2 (rollback and continue) in {timeout:.0f} seconds if no input...")
+        print(">>> Waiting for user input (enter 1, 2, or 3)...", flush=True)
 
         # Use a non-blocking approach with timeout
         import select
@@ -502,16 +517,29 @@ class EmergencyStopController:
 
         while time.time() - start_time < timeout:
             # Check if there's input available (non-blocking)
-            if select.select([sys.stdin], [], [], 0)[0]:
-                try:
-                    user_input = sys.stdin.readline().strip()
-                    if user_input:
-                        break
-                except (EOFError, KeyboardInterrupt):
-                    logger.info("Input interrupted, defaulting to option 2 (rollback and continue)")
-                    return RecoveryAction.ROLLBACK_AND_CONTINUE
-            else:
-                time.sleep(0.1)  # Small delay to prevent busy waiting
+            # Only read from stdin if it's a real terminal
+            try:
+                if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0.1)[0]:
+                    try:
+                        line = sys.stdin.readline()
+                        if line:
+                            # Clean the input - only accept single digit commands
+                            cleaned = line.strip()
+                            # Filter out non-numeric input (like hardware data)
+                            if cleaned and len(cleaned) <= 2 and cleaned.isdigit():
+                                user_input = cleaned
+                                logger.info(f"User input received: {user_input}")
+                                break
+                            elif cleaned:
+                                # Log but ignore non-numeric input
+                                logger.debug(f"Ignoring non-numeric input: {cleaned[:50]}...")
+                    except (EOFError, KeyboardInterrupt):
+                        logger.info("Input interrupted, defaulting to option 2 (rollback and continue)")
+                        return RecoveryAction.ROLLBACK_AND_CONTINUE
+            except (OSError, ValueError):
+                # stdin might not be available in some environments
+                time.sleep(0.1)
+                continue
 
         # Timeout or input received
         if not user_input or time.time() - start_time >= timeout:
