@@ -70,7 +70,7 @@ class RecoveryAction(Enum):
 class ActionSnapshot:
     """Snapshot of robot state at a point in time."""
     timestamp: float
-    actions: dict[str, float]
+    actions: dict[str, Any]
     observation: dict[str, Any] | None = None
     action_number: int = 0
 
@@ -615,6 +615,34 @@ class EmergencyStopController:
     def get_action_history(self, num_recent: int = 10) -> list[ActionSnapshot]:
         """Get recent action history."""
         return list(self.action_history)[-num_recent:]
+
+    def record_action(
+        self,
+        action: dict[str, Any],
+        observation: dict[str, Any] | None = None
+    ) -> None:
+        """Record an action and its observation for potential rollback.
+
+        Args:
+            action: The action that was sent to the robot.
+            observation: Optional observation at the time of the action.
+        """
+        self.current_action_number += 1
+        snapshot = ActionSnapshot(
+            timestamp=time.time(),
+            actions=action,
+            observation=observation,
+            action_number=self.current_action_number,
+        )
+        self.action_history.append(snapshot)
+
+    def get_latest_action_snapshot(self) -> ActionSnapshot | None:
+        """Get the most recent action snapshot.
+
+        Returns:
+            The most recent ActionSnapshot, or None if no history.
+        """
+        return self.action_history[-1] if self.action_history else None
 
 
 def create_emergency_stop_controller(

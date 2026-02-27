@@ -53,6 +53,7 @@ class AdaptiveTaskScheduler:
         smoothing_level: str = "medium",
         collision_detector_type: str = "adaptive",  # "basic", "enhanced", "temporal", "adaptive"
         emergency_check_callback: Callable[[dict[str, Any], dict[str, float], str], Any] | None = None,
+        emergency_controller=None,
     ):
         """Initialize the adaptive scheduler.
 
@@ -68,6 +69,7 @@ class AdaptiveTaskScheduler:
                 - "adaptive": Motion-aware thresholds (fewest false positives)
             emergency_check_callback: Optional callback for emergency stop checking
                 Signature: (observation, action, task_name) -> RecoveryAction | None
+            emergency_controller: Optional EmergencyStopController for action recording
         """
         self.scheduler = scheduler
         self.gripper_config = gripper_config or {}
@@ -75,6 +77,7 @@ class AdaptiveTaskScheduler:
         self.smoothing_level = smoothing_level
         self.collision_detector_type = collision_detector_type
         self.emergency_check_callback = emergency_check_callback
+        self.emergency_controller = emergency_controller
 
         # Initialize action post-processor
         self.action_post_processor: Optional[ActionPostProcessor] = None
@@ -221,7 +224,7 @@ class AdaptiveTaskScheduler:
         self.scheduler.policy_executor.reset()
         self._reset_grasp_state()
 
-        # Get control frequency
+        # Control frequency from config
         control_dt = 1.0 / self.scheduler.robot.config.control_frequency
 
         try:
@@ -257,22 +260,71 @@ class AdaptiveTaskScheduler:
                             f"Collision detected! Affected joints: {collision_result.affected_joints}"
                         )
 
-                        # Smart recovery based on collision severity
-                        if collision_result.severity == "high":
-                            # High severity - full retreat
-                            result.collision_detected = True
-                            if self._recover_from_collision(
-                                collision_result, observation, collision_handler
-                            ):
-                                continue
-                            else:
-                                result.mark_failed("Severe collision - cannot continue")
+                        # Trigger emergency stop for interactive recovery
+                        # This allows user to choose between: stop, rollback+continue, or rollback+retry
+                        if self.emergency_controller is not None:
+                            from lerobot.safety.emergency_stop_controller import StopReason
+
+                            # Trigger emergency stop (will prompt user for recovery action)
+                            self.emergency_controller.trigger_stop(
+                                reason=StopReason.COLLISION,
+                                auto_rollback=False  # Let user decide
+                            )
+
+                            # Get user's recovery choice
+                            recovery_action = self.emergency_controller.prompt_recovery_action(task.name)
+
+                            # Handle the user's choice
+                            from lerobot.safety.emergency_stop_controller import RecoveryAction
+                            if recovery_action == RecoveryAction.STOP_PROGRAM:
+                                result.mark_failed("Collision: User requested to stop program")
                                 result.status = TaskStatus.FATAL_FAILURE
+                                result.collision_detected = True
+                                return result
+                            elif recovery_action == RecoveryAction.ROLLBACK_AND_CONTINUE:
+                                # Perform rollback and continue
+                                logger.info("User selected to rollback and continue after collision")
+                                steps = self.emergency_controller.get_suggested_rollback_steps()
+                                success = self.emergency_controller.rollback(
+                                    steps=steps,
+                                    confirm_before_resume=False
+                                )
+                                if success:
+                                    # Reset policy executor after rollback
+                                    if hasattr(self.scheduler, 'policy_executor'):
+                                        self.scheduler.policy_executor.reset()
+                                    self.emergency_controller.resume()
+                                    continue  # Resume task execution
+                                else:
+                                    result.mark_failed("Rollback failed after collision")
+                                    result.status = TaskStatus.FATAL_FAILURE
+                                    result.collision_detected = True
+                                    return result
+                            elif recovery_action == RecoveryAction.ROLLBACK_AND_RETRY_MODEL:
+                                # User wants to retry with different model
+                                logger.info("User selected to retry with new model after collision")
+                                result.mark_failed("Collision: User requested to retry with new model")
+                                result.status = TaskStatus.FAILED
+                                result.collision_detected = True
+                                result.retry_with_new_model = True
                                 return result
                         else:
-                            # Low/medium severity - pause and continue
-                            time.sleep(0.2)
-                            continue
+                            # Fallback: No emergency controller, use automatic recovery
+                            logger.warning("No emergency controller available, using automatic collision recovery")
+                            if collision_result.severity == "high":
+                                result.collision_detected = True
+                                if self._recover_from_collision(
+                                    collision_result, observation, collision_handler
+                                ):
+                                    continue
+                                else:
+                                    result.mark_failed("Severe collision - cannot continue")
+                                    result.status = TaskStatus.FATAL_FAILURE
+                                    return result
+                            else:
+                                # Low/medium severity - pause and continue
+                                time.sleep(0.2)
+                                continue
 
                 # Check grasp force feedback
                 self._update_gripper_force(observation)
@@ -349,9 +401,15 @@ class AdaptiveTaskScheduler:
                 # Send action to robot
                 try:
                     sent_action = self.scheduler.robot.send_action(action)
+                    last_action = sent_action
+
+                    # Record action for emergency rollback (automatic integration)
+                    if self.emergency_controller is not None:
+                        self.emergency_controller.record_action(sent_action, observation)
+
+                    # Also maintain scheduler's history for other uses
                     self.scheduler.action_history.append(sent_action)
                     self.scheduler.observation_history.append(observation)
-                    last_action = sent_action
                 except Exception as e:
                     result.mark_failed(f"Failed to send action: {e}")
                     return result
