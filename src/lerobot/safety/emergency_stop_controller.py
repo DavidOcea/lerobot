@@ -81,7 +81,7 @@ class StopEvent:
     timestamp: float
     trigger: StopTrigger
     reason: StopReason
-    action_at_stop: ActionSnapshot
+    action_at_stop: ActionSnapshot | None = None
     rollback_snapshot: ActionSnapshot | None = None
 
 
