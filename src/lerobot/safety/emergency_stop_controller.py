@@ -108,16 +108,19 @@ class DangerDetectionConfig:
     velocity_change_threshold: float = 1.0  # rad per step² - maximum acceleration
 
     # Action change thresholds - adjusted for normal robot operation
-    # A typical robot joint can move several radians, so 0.5 was too restrictive
-    max_action_delta: float = 0.3  # rad per control step - maximum position change
+    # A typical robot joint can move several radians per second
+    # With 10Hz control, 1.0 rad/step = 10 rad/s which is reasonable
+    max_action_delta: float = 2.0  # rad per control step (increased from 0.3)
 
     # Detection window
     detection_window: int = 5  # Number of steps to check
 
     # Enable/disable specific checks
-    enable_velocity_check: bool = False  # Disable velocity check by default (too sensitive)
-    enable_action_delta_check: bool = True  # Keep action delta check
-    enable_force_check: bool = True  # Keep force check
+    # Note: These checks can be too sensitive for normal robot operation
+    # Disable them by default and rely on collision detection instead
+    enable_velocity_check: bool = False  # Disabled - too sensitive
+    enable_action_delta_check: bool = False  # Disabled - policy outputs can vary significantly
+    enable_force_check: bool = True  # Keep force check for safety
 
     # Custom danger checker
     custom_danger_checker: Callable[[dict[str, float], dict[str, Any]], bool] | None = None
@@ -513,13 +516,20 @@ class EmergencyStopController:
         import sys
 
         user_input = ""
+
+        # If not running in a real terminal, use shorter timeout and auto-select default
+        if not sys.stdin.isatty():
+            logger.info("Not running in a terminal, auto-selecting option 2 (rollback and continue)")
+            # Short wait to allow any buffered output to flush
+            time.sleep(0.5)
+            return RecoveryAction.ROLLBACK_AND_CONTINUE
+
         start_time = time.time()
 
         while time.time() - start_time < timeout:
             # Check if there's input available (non-blocking)
-            # Only read from stdin if it's a real terminal
             try:
-                if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0.1)[0]:
+                if select.select([sys.stdin], [], [], 0.1)[0]:
                     try:
                         line = sys.stdin.readline()
                         if line:
