@@ -202,6 +202,7 @@ class AdaptiveTaskScheduler:
             TaskResult with execution outcome
         """
         import time
+        import traceback
 
         start_time = time.time()
         timeout = start_time + task.max_duration
@@ -227,17 +228,24 @@ class AdaptiveTaskScheduler:
         # Control frequency from config
         control_dt = 1.0 / self.scheduler.robot.config.control_frequency
 
+        logger.info(f"Starting control loop for task {task.name} (timeout={task.max_duration}s)")
+
+        loop_iteration = 0
         try:
             last_action = None
             last_observation = None
 
             while time.time() < timeout:
+                loop_iteration += 1
                 loop_start = time.time()
+                logger.debug(f"Control loop iteration {loop_iteration}")
 
                 # Get current observation
                 try:
                     observation = self.scheduler.robot.get_observation()
                 except Exception as e:
+                    logger.error(f"Failed to get observation: {e}")
+                    logger.error(traceback.format_exc())
                     result.mark_failed(f"Failed to get observation: {e}")
                     result.status = TaskStatus.FATAL_FAILURE
                     return result
@@ -346,18 +354,35 @@ class AdaptiveTaskScheduler:
                     return result
 
                 # Get action from policy
-                action = self.scheduler.policy_executor.get_action(observation)
-                if action is None:
-                    result.mark_failed("Failed to get action from policy")
+                try:
+                    action = self.scheduler.policy_executor.get_action(observation)
+                    if action is None:
+                        logger.error("Policy returned None action - this indicates an inference failure")
+                        result.mark_failed("Failed to get action from policy")
+                        return result
+                    logger.debug(f"Got action from policy with {len(action)} entries")
+                except Exception as e:
+                    logger.error(f"Exception getting action from policy: {e}")
+                    logger.error(traceback.format_exc())
+                    result.mark_failed(f"Exception getting action from policy: {e}")
+                    result.status = TaskStatus.FATAL_FAILURE
                     return result
 
                 # Apply adaptive speed control
-                action = self._apply_speed_control(action, speed_factor)
+                try:
+                    action = self._apply_speed_control(action, speed_factor)
+                except Exception as e:
+                    logger.warning(f"Speed control failed: {e}, using original action")
+                    logger.debug(traceback.format_exc())
 
                 # Apply action smoothing for precise motion
                 if self.action_post_processor is not None:
-                    action = self.action_post_processor.process_action(action, observation)
-                    self.action_smooth_count += 1
+                    try:
+                        action = self.action_post_processor.process_action(action, observation)
+                        self.action_smooth_count += 1
+                    except Exception as e:
+                        logger.warning(f"Action smoothing failed: {e}, using unsmoothed action")
+                        logger.debug(traceback.format_exc())
 
                 # Log action processing details periodically
                 if self.total_collisions == 0 and self.action_smooth_count % 100 == 0:
@@ -421,13 +446,16 @@ class AdaptiveTaskScheduler:
                     time.sleep(sleep_time)
 
             # Timeout
+            logger.warning(f"Task {task.name} timed out after {task.max_duration}s")
             result.mark_failed(f"Task timeout after {task.max_duration}s")
 
         except Exception as e:
+            logger.error(f"Exception during execution of task {task.name}: {e}")
+            logger.error(traceback.format_exc())
             result.mark_failed(f"Exception during execution: {e}")
             result.status = TaskStatus.FATAL_FAILURE
-            logger.exception("Exception during adaptive task execution")
 
+        logger.info(f"Task {task.name} execution ended with status: {result.status.value}")
         return result
 
     def _check_collision_with_thresholds(
