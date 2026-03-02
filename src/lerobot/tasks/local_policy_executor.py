@@ -22,6 +22,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def get_default_device() -> str:
+    """Get the default device for policy inference.
+
+    Returns:
+        "cuda" if CUDA is available, "cpu" otherwise.
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    return "cpu"
+
+
 class LocalPolicyExecutor:
     """Executes policies locally without needing a Policy Server.
 
@@ -36,13 +47,20 @@ class LocalPolicyExecutor:
         action = executor.get_action(observation)
     """
 
-    def __init__(self, device: str = "cuda"):
+    def __init__(self, device: str | None = None):
         """Initialize the local policy executor.
 
         Args:
             device: Device to run inference on ("cuda" or "cpu").
+                   If None, automatically detects the best available device.
         """
-        self.device = device
+        if device is None:
+            self.device = get_default_device()
+        elif device == "auto":
+            self.device = get_default_device()
+        else:
+            self.device = device
+
         self.policy: ACTPolicy | None = None
         self.current_policy_path: str | None = None
 
@@ -52,6 +70,9 @@ class LocalPolicyExecutor:
 
         # Cache for joint names from robot config
         self._joint_names_from_robot: list[str] | None = None
+
+        # Enable optimizations
+        self._enable_optimizations()
 
     def load_policy(self, policy_path: str, policy_type: str = "act") -> bool:
         """Load a policy from disk.
@@ -360,6 +381,20 @@ class LocalPolicyExecutor:
         if self.policy is not None:
             self.policy.reset()
         logger.debug("Executor reset (policy action queue cleared)")
+
+    def _enable_optimizations(self):
+        """Enable performance optimizations for inference."""
+        if self.device == "cuda":
+            # Enable cuDNN benchmark for faster inference
+            torch.backends.cudnn.benchmark = True
+            # Enable cuDNN deterministic for reproducibility
+            torch.backends.cudnn.deterministic = False
+            logger.debug("CUDA optimizations enabled (cudnn.benchmark=True)")
+        # Enable TF32 on Ampere GPUs for faster math
+        if hasattr(torch.backends, 'cuda') and torch.backends.cuda.is_available():
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            logger.debug("TF32 enabled for faster computation")
 
     def get_info(self) -> dict[str, Any]:
         """Get executor information."""
