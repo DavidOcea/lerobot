@@ -523,8 +523,16 @@ class AdaptiveTaskScheduler:
         # Note: Gripper force is in 0-1 range, scale to Nm equivalent
         gripper_force_scale = self.gripper_config.get("gripper_force_scale", 5.0)
 
+        # Get force values from observation (using .force suffix)
         left_gripper_force_raw = observation.get("left_arm_joint_7.force", 0.0)
         right_gripper_force_raw = observation.get("right_arm_joint_7.force", 0.0)
+
+        # Debug: Check if force data exists
+        if left_gripper_force_raw == 0.0 and right_gripper_force_raw == 0.0:
+            # Force data might be missing, check observation keys
+            force_keys = [k for k in observation.keys() if ".force" in k]
+            if not force_keys:
+                logger.debug("No force data found in observation")
 
         # Scale to Nm equivalent for threshold comparison
         left_gripper_force = left_gripper_force_raw * gripper_force_scale
@@ -540,13 +548,16 @@ class AdaptiveTaskScheduler:
         grasp_threshold = self.gripper_config.get("grasp_force_threshold", 1.0)
         stable_frames = self.gripper_config.get("grasp_force_stable_frames", 3)
 
-        if self.current_gripper_force > grasp_threshold:
-            self.grasp_stable_frames += 1
-            if self.grasp_stable_frames >= stable_frames:
-                self.grasp_detected = True
-        else:
-            self.grasp_stable_frames = 0
-            self.grasp_detected = False
+        # Only check grasp if we have valid force data (non-zero)
+        if self.current_gripper_force_raw > 0.01:
+            if self.current_gripper_force > grasp_threshold:
+                self.grasp_stable_frames += 1
+                if self.grasp_stable_frames >= stable_frames:
+                    self.grasp_detected = True
+                    logger.debug(f"Grasp detected (force={self.current_gripper_force:.2f}, frames={self.grasp_stable_frames})")
+            else:
+                self.grasp_stable_frames = 0
+                self.grasp_detected = False
 
     def _compute_adaptive_speed_factor(self) -> float:
         """Compute adaptive speed factor based on force feedback.
