@@ -170,6 +170,13 @@ class SupreRobotFollower(Robot):
         positions = hd_readings[0]
         forces = hd_readings[1]
 
+        # Debug: Check if forces contain gripper data
+        if len(forces) == len(self.observation_joint_names):
+            # Forces array matches joint names order
+            logger.debug(f"Position and force arrays have length {len(positions)}")
+        else:
+            logger.warning(f"Mismatch: positions={len(positions)}, forces={len(forces)}")
+
         # Enhanced force display with analysis
         self._observation_count += 1
         self._display_force_info(forces)
@@ -181,7 +188,18 @@ class SupreRobotFollower(Robot):
             # 添加关节位置
             obs_dict[f"{joint_name}.pos"] = positions[i]
             # 添加关节力/力矩
-            obs_dict[f"{joint_name}.force"] = forces[i]
+            if i < len(forces):
+                obs_dict[f"{joint_name}.force"] = forces[i]
+            else:
+                # If forces array is shorter, default to 0.0
+                obs_dict[f"{joint_name}.force"] = 0.0
+                logger.warning(f"Force data missing for joint {joint_name}")
+
+        # Debug: Log gripper forces for pick tasks
+        if self._observation_count % 10 == 0:
+            left_force = obs_dict.get("left_arm_joint_7.force", 0.0)
+            right_force = obs_dict.get("right_arm_joint_7.force", 0.0)
+            logger.debug(f"Gripper forces - Left: {left_force:.3f}, Right: {right_force:.3f}")
 
         # 添加相机图像到 'images' 子字典中
         obs_dict["images"] = {}
