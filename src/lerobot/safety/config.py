@@ -19,7 +19,7 @@ class CollisionConfig:
     """
 
     # Detection thresholds
-    collision_threshold: float = 2.0  # Nm - torque anomaly threshold
+    collision_threshold: float = 0.4  # Nm - torque anomaly threshold (increased from 0.2 to reduce false triggers)
     detection_window: int = 5  # Consecutive steps above threshold
 
     # Advanced detection settings
