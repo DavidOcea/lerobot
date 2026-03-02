@@ -81,9 +81,15 @@ class TaskCompletionDetector:
         self._total_checks += 1
         result = DetectionResult(timestamp=time.time())
 
-        # Debug: Log check info every 5 checks (more frequent)
-        if self._total_checks % 5 == 0:
-            logger.info(f"[CompletionDetector] Check #{self._total_checks}, buffer_size={len(self._position_buffer)}, type={self.criteria.type}")
+        # Debug: Check what keys are available in observation
+        if self._total_checks == 1:
+            force_keys = [k for k in observation.keys() if ".force" in k]
+            print(f"[CompletionDetector] First check - available force keys: {force_keys}")
+            logger.info(f"[CompletionDetector] First check - available force keys: {force_keys}")
+
+        # Strong logging: print to ensure output is visible
+        print(f"[CompletionDetector] Check #{self._total_checks}, criteria_type={self.criteria.type}, buffer_size={len(self._position_buffer)}")
+        logger.info(f"[CompletionDetector] Check #{self._total_checks}, buffer_size={len(self._position_buffer)}, type={self.criteria.type}")
 
         # Update buffers
         self._update_buffers(observation)

@@ -202,11 +202,15 @@ class TaskAgentOrchestrator:
             )
 
         # 6. Initialize completion detectors
+        print(f"[Orchestrator] Initializing completion detectors for {len(self.config.tasks)} tasks...")
         for task in self.config.tasks:
+            print(f"[Orchestrator] Task: {task.name}, criteria type: {task.completion_criteria.type}")
             if task.completion_criteria.type != "position":
                 self.completion_detectors[task.name] = TaskCompletionDetector(
                     task.completion_criteria
                 )
+                print(f"[Orchestrator] Created detector for {task.name}")
+        print(f"[Orchestrator] Total detectors created: {len(self.completion_detectors)}")
 
         # 7. Initialize emergency stop controller FIRST (needed by adaptive scheduler)
         if getattr(self.config, 'enable_emergency_stop', True):
@@ -851,9 +855,12 @@ class TaskAgentOrchestrator:
         self._switch_cameras_for_task(task)
 
         # Set completion detector for this task
+        print(f"[_execute_single_task] Setting completion detector for task: {task.name}")
+        print(f"[_execute_single_task] Available detectors: {list(self.completion_detectors.keys())}")
         self.task_scheduler.completion_detector = self.completion_detectors.get(
             task.name
         )
+        print(f"[_execute_single_task] Detector assigned: {self.task_scheduler.completion_detector}")
 
         # Override settings if specified
         original_max_retries = task.max_retries
