@@ -81,6 +81,10 @@ class TaskCompletionDetector:
         self._total_checks += 1
         result = DetectionResult(timestamp=time.time())
 
+        # Debug: Log check info every 10 checks
+        if self._total_checks % 10 == 0:
+            logger.debug(f"Completion detector check #{self._total_checks}, buffer_size={len(self._position_buffer)}, type={self.criteria.type}")
+
         # Update buffers
         self._update_buffers(observation)
 
@@ -103,6 +107,7 @@ class TaskCompletionDetector:
         # Update detection count
         if result.is_completed:
             self._detection_count += 1
+            logger.info(f"Task completed! check={self._total_checks}, confidence={result.confidence:.2f}, details={result.details}")
 
         return result
 

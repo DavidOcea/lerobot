@@ -656,12 +656,25 @@ class AdaptiveTaskScheduler:
             detection = self.scheduler.completion_detector.detect(
                 observation, list(self.scheduler.action_history)
             )
+
+            # Debug: Log completion detection
+            logger.debug(f"Completion detection - is_completed={detection.is_completed}, confidence={detection.confidence:.2f}")
+            if detection.details:
+                logger.debug(f"Completion details: {detection.details}")
+            if detection.satisfied_conditions:
+                logger.debug(f"Satisfied: {detection.satisfied_conditions}")
+            if detection.unsatisfied_conditions:
+                logger.debug(f"Unsatisfied: {detection.unsatisfied_conditions}")
+
             if detection.is_completed and detection.confidence > 0.7:
+                logger.info(f"Task {task.name} completed via completion_detector (confidence={detection.confidence:.2f})")
                 return True
 
         # Force-based completion detection for grasping tasks
         if "grasp" in task.name.lower() or "pick" in task.name.lower():
             # Check if stable grasp is detected
+            if self.grasp_detected:
+                logger.info(f"Task {task.name} completed via grasp_detected")
             return self.grasp_detected
 
         return False
