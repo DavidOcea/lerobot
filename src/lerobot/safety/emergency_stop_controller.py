@@ -97,9 +97,9 @@ class RollbackConfig:
 class DangerDetectionConfig:
     """Configuration for dangerous action detection."""
     # Force thresholds
-    force_threshold: float = 3.0  # Nm - single joint (increased from 2.5)
-    total_force_threshold: float = 8.0  # Nm - sum of absolute forces (increased from 5.0)
-    max_joint_force: float = 2.5  # Nm - maximum for any single joint (increased from 1.5)
+    force_threshold: float = 3.5  # Nm - single joint (increased from 2.5 to 3.5)
+    total_force_threshold: float = 12.0  # Nm - sum of absolute forces (increased from 8.0 to 12.0)
+    max_joint_force: float = 3.5  # Nm - maximum for any single joint (increased from 2.5 to 3.5)
 
     # Velocity thresholds - adjusted for realistic robot motion
     # Note: velocity here is position change per control step, not actual velocity

@@ -537,7 +537,7 @@ class AdaptiveTaskScheduler:
         self.current_gripper_force_raw = max(left_gripper_force_raw, right_gripper_force_raw)
 
         # Check grasp stability
-        grasp_threshold = self.gripper_config.get("grasp_force_threshold", 0.4)
+        grasp_threshold = self.gripper_config.get("grasp_force_threshold", 1.0)
         stable_frames = self.gripper_config.get("grasp_force_stable_frames", 3)
 
         if self.current_gripper_force > grasp_threshold:
