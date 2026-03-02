@@ -384,17 +384,19 @@ class LocalPolicyExecutor:
 
     def _enable_optimizations(self):
         """Enable performance optimizations for inference."""
-        if self.device == "cuda":
+        if self.device == "cuda" and torch.cuda.is_available():
             # Enable cuDNN benchmark for faster inference
             torch.backends.cudnn.benchmark = True
             # Enable cuDNN deterministic for reproducibility
             torch.backends.cudnn.deterministic = False
             logger.debug("CUDA optimizations enabled (cudnn.benchmark=True)")
-        # Enable TF32 on Ampere GPUs for faster math
-        if hasattr(torch.backends, 'cuda') and torch.backends.cuda.is_available():
+            # Enable TF32 on Ampere GPUs for faster math
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
             logger.debug("TF32 enabled for faster computation")
+        elif self.device == "cuda" and not torch.cuda.is_available():
+            logger.warning("CUDA requested but not available, falling back to CPU")
+            self.device = "cpu"
 
     def get_info(self) -> dict[str, Any]:
         """Get executor information."""
