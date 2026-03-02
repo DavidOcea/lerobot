@@ -81,9 +81,9 @@ class TaskCompletionDetector:
         self._total_checks += 1
         result = DetectionResult(timestamp=time.time())
 
-        # Debug: Log check info every 10 checks
-        if self._total_checks % 10 == 0:
-            logger.debug(f"Completion detector check #{self._total_checks}, buffer_size={len(self._position_buffer)}, type={self.criteria.type}")
+        # Debug: Log check info every 5 checks (more frequent)
+        if self._total_checks % 5 == 0:
+            logger.info(f"[CompletionDetector] Check #{self._total_checks}, buffer_size={len(self._position_buffer)}, type={self.criteria.type}")
 
         # Update buffers
         self._update_buffers(observation)
@@ -104,10 +104,20 @@ class TaskCompletionDetector:
             logger.warning(f"Unknown criteria type: {self.criteria.type}")
             return result
 
+        # Log composite condition details every 5 checks
+        if self.criteria.type == "composite" and self._total_checks % 5 == 0:
+            if result.satisfied_conditions:
+                logger.info(f"[CompletionDetector] Satisfied conditions: {result.satisfied_conditions}")
+            if result.unsatisfied_conditions:
+                logger.info(f"[CompletionDetector] Unsatisfied conditions: {result.unsatisfied_conditions}")
+
         # Update detection count
         if result.is_completed:
             self._detection_count += 1
-            logger.info(f"Task completed! check={self._total_checks}, confidence={result.confidence:.2f}, details={result.details}")
+            logger.info(f"[CompletionDetector] Task completed! check={self._total_checks}, confidence={result.confidence:.2f}, details={result.details}")
+        elif self._total_checks % 10 == 0:
+            # Log progress every 10 checks when not completed
+            logger.debug(f"[CompletionDetector] Not yet completed, confidence={result.confidence:.2f}, is_completed={result.is_completed}")
 
         return result
 
@@ -327,13 +337,14 @@ class TaskCompletionDetector:
             all_confidences.append(condition_result.confidence)
 
         result.is_completed = all_satisfied
-        result.confidence = (
-            sum(all_confidences) / len(all_confidences) if all_confidences else 0.0
-        )
+        # For composite criteria, confidence is the minimum of all condition confidences
+        # This ensures that if any condition has low confidence, overall confidence is low
+        result.confidence = min(all_confidences) if all_confidences else 0.0
         result.details = {
             "type": "composite",
             "num_conditions": len(self.criteria.conditions),
             "num_satisfied": len(result.satisfied_conditions),
+            "min_confidence": result.confidence,
         }
 
         return result
@@ -427,6 +438,11 @@ class TaskCompletionDetector:
                 "required_size": stability_window,
                 "status": "collecting_data",
             }
+            result.is_completed = False
+            result.confidence = len(self._position_buffer) / stability_window  # Progress towards having enough data
+            result.unsatisfied_conditions = [
+                f"collecting_data: {len(self._position_buffer)}/{stability_window} samples"
+            ]
             return result
 
         # Get recent positions from main buffer
