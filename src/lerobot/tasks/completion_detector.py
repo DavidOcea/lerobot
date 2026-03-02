@@ -297,16 +297,17 @@ class TaskCompletionDetector:
         for condition in self.criteria.conditions:
             condition_type = condition.get("type", "position")
 
-            # Create a temporary detector for this condition
-            temp_criteria = CompletionCriteria(type=condition_type)
-            for key, value in condition.items():
-                if hasattr(temp_criteria, key):
-                    setattr(temp_criteria, key, value)
-
-            temp_detector = TaskCompletionDetector(temp_criteria)
-
-            # Check this condition
-            condition_result = temp_detector.detect(observation, action_history)
+            # Direct check without creating temporary detector
+            # This ensures we use the main detector's buffer for stability checks
+            if condition_type == "force":
+                condition_result = self._check_force_criteria_for_condition(observation, condition)
+            elif condition_type == "stability":
+                condition_result = self._check_stability_for_condition(observation, action_history, condition)
+            elif condition_type == "position":
+                condition_result = self._check_position_criteria_for_condition(observation, condition)
+            else:
+                logger.warning(f"Unknown condition type in composite: {condition_type}")
+                continue
 
             if condition_result.is_completed:
                 result.satisfied_conditions.extend(
@@ -328,6 +329,198 @@ class TaskCompletionDetector:
             "type": "composite",
             "num_conditions": len(self.criteria.conditions),
             "num_satisfied": len(result.satisfied_conditions),
+        }
+
+        return result
+
+    def _check_force_criteria_for_condition(
+        self, observation: dict[str, Any], condition: dict[str, Any]
+    ) -> DetectionResult:
+        """Check force criteria with parameters from condition dict.
+
+        Args:
+            observation: Current observation.
+            condition: Condition dict with parameters.
+
+        Returns:
+            DetectionResult with force-based completion status.
+        """
+        result = DetectionResult()
+
+        # Get parameters from condition
+        joint_name = condition.get("joint_name")
+        force_threshold = condition.get("force_threshold", 0.5)
+
+        # Determine which joint to monitor
+        if joint_name is None:
+            # Try to find a gripper joint
+            for key in observation.keys():
+                if "gripper" in key.lower() or "joint_7" in key:
+                    joint_name = key.replace(".force", "").replace(".pos", "")
+                    break
+
+        if joint_name is None:
+            logger.warning("No joint specified for force criteria")
+            return result
+
+        # Get force value
+        force_key = f"{joint_name}.force"
+        force = observation.get(force_key)
+        if force is None:
+            logger.warning(f"Force not found for joint: {joint_name}")
+            return result
+
+        # Check if force exceeds threshold
+        force_magnitude = abs(force)
+        is_satisfied = force_magnitude >= force_threshold
+
+        result.is_completed = is_satisfied
+        result.confidence = min(1.0, force_magnitude / force_threshold)
+        result.satisfied_conditions = (
+            [f"{joint_name}: {force_magnitude:.3f} Nm"] if is_satisfied else []
+        )
+        result.unsatisfied_conditions = (
+            [f"{joint_name}: {force_magnitude:.3f} Nm (threshold: {force_threshold})"]
+            if not is_satisfied
+            else []
+        )
+        result.details = {
+            "type": "force",
+            "joint_name": joint_name,
+            "force_threshold": force_threshold,
+            "current_force": force_magnitude,
+        }
+
+        return result
+
+    def _check_stability_for_condition(
+        self, observation: dict[str, Any], action_history: list[dict[str, Any]], condition: dict[str, Any]
+    ) -> DetectionResult:
+        """Check stability criteria with parameters from condition dict.
+
+        Uses the main detector's position buffer for history.
+
+        Args:
+            observation: Current observation.
+            action_history: Recent action history.
+            condition: Condition dict with parameters.
+
+        Returns:
+            DetectionResult with stability-based completion status.
+        """
+        result = DetectionResult()
+
+        # Get parameters from condition
+        stability_window = condition.get("stability_window", 10)
+        stability_tolerance = condition.get("stability_tolerance", 0.005)
+
+        # Check if buffer has enough data
+        if len(self._position_buffer) < stability_window:
+            result.details = {
+                "type": "stability",
+                "buffer_size": len(self._position_buffer),
+                "required_size": stability_window,
+                "status": "collecting_data",
+            }
+            return result
+
+        # Get recent positions from main buffer
+        recent_positions = list(self._position_buffer)[-stability_window:]
+
+        # Check variance for each joint
+        stable_joints = []
+        unstable_joints = []
+
+        all_stable = True
+        joint_variances: dict[str, float] = {}
+
+        # Get all joint names from the first sample
+        joint_names = set()
+        for sample in recent_positions:
+            joint_names.update(sample.keys())
+
+        for joint_name in joint_names:
+            positions = [sample.get(joint_name, 0) for sample in recent_positions]
+
+            # Compute variance
+            variance = float(np.var(positions)) if len(positions) > 1 else 0.0
+            joint_variances[joint_name] = variance
+
+            is_stable = variance <= (stability_tolerance**2)
+
+            if is_stable:
+                stable_joints.append(f"{joint_name}: var={variance:.6f}")
+            else:
+                all_stable = False
+                unstable_joints.append(
+                    f"{joint_name}: var={variance:.6f} (max: {stability_tolerance**2:.6f})"
+                )
+
+        result.is_completed = all_stable
+        result.confidence = 1.0 if all_stable else 0.5
+        result.satisfied_conditions = stable_joints
+        result.unsatisfied_conditions = unstable_joints
+        result.details = {
+            "type": "stability",
+            "window": stability_window,
+            "tolerance": stability_tolerance,
+            "joint_variances": joint_variances,
+        }
+
+        return result
+
+    def _check_position_criteria_for_condition(
+        self, observation: dict[str, Any], condition: dict[str, Any]
+    ) -> DetectionResult:
+        """Check position criteria with parameters from condition dict.
+
+        Args:
+            observation: Current observation.
+            condition: Condition dict with parameters.
+
+        Returns:
+            DetectionResult with position-based completion status.
+        """
+        result = DetectionResult()
+
+        # Get parameters from condition
+        target_joint_positions = condition.get("target_joint_positions", {})
+        position_tolerance = condition.get("position_tolerance", 0.01)
+
+        if not target_joint_positions:
+            return result
+
+        all_satisfied = True
+        satisfied = []
+        unsatisfied = []
+
+        for joint_name, target_pos in target_joint_positions.items():
+            # Get current position
+            current_pos = observation.get(f"{joint_name}.pos")
+            if current_pos is None:
+                logger.warning(f"Position not found for joint: {joint_name}")
+                all_satisfied = False
+                unsatisfied.append(f"{joint_name}: not found")
+                continue
+
+            # Check if within tolerance
+            error = abs(current_pos - target_pos)
+            is_satisfied = error <= position_tolerance
+
+            if is_satisfied:
+                satisfied.append(f"{joint_name}: {error:.4f} rad")
+            else:
+                all_satisfied = False
+                unsatisfied.append(f"{joint_name}: {error:.4f} rad (max: {position_tolerance})")
+
+        result.is_completed = all_satisfied
+        result.confidence = 1.0 if all_satisfied else 0.0
+        result.satisfied_conditions = satisfied
+        result.unsatisfied_conditions = unsatisfied
+        result.details = {
+            "type": "position",
+            "target_positions": target_joint_positions,
+            "tolerance": position_tolerance,
         }
 
         return result
