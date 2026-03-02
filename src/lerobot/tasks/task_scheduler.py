@@ -372,10 +372,12 @@ class TaskScheduler:
                 # Check for completion
                 if self.completion_detector is not None:
                     detection = self.completion_detector.detect(observation, list(self.action_history))
-                    if detection.is_completed:
+                    # Only complete if confidence is high enough (prevents premature completion)
+                    if detection.is_completed and detection.confidence > 0.7:
                         result["success"] = True
                         result["completion_confidence"] = detection.confidence
                         result["final_observation"] = observation
+                        logger.info(f"Task completed with confidence: {detection.confidence:.2f}")
                         return result
 
                 # Request and wait for action
@@ -783,11 +785,12 @@ class LocalTaskScheduler:
                     detection = self.completion_detector.detect(
                         observation, list(self.action_history)
                     )
-                    if detection.is_completed:
+                    # Only complete if confidence is high enough (prevents premature completion)
+                    if detection.is_completed and detection.confidence > 0.7:
                         result["success"] = True
                         result["completion_confidence"] = detection.confidence
                         result["final_observation"] = observation
-                        logger.info(f"Task completed with confidence: {detection.confidence}")
+                        logger.info(f"Task completed with confidence: {detection.confidence:.2f}")
                         return result
 
                 # Get action from policy (internal action queue management)
