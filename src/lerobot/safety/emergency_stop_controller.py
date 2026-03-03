@@ -436,10 +436,9 @@ class EmergencyStopController:
             return False
 
         self._rollback_in_progress = True
-        logger.info(f"Starting rollback of {steps} steps...")
+        logger.info(f"Starting smooth rollback of {steps} steps...")
 
-        # Find the target snapshot (the state we want to restore)
-        # We want to go back 'steps' actions in history
+        # Find the target snapshot index
         target_index = len(self.action_history) - steps
         if target_index < 0:
             target_index = 0
@@ -449,11 +448,38 @@ class EmergencyStopController:
 
         # Execute rollback with proper exception handling
         try:
-            # Method 1: Directly send the target snapshot action
-            # This moves the robot directly to the historical position
-            success = self._send_action_snapshot(target_snapshot)
+            # Smooth rollback: send intermediate snapshots step by step
+            step_delay = self.rollback_config.rollback_step_delay
 
-            if success:
+            # Go backwards through history from most recent to target
+            # We reverse through the steps we want to rollback
+            for offset in range(steps):
+                # Find the snapshot at this offset (from most recent backwards)
+                snapshot_index = len(self.action_history) - 1 - offset
+                if snapshot_index < target_index:
+                    break
+
+                snapshot = self.action_history[snapshot_index]
+
+                logger.debug(f"Rollback step {offset + 1}/{steps}: sending snapshot #{snapshot.action_number}")
+
+                # Send this intermediate action
+                success = self._send_action_snapshot(snapshot)
+                if not success:
+                    logger.error(f"Failed to send snapshot #{snapshot.action_number} during rollback step {offset + 1}")
+                    # Try to continue to next step
+                    continue
+
+                # Wait for robot to move to this position
+                time.sleep(step_delay)
+
+            # Final verification: ensure we're at target state
+            logger.info(f"Final rollback: sending target snapshot #{target_snapshot.action_number}")
+            final_success = self._send_action_snapshot(target_snapshot)
+
+            if final_success:
+                logger.info(f"Smooth rollback completed successfully ({steps} steps)")
+
                 # Hold at safe state for confirmation
                 if confirm_before_resume:
                     logger.info("Rollback complete, waiting for user confirmation...")
@@ -466,7 +492,7 @@ class EmergencyStopController:
                 self._rollback_count += 1
                 return True
             else:
-                logger.error("Failed to send target snapshot during rollback")
+                logger.error("Failed to send target snapshot during final rollback step")
                 return False
 
         except Exception as e:
