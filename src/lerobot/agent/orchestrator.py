@@ -714,7 +714,15 @@ class TaskAgentOrchestrator:
                 task = self.config.tasks[current_idx]
 
                 # Prompt user for task selection
-                selection = self.interactive_selector.prompt_next_task()
+                # In automatic mode, use the next task without prompting
+                from lerobot.tasks.interactive_task_selector import ExecutionMode
+
+                if self.interactive_selector.execution_mode == ExecutionMode.AUTOMATIC:
+                    # Use the current task directly without prompting
+                    selection = self.interactive_selector.prompt_next_task(force_mode=ExecutionMode.AUTOMATIC)
+                else:
+                    # In interactive mode, show the prompt
+                    selection = self.interactive_selector.prompt_next_task()
 
                 # Handle exit request
                 if selection.exit_requested:
