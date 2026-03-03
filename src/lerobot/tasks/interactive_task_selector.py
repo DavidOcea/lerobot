@@ -234,8 +234,8 @@ class InteractiveTaskSelector:
     def _get_input(self, prompt: str = "") -> str:
         """Get user input from terminal, avoiding hardware device interference.
 
-        This method explicitly uses /dev/tty when available to avoid reading
-        from redirected stdin that may contain hardware device data.
+        This method explicitly uses /dev/tty to avoid reading from
+        redirected stdin that may contain hardware device data.
 
         Args:
             prompt: Prompt string to display
@@ -249,22 +249,34 @@ class InteractiveTaskSelector:
         original_stdin = sys.stdin
 
         try:
-            if os.isatty(0):
-                # Already a terminal, use stdin directly
-                return input(prompt)
-            else:
-                # Not a terminal, try to open /dev/tty for direct user input
-                try:
-                    with open('/dev/tty', 'r') as tty:
-                        # Print prompt to stdout
-                        if prompt:
-                            sys.stdout.write(prompt)
-                            sys.stdout.flush()
-                        user_input = tty.readline().strip()
-                        return user_input
-                except (OSError, IOError):
-                    # Fallback to stdin if /dev/tty is not available
-                    return input(prompt)
+            # Always try to use /dev/tty for direct user input
+            # This avoids reading from redirected stdin that contains hardware data
+            try:
+                # Open /dev/tty in read-only mode
+                tty = open('/dev/tty', 'r')
+                # Set tty as stdin
+                sys.stdin = tty
+
+                # Print prompt to stdout
+                if prompt:
+                    sys.stdout.write(prompt)
+                    sys.stdout.flush()
+
+                # Read user input from tty
+                user_input = tty.readline().strip()
+
+                # Close tty
+                tty.close()
+
+                logger.debug(f"Got user input from /dev/tty: '{user_input}'")
+                return user_input
+
+            except (OSError, IOError) as e:
+                logger.warning(f"Failed to open /dev/tty: {e}, falling back to stdin")
+                # Fallback to stdin if /dev/tty is not available
+                user_input = input(prompt).strip()
+                logger.debug(f"Got user input from stdin: '{user_input}'")
+                return user_input
         finally:
             sys.stdin = original_stdin
 
