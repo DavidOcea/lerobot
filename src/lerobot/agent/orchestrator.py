@@ -857,9 +857,14 @@ class TaskAgentOrchestrator:
         # Set completion detector for this task
         print(f"[_execute_single_task] Setting completion detector for task: {task.name}")
         print(f"[_execute_single_task] Available detectors: {list(self.completion_detectors.keys())}")
-        self.task_scheduler.completion_detector = self.completion_detectors.get(
-            task.name
-        )
+        detector = self.completion_detectors.get(task.name)
+        self.task_scheduler.completion_detector = detector
+
+        # Also set on the underlying scheduler if this is an AdaptiveTaskScheduler
+        if hasattr(self.task_scheduler, 'scheduler'):
+            self.task_scheduler.scheduler.completion_detector = detector
+            print(f"[_execute_single_task] Also set on underlying scheduler")
+
         print(f"[_execute_single_task] Detector assigned: {self.task_scheduler.completion_detector}")
 
         # Override settings if specified
