@@ -579,14 +579,18 @@ class EmergencyStopController:
         Returns:
             Suggested rollback steps.
         """
+        max_steps = self.rollback_config.max_rollback_steps
+
         if self.current_stop_event and self.current_stop_event.reason == StopReason.HIGH_FORCE:
             # For high force collisions, rollback more steps
-            return min(self.rollback_config.max_rollback_steps, 50)
+            # Use configured max_rollback_steps directly, not hardcoded limit
+            return max_steps
         elif self.current_stop_event and self.current_stop_event.reason == StopReason.COLLISION:
-            return min(self.rollback_config.max_rollback_steps, 30)
+            # For collisions, also use max_rollback_steps
+            return max_steps
         else:
-            # Default: smaller rollback
-            return min(self.rollback_config.max_rollback_steps, 20)
+            # Default: use max_rollback_steps
+            return max_steps
 
     def resume(self):
         """Resume execution after emergency stop/rollback.
