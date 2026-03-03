@@ -207,7 +207,8 @@ class InteractiveTaskSelector:
         For programmatic use, this can be overridden.
         """
         try:
-            user_input = input(">>> ").strip()
+            # Use _get_input helper to avoid hardware device interference
+            user_input = self._get_input(">>> ").strip()
 
             # Handle empty input (default = option 1)
             if not user_input:
@@ -229,6 +230,43 @@ class InteractiveTaskSelector:
                 execution_mode=ExecutionMode.INTERACTIVE,
                 exit_requested=True
             )
+
+    def _get_input(self, prompt: str = "") -> str:
+        """Get user input from terminal, avoiding hardware device interference.
+
+        This method explicitly uses /dev/tty when available to avoid reading
+        from redirected stdin that may contain hardware device data.
+
+        Args:
+            prompt: Prompt string to display
+
+        Returns:
+            User input string
+        """
+        import sys
+        import os
+
+        original_stdin = sys.stdin
+
+        try:
+            if os.isatty(0):
+                # Already a terminal, use stdin directly
+                return input(prompt)
+            else:
+                # Not a terminal, try to open /dev/tty for direct user input
+                try:
+                    with open('/dev/tty', 'r') as tty:
+                        # Print prompt to stdout
+                        if prompt:
+                            sys.stdout.write(prompt)
+                            sys.stdout.flush()
+                        user_input = tty.readline().strip()
+                        return user_input
+                except (OSError, IOError):
+                    # Fallback to stdin if /dev/tty is not available
+                    return input(prompt)
+        finally:
+            sys.stdin = original_stdin
 
     def _parse_user_input(self, user_input: str) -> TaskSelection:
         """Parse user input and return selection."""
@@ -262,7 +300,7 @@ class InteractiveTaskSelector:
             print("=" * 60)
 
             try:
-                choice = input("Select option (1/2/0): ").strip()
+                choice = self._get_input("Select option (1/2/0): ").strip()
 
                 if choice == "1":
                     # Select from existing tasks
@@ -278,7 +316,7 @@ class InteractiveTaskSelector:
                         current = " <- NEXT" if i == self._current_task_index else ""
                         print(f"  {i+1}. {task.name}{status_info}{current}")
 
-                    task_input = input("Enter task number or name: ").strip()
+                    task_input = self._get_input("Enter task number or name: ").strip()
 
                     # Try to parse as number first
                     try:
@@ -314,7 +352,7 @@ class InteractiveTaskSelector:
 
                 elif choice == "2":
                     # Create new custom task
-                    custom_name = input("Enter new task name: ").strip()
+                    custom_name = self._get_input("Enter new task name: ").strip()
                     if custom_name:
                         logger.info(f"User creating custom task: {custom_name}")
                         return TaskSelection(
