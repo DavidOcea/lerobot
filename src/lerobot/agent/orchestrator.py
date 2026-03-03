@@ -547,6 +547,11 @@ class TaskAgentOrchestrator:
                 logger.info("Rollback complete, resuming task")
                 # Clear stop state to allow continuation
                 self.emergency_controller.resume()
+                # Reset policy executor to clear action queue and temporal ensemble state
+                # This prevents large corrective actions after rollback
+                if self.local_executor is not None:
+                    self.local_executor.reset()
+                    logger.debug("Policy executor reset after rollback")
 
         elif recovery_action == RecoveryAction.ROLLBACK_AND_RETRY_MODEL:
             logger.info("User selected to rollback and retry with new model")
@@ -560,6 +565,11 @@ class TaskAgentOrchestrator:
                 logger.info("Rollback complete, ready for new model selection")
                 # Clear stop state
                 self.emergency_controller.resume()
+                # Reset policy executor to clear action queue and temporal ensemble state
+                # This prevents large corrective actions after rollback
+                if self.local_executor is not None:
+                    self.local_executor.reset()
+                    logger.debug("Policy executor reset before model switch")
 
                 # Prompt for alternative model
                 new_model_path = self._prompt_alternative_model(task_name)
