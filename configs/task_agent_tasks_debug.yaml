@@ -1,0 +1,198 @@
+# Task Agent Configuration - Test with adjusted force_threshold and stability_window
+
+# Camera definitions (shared reference)
+# Camera index mapping: 0=head, 2=left_wrist, 4=left_wrist2, 6=right_wrist, 8=right_wrist2
+cameras:
+  head_cam:
+    type: opencv
+    index: 0
+    width: 640
+    height: 480
+    fps: 30
+  left_wrist_cam:
+    type: opencv
+    index: 2
+    width: 640
+    height: 480
+    fps: 30
+  left_wrist_cam2:
+    type: opencv
+    index: 4
+    width: 640
+    height: 480
+    fps: 30
+  right_wrist_cam:
+    type: opencv
+    index: 6
+    width: 640
+    height: 480
+    fps: 30
+  right_wrist_cam2:
+    type: opencv
+    index: 8
+    width: 640
+    height: 480
+    fps: 30
+
+# Task sequence definition
+tasks:
+  # Task 1: Pick up short workpiece (uses RIGHT hand)
+  - name: "pick_short_workpiece"
+    policy_path: "/home/smai/dc_dir/lerobot_0901_pybullet/outputs/train/act_1121_3/checkpoints/last/pretrained_model"
+    policy_type: "act"
+    max_duration: 30.0  # Maximum execution time in seconds
+    max_retries: 3  # Maximum retry attempts if task fails
+    enabled: true
+    cameras:
+      - name: "head_cam"
+        type: "opencv"
+        index: 0
+        width: 640
+        height: 480
+        fps: 30
+      - name: "right_wrist_cam"
+        type: "opencv"
+        index: 6
+        width: 640
+        height: 480
+        fps: 30
+      - name: "right_wrist_cam2"
+        type: "opencv"
+        index: 8
+        width: 640
+        height: 480
+        fps: 30
+    completion_criteria:
+      type: "composite"  # Use multiple conditions for completion detection
+      conditions:
+        - type: "force"
+          joint_name: "right_arm_joint_7"  # RIGHT gripper joint
+          force_threshold: 0.2  # Nm - user specified threshold
+        - type: "stability"
+          stability_window: 2  # Number of steps to check - user specified
+          stability_tolerance: 0.01  # Max position variance
+
+# Robot configuration
+robot_config:
+  type: "supre_robot_follower"
+  control_frequency: 50  # Higher frequency for smoother motion
+  prometheus_port: 8000
+  max_relative_joint_move: 2.0  # Smaller steps for smoother motion
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
+  cameras:
+    head_cam:
+      type: opencv
+      index: 0
+      width: 640
+      height: 480
+      fps: 30
+    left_wrist_cam:
+      type: opencv
+      index: 2
+      width: 640
+      height: 480
+      fps: 30
+    left_wrist_cam2:
+      type: opencv
+      index: 4
+      width: 640
+      height: 480
+      fps: 30
+    right_wrist_cam:
+      type: opencv
+      index: 6
+      width: 640
+      height: 480
+      fps: 30
+    right_wrist_cam2:
+      type: opencv
+      index: 8
+      width: 640
+      height: 480
+      fps: 30
+
+# Collision detection configuration
+collision_config:
+  # Detection thresholds
+  collision_threshold: 2.0  # Nm - torque anomaly threshold
+  detection_window: 5  # Consecutive steps above threshold
+
+  # Advanced detection
+  adaptive_mode: true  # Adjust threshold based on motion state
+  velocity_compensation: true  # Compensate for inertial torques
+  inertia_compensation_factor: 0.1  # Factor for inertia estimation
+
+  # Per-joint thresholds (optional, overrides global threshold)
+  joint_specific_thresholds:
+    left_arm_joint_7: 1.0  # Lower threshold for gripper
+    right_arm_joint_7: 1.0  # Lower threshold for gripper
+
+  # Safety limits
+  max_torque_limit: 5.0  # Absolute maximum torque (Nm)
+
+  # Recovery settings
+  recovery_strategy: "stop_and_retreat"  # "stop", "stop_and_retreat", "retry"
+  recovery_retreat_distance: 0.05  # Radians to retreat after collision
+  recovery_timeout: 5.0  # Seconds to wait for recovery
+
+  # Calibration settings
+  auto_calibrate: true
+  calibration_samples: 100
+  calibration_threshold: 0.1  # Torque variance threshold
+
+  # Joint inertia parameters (for velocity compensation)
+  joint_inertia:
+    trunk_joint_1: 0.8  # Trunk joints have higher inertia
+    trunk_joint_2: 0.8
+    left_arm_joint_1: 0.5
+    left_arm_joint_2: 0.4
+    left_arm_joint_3: 0.3
+    left_arm_joint_4: 0.2
+    left_arm_joint_5: 0.1
+    left_arm_joint_6: 0.05
+    left_arm_joint_7: 0.02  # Gripper
+    right_arm_joint_1: 0.5
+    right_arm_joint_2: 0.4
+    right_arm_joint_3: 0.3
+    right_arm_joint_4: 0.2
+    right_arm_joint_5: 0.1
+    right_arm_joint_6: 0.05
+    right_arm_joint_7: 0.02  # Gripper
+
+# Monitoring configuration
+monitoring_config:
+  enable_prometheus: false  # Disabled for testing
+  prometheus_port: 8000
+  log_level: "DEBUG"  # DEBUG level to see all completion detector logs
+  log_observations: false
+  log_actions: false
+  state_history_size: 1000
+
+# Gripper force feedback configuration
+gripper_config:
+  # Force scaling for gripper (converts 0-1 normalized to Nm equivalent)
+  gripper_force_scale: 1.0  # No scaling - use raw force values
+
+  # Force threshold for successful grasp detection
+  grasp_force_threshold: 0.2  # Nm - user specified threshold
+  grasp_force_stable_frames: 3  # Number of consecutive frames above threshold
+
+  # Force threshold for object release confirmation
+  release_force_threshold: 0.1  # Nm - indicates gripper is open
+
+  # Maximum gripper force to avoid damage
+  max_gripper_force: 1.8  # Nm
+
+  # Adaptive speed based on force feedback
+  enable_adaptive_speed: false  # Disabled for testing
+
+# Execution settings
+environment_dt: 0.02  # Control loop timestep (50 Hz)
+observation_timeout: 5.0  # Seconds to wait for observations
+action_timeout: 5.0  # Seconds to wait for actions
+
+# Emergency stop settings
+# Force detection is disabled by default to avoid false positives
+# Use collision detector for force detection instead
+emergency_max_joint_force: 10.0  # Very high threshold - effectively disabled
+emergency_total_force_threshold: 20.0  # Very high threshold - effectively disabled

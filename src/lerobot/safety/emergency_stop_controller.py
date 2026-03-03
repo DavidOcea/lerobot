@@ -125,6 +125,10 @@ class DangerDetectionConfig:
     # Custom danger checker
     custom_danger_checker: Callable[[dict[str, float], dict[str, Any]], bool] | None = None
 
+    # Disable force check by default to avoid false positives during normal robot motion
+    # Force detection should be handled by the collision detector instead
+    enable_force_check: bool = False  # Disabled - use collision detector instead
+
 
 class EmergencyStopController:
     """Emergency stop controller with action history and rollback.

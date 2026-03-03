@@ -436,9 +436,9 @@ class TaskAgentOrchestrator:
 
         # Create danger detection config
         danger_config = DangerDetectionConfig(
-            force_threshold=getattr(self.config, 'emergency_force_threshold', 2.5),
-            total_force_threshold=getattr(self.config, 'emergency_total_force_threshold', 5.0),
-            max_joint_force=getattr(self.config, 'emergency_max_joint_force', 1.5),
+            force_threshold=getattr(self.config, 'emergency_force_threshold', 5.0),  # Increased from 2.5
+            total_force_threshold=getattr(self.config, 'emergency_total_force_threshold', 15.0),  # Increased from 5.0
+            max_joint_force=getattr(self.config, 'emergency_max_joint_force', 3.0),  # Increased from 1.5
             max_velocity=getattr(self.config, 'emergency_max_velocity', 5.0),
             velocity_change_threshold=getattr(self.config, 'emergency_velocity_change_threshold', 2.0),
             max_action_delta=getattr(self.config, 'emergency_max_action_delta', 0.5),
@@ -857,9 +857,14 @@ class TaskAgentOrchestrator:
         # Set completion detector for this task
         print(f"[_execute_single_task] Setting completion detector for task: {task.name}")
         print(f"[_execute_single_task] Available detectors: {list(self.completion_detectors.keys())}")
-        self.task_scheduler.completion_detector = self.completion_detectors.get(
-            task.name
-        )
+        detector = self.completion_detectors.get(task.name)
+        self.task_scheduler.completion_detector = detector
+
+        # Also set on the underlying scheduler if this is an AdaptiveTaskScheduler
+        if hasattr(self.task_scheduler, 'scheduler'):
+            self.task_scheduler.scheduler.completion_detector = detector
+            print(f"[_execute_single_task] Also set on underlying scheduler")
+
         print(f"[_execute_single_task] Detector assigned: {self.task_scheduler.completion_detector}")
 
         # Override settings if specified
