@@ -163,7 +163,7 @@ collision_config:
 monitoring_config:
   enable_prometheus: false  # Disabled for testing
   prometheus_port: 8000
-  log_level: "DEBUG"  # DEBUG level to see all completion detector logs
+  log_level: "INFO"
   log_observations: false
   log_actions: false
   state_history_size: 1000
