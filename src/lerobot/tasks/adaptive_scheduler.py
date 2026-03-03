@@ -229,6 +229,7 @@ class AdaptiveTaskScheduler:
         control_dt = 1.0 / self.scheduler.robot.config.control_frequency
 
         logger.info(f"Starting control loop for task {task.name} (timeout={task.max_duration}s)")
+        print(f"[AdaptiveScheduler] Starting control loop for task {task.name} (timeout={task.max_duration}s)")
 
         loop_iteration = 0
         try:
@@ -651,6 +652,9 @@ class AdaptiveTaskScheduler:
         Returns:
             True if task is completed
         """
+        # Strong logging to verify this method is being called
+        print(f"[_check_task_completion] Checking completion for task={task.name}, detector={'YES' if self.scheduler.completion_detector else 'NO'}")
+
         # Use completion detector if available
         if self.scheduler.completion_detector is not None:
             detection = self.scheduler.completion_detector.detect(
@@ -658,6 +662,7 @@ class AdaptiveTaskScheduler:
             )
 
             # Debug: Log completion detection (INFO level for visibility)
+            print(f"[CompletionCheck] is_completed={detection.is_completed}, confidence={detection.confidence:.2f}, type={self.scheduler.completion_detector.criteria.type}")
             logger.info(f"[CompletionCheck] is_completed={detection.is_completed}, confidence={detection.confidence:.2f}, type={self.scheduler.completion_detector.criteria.type}")
             if detection.details:
                 logger.info(f"[CompletionCheck] details={detection.details}")
