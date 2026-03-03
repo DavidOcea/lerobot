@@ -436,9 +436,9 @@ class TaskAgentOrchestrator:
 
         # Create danger detection config
         danger_config = DangerDetectionConfig(
-            force_threshold=getattr(self.config, 'emergency_force_threshold', 2.5),
-            total_force_threshold=getattr(self.config, 'emergency_total_force_threshold', 5.0),
-            max_joint_force=getattr(self.config, 'emergency_max_joint_force', 1.5),
+            force_threshold=getattr(self.config, 'emergency_force_threshold', 5.0),  # Increased from 2.5
+            total_force_threshold=getattr(self.config, 'emergency_total_force_threshold', 15.0),  # Increased from 5.0
+            max_joint_force=getattr(self.config, 'emergency_max_joint_force', 3.0),  # Increased from 1.5
             max_velocity=getattr(self.config, 'emergency_max_velocity', 5.0),
             velocity_change_threshold=getattr(self.config, 'emergency_velocity_change_threshold', 2.0),
             max_action_delta=getattr(self.config, 'emergency_max_action_delta', 0.5),
