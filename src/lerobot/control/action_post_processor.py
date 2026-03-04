@@ -76,6 +76,17 @@ class ActionPostProcessor:
         self.joint_names = joint_names
         self.num_joints = len(joint_names)
 
+        # Identify gripper joints (usually named with "_joint_7" suffix)
+        self._gripper_joints = [name for name in joint_names if name.endswith("_joint_7")]
+
+        # Set higher velocity limits for gripper joints (no velocity limiting)
+        gripper_velocity_limits = {}
+        for name in self._gripper_joints:
+            gripper_velocity_limits[name] = float('inf')  # No velocity limit
+
+        if gripper_velocity_limits:
+            self.config.max_velocity_per_joint.update(gripper_velocity_limits)
+
         # State tracking
         self._previous_action: dict[str, float] | None = None
         self._previous_velocity: dict[str, float] = {}
@@ -93,6 +104,8 @@ class ActionPostProcessor:
         self._jerk_limited_count = 0
 
         logger.info(f"ActionPostProcessor initialized for {self.num_joints} joints")
+        if self._gripper_joints:
+            logger.info(f"Gripper joints (no filtering/velocity limit): {self._gripper_joints}")
 
     def process_action(
         self,
@@ -165,6 +178,8 @@ class ActionPostProcessor:
     def _limit_velocity(self, action_positions: dict[str, float]) -> dict[str, float]:
         """Limit velocity to maximum allowed values.
 
+        Gripper joints are exempt from velocity limiting for faster response.
+
         Args:
             action_positions: Target joint positions.
 
@@ -174,6 +189,11 @@ class ActionPostProcessor:
         limited_positions = {}
 
         for joint_name, target_pos in action_positions.items():
+            # Skip velocity limiting for gripper joints
+            if joint_name in self._gripper_joints:
+                limited_positions[joint_name] = target_pos
+                continue
+
             if joint_name not in self._previous_action:
                 limited_positions[joint_name] = target_pos
                 continue
@@ -258,6 +278,7 @@ class ActionPostProcessor:
         """Apply low-pass filter to smooth actions.
 
         Formula: filtered = alpha * raw + (1 - alpha) * previous_filtered
+        Gripper joints use alpha=1.0 to disable filtering for faster response.
 
         Args:
             action_positions: Target joint positions.
@@ -268,14 +289,22 @@ class ActionPostProcessor:
         filtered_positions = {}
 
         for joint_name, target_pos in action_positions.items():
+            # Check if this is a gripper joint (use alpha=1.0 for no filtering)
+            is_gripper = joint_name in self._gripper_joints
+
             if joint_name in self._filtered_actions:
-                # Apply exponential moving average
-                filtered_pos = (
-                    self.config.filter_alpha * target_pos
-                    + (1 - self.config.filter_alpha) * self._filtered_actions[joint_name]
-                )
-                filtered_positions[joint_name] = filtered_pos
-                self._filtered_actions[joint_name] = filtered_pos
+                if is_gripper:
+                    # Gripper joints: no filtering (alpha=1.0)
+                    filtered_positions[joint_name] = target_pos
+                    self._filtered_actions[joint_name] = target_pos
+                else:
+                    # Other joints: apply exponential moving average
+                    filtered_pos = (
+                        self.config.filter_alpha * target_pos
+                        + (1 - self.config.filter_alpha) * self._filtered_actions[joint_name]
+                    )
+                    filtered_positions[joint_name] = filtered_pos
+                    self._filtered_actions[joint_name] = filtered_pos
             else:
                 # First time, no filtering
                 filtered_positions[joint_name] = target_pos
