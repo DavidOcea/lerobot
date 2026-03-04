@@ -737,7 +737,9 @@ class TaskAgentOrchestrator:
                     try:
                         # Check if robot has reset_to_zero method
                         if hasattr(self.robot, 'reset_to_zero'):
-                            self.robot.reset_to_zero(duration=3.0)
+                            # Use configured reset duration
+                            duration = getattr(self.config, 'reset_duration', 3.0)
+                            self.robot.reset_to_zero(duration=duration)
                         else:
                             logger.warning("Robot does not support reset_to_zero method")
                     except Exception as e:

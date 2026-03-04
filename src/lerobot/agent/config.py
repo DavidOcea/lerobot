@@ -56,6 +56,9 @@ class OrchestratorConfig(TasksOrchestratorConfig):
     enable_adaptive_scheduler: bool = True  # Use AdaptiveTaskScheduler for better performance
     gripper_config: dict | None = None  # Configuration for gripper force feedback
 
+    # Robot reset settings
+    reset_duration: float = 3.0  # Time in seconds for smooth reset to zero position
+
     # Debug settings
     debug_mode: bool = False
     save_observations: bool = False
