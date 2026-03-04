@@ -586,21 +586,34 @@ class SupreRobotFollower(Robot):
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
-    def reset_to_zero(self, duration: float = 3.0) -> None:
-        """Smoothly reset all joints to zero position.
+    def reset_to_zero(self, duration: float = 3.0, target_positions: dict[str, float] | None = None) -> None:
+        """Smoothly reset all joints to zero or target position.
 
         Args:
             duration: Time in seconds to complete the reset (default: 3.0s).
+            target_positions: Optional dictionary mapping joint names to target positions.
+                           If None, all joints reset to 0.0.
+                           Example: {"left_arm_joint_1": 0.0, "right_arm_joint_7": 0.5}
         """
         if not self.is_connected:
             raise RuntimeError("Cannot reset while disconnected.")
 
-        logger.info(f"Resetting robot joints to zero position over {duration:.2f}s...")
+        logger.info(f"Resetting robot joints over {duration:.2f}s...")
 
-        # Create target action with all joints at 0
-        target_action = {f"{name}.pos": 0.0 for name in self.observation_joint_names}
+        # Create target action with joint positions
+        if target_positions is None:
+            # Default: all joints to 0.0
+            target_action = {f"{name}.pos": 0.0 for name in self.observation_joint_names}
+        else:
+            # Use specified positions for provided joints, 0.0 for others
+            target_action = {}
+            for name in self.observation_joint_names:
+                if name in target_positions:
+                    target_action[f"{name}.pos"] = target_positions[name]
+                else:
+                    target_action[f"{name}.pos"] = 0.0
 
-        # Execute smooth trajectory to zero position
+        # Execute smooth trajectory to target positions
         self.execute_trajectory(target_action, duration=duration)
 
         logger.info("Robot reset completed successfully")
