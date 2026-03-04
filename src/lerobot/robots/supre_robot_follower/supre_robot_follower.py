@@ -221,13 +221,13 @@ class SupreRobotFollower(Robot):
         print("current_pos: ", pos_dict)
         return {self.observation_joint_names[i]: positions[i] for i in range(len(self.observation_joint_names))}
 
-    def _prepare_and_clamp_action(self, action: dict[str, Any]) -> Tuple[List[float], Dict[str, Any]]:
+    def _prepare_and_clamp_action(self, action: dict[str, Any], skip_safety: bool = False) -> Tuple[List[float], Dict[str, Any]]:
         if action is None:
             raise ValueError("Action dictionary must contain 'joint_positions'.")
 
         action_pos = {key.removesuffix(".pos"): val for key, val in action.items()}
 
-        ensure_safe = True
+        ensure_safe = not skip_safety
         if ensure_safe:
             # 1. --- GET CURRENT STATE (Now much cleaner!) ---
             present_positions_map = self.get_current_position()
@@ -242,13 +242,13 @@ class SupreRobotFollower(Robot):
                     goal_present_pos[obs_name] = (goal_pos, present_pos)
                 except KeyError as e:
                     raise ValueError(f"Could not find required joint '{e}' in action or current state.")
-            
+
             # 3. --- APPLY THE SAFETY FUNCTION ---
             # Call `ensure_safe_goal_position` to get the clamped goal positions.
             # (Remember to add `max_relative_joint_move` to your config class)
             safe_goal_positions_map = ensure_safe_goal_position(
                 goal_present_pos,
-                self.config.max_relative_joint_move 
+                self.config.max_relative_joint_move
             )
 
         if ensure_safe:
@@ -536,13 +536,15 @@ class SupreRobotFollower(Robot):
     def _force_ft(self) -> dict[str, type]:
         return {f"{motor}.force": float for motor in self.observation_joint_names}   
         
-    def execute_trajectory(self, goal_action: dict[str, Any], duration: float = 1.0) -> None:
+    def execute_trajectory(self, goal_action: dict[str, Any], duration: float = 1.0, skip_safety_check: bool = False) -> None:
         """
         通过线性插值，在给定的时间内平滑地将机器人移动到目标位置。
         这是一个阻塞式方法，直到轨迹完成。
 
         :param goal_action: 包含最终目标关节位置的字典。
         :param duration: 完成移动所需的总时间（秒）。
+        :param skip_safety_check: 是否跳过安全检查（max_relative_joint_move限制）。
+                                True用于复位操作，False用于正常控制。
         """
         if not self.is_connected:
             raise RuntimeError("Cannot execute trajectory while disconnected.")
@@ -558,7 +560,7 @@ class SupreRobotFollower(Robot):
         start_positions = np.array([start_positions_map[name] for name in self.observation_joint_names])
 
         # 终点: 调用辅助方法计算最终钳位后的目标位置，但 *不发送*
-        final_target_positions, _ = self._prepare_and_clamp_action(goal_action)
+        final_target_positions, _ = self._prepare_and_clamp_action(goal_action, skip_safety=skip_safety_check)
         end_positions = np.array(final_target_positions)
 
         # --- 2. 计算插值参数 ---
@@ -614,6 +616,7 @@ class SupreRobotFollower(Robot):
                     target_action[f"{name}.pos"] = 0.0
 
         # Execute smooth trajectory to target positions
-        self.execute_trajectory(target_action, duration=duration)
+        # Skip safety check to allow large movements during reset
+        self.execute_trajectory(target_action, duration=duration, skip_safety_check=True)
 
         logger.info("Robot reset completed successfully")
