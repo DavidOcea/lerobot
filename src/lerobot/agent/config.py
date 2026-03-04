@@ -58,6 +58,7 @@ class OrchestratorConfig(TasksOrchestratorConfig):
 
     # Robot reset settings
     reset_duration: float = 3.0  # Time in seconds for smooth reset to zero position
+    reset_positions: dict[str, float] = field(default_factory=dict)  # Manual reset positions per joint (e.g., {"right_arm_joint_7": 0.5})
 
     # Debug settings
     debug_mode: bool = False

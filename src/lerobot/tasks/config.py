@@ -99,6 +99,10 @@ class OrchestratorConfig:
     observation_timeout: float = 5.0  # Seconds to wait for observations
     action_timeout: float = 5.0  # Seconds to wait for actions
 
+    # Reset settings
+    reset_duration: float = 3.0  # Time in seconds for smooth reset to zero position
+    reset_positions: dict[str, float] = field(default_factory=dict)  # Manual reset positions per joint (e.g., {"left_arm_joint_1": 0.0, ...}). If empty, use 0.0 for all joints.
+
 
 def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     """Load orchestrator configuration from a YAML file.
@@ -310,6 +314,8 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             environment_dt=config_dict.get("environment_dt", 1.0 / 30.0),
             observation_timeout=config_dict.get("observation_timeout", 5.0),
             action_timeout=config_dict.get("action_timeout", 5.0),
+            reset_duration=config_dict.get("reset_duration", 3.0),
+            reset_positions=config_dict.get("reset_positions", {}),
         )
     except ImportError:
         # Fall back to base config
@@ -321,6 +327,8 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             environment_dt=config_dict.get("environment_dt", 1.0 / 30.0),
             observation_timeout=config_dict.get("observation_timeout", 5.0),
             action_timeout=config_dict.get("action_timeout", 5.0),
+            reset_duration=config_dict.get("reset_duration", 3.0),
+            reset_positions=config_dict.get("reset_positions", {}),
         )
 
     return config

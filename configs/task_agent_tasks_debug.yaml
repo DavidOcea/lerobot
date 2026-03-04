@@ -192,7 +192,13 @@ observation_timeout: 5.0  # Seconds to wait for observations
 action_timeout: 5.0  # Seconds to wait for actions
 
 # Robot reset settings
-reset_duration: 3.0  # Time in seconds for smooth reset to zero position (interactive mode option R)
+# 复位设置：支持在交互模式中选择 R 进行平滑复位
+reset_duration: 3.0  # 复位时间（秒）
+# 手动零位设置：为指定关节设置复位位置，未指定的关节复位到 0.0
+# 示例：将右臂夹爪复位到 0.5（半开状态），其他关节复位到 0.0
+# reset_positions:
+#   right_arm_joint_7: 0.5  # 右臂夹爪半开
+#   left_arm_joint_7: 0.5   # 左臂夹爪半开
 
 # Emergency stop settings
 # Force detection is disabled by default to avoid false positives
