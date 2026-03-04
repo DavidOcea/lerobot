@@ -546,17 +546,17 @@ class SupreRobotFollower(Robot):
         """
         if not self.is_connected:
             raise RuntimeError("Cannot execute trajectory while disconnected.")
-            
+
         if duration <= 0:
             self.send_action(goal_action)
             return
 
         # --- 1. 获取轨迹的起点和终点 (无硬件副作用) ---
-        
+
         # 起点: 机器人的当前位置
         start_positions_map = self.get_current_position()
         start_positions = np.array([start_positions_map[name] for name in self.observation_joint_names])
-        
+
         # 终点: 调用辅助方法计算最终钳位后的目标位置，但 *不发送*
         final_target_positions, _ = self._prepare_and_clamp_action(goal_action)
         end_positions = np.array(final_target_positions)
@@ -571,17 +571,36 @@ class SupreRobotFollower(Robot):
 
         # --- 3. 执行高频插值控制循环 ---
         # print(f"Executing trajectory over {duration:.2f}s in {num_steps} steps.")
-        
+
         for i in range(num_steps):
             step_start_time = time.perf_counter()
-            
+
             alpha = (i + 1) / num_steps
             interpolated_positions = start_positions + alpha * (end_positions - start_positions)
-            
+
             # 直接调用最底层的发送方法，跳过 send_action 的重复检查
             self.send_target_position(interpolated_positions.tolist())
-            
+
             elapsed_time = time.perf_counter() - step_start_time
             sleep_time = control_period - elapsed_time
             if sleep_time > 0:
                 time.sleep(sleep_time)
+
+    def reset_to_zero(self, duration: float = 3.0) -> None:
+        """Smoothly reset all joints to zero position.
+
+        Args:
+            duration: Time in seconds to complete the reset (default: 3.0s).
+        """
+        if not self.is_connected:
+            raise RuntimeError("Cannot reset while disconnected.")
+
+        logger.info(f"Resetting robot joints to zero position over {duration:.2f}s...")
+
+        # Create target action with all joints at 0
+        target_action = {f"{name}.pos": 0.0 for name in self.observation_joint_names}
+
+        # Execute smooth trajectory to zero position
+        self.execute_trajectory(target_action, duration=duration)
+
+        logger.info("Robot reset completed successfully")

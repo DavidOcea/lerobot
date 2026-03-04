@@ -731,6 +731,19 @@ class TaskAgentOrchestrator:
                     logger.info("User requested exit, stopping task sequence")
                     break
 
+                # Handle reset request
+                if selection.reset_requested:
+                    logger.info("User requested robot reset to zero position")
+                    try:
+                        # Check if robot has reset_to_zero method
+                        if hasattr(self.robot, 'reset_to_zero'):
+                            self.robot.reset_to_zero(duration=3.0)
+                        else:
+                            logger.warning("Robot does not support reset_to_zero method")
+                    except Exception as e:
+                        logger.error(f"Reset failed: {e}")
+                    continue  # Return to selection prompt after reset
+
                 # Handle custom task creation
                 if selection.custom_task_name is not None:
                     logger.info(f"Custom task requested: {selection.custom_task_name}")
