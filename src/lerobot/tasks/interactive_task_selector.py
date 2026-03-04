@@ -39,6 +39,7 @@ class TaskSelection:
     custom_task_name: str | None = None
     execution_mode: ExecutionMode = ExecutionMode.AUTOMATIC
     exit_requested: bool = False
+    reset_requested: bool = False  # User requested robot reset to zero position
 
 
 class InteractiveTaskSelector:
@@ -176,6 +177,7 @@ class InteractiveTaskSelector:
             "  1 - Execute next task in sequence",
             "  2 - Create custom task or select existing task",
             "  3 - Toggle automatic/interactive mode",
+            "  R - Reset robot joints to zero position (smooth reset)",
             "  0 - Exit",
             "",
         ])
@@ -410,6 +412,13 @@ class InteractiveTaskSelector:
             return TaskSelection(
                 execution_mode=new_mode,
                 selected_task=None,
+            )
+        elif input_lower == "r" or input_lower == "reset":
+            # Reset robot joints to zero position
+            logger.info("User requested robot reset to zero position")
+            return TaskSelection(
+                execution_mode=ExecutionMode.INTERACTIVE,
+                reset_requested=True,
             )
         elif input_lower == "0":
             # Exit request

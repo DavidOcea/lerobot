@@ -191,6 +191,9 @@ environment_dt: 0.02  # Control loop timestep (50 Hz)
 observation_timeout: 5.0  # Seconds to wait for observations
 action_timeout: 5.0  # Seconds to wait for actions
 
+# Robot reset settings
+reset_duration: 3.0  # Time in seconds for smooth reset to zero position (interactive mode option R)
+
 # Emergency stop settings
 # Force detection is disabled by default to avoid false positives
 # Use collision detector for force detection instead
