@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import NormalizationMode
 from lerobot.optim.optimizers import AdamWConfig
+from lerobot.optim.schedulers import LRSchedulerConfig
 from PIL import Image
 
 @PreTrainedConfig.register_subclass("act")
@@ -151,11 +152,18 @@ class ACTConfig(PreTrainedConfig):
     # Training and loss computation.
     dropout: float = 0.1
     kl_weight: float = 10.0
+    # Label smoothing for regression: blends target with prediction to prevent overfitting
+    label_smoothing: float = 0.0
 
     # Training preset
     optimizer_lr: float = 1e-5
     optimizer_weight_decay: float = 1e-4
     optimizer_lr_backbone: float = 1e-5
+
+    # Scheduler preset config
+    use_warmup_cosine_scheduler: bool = False
+    warmup_steps: int = 2000
+    min_lr_ratio: float = 0.1  # Final lr will be min_lr_ratio * optimizer_lr
 
     def __post_init__(self):
         super().__post_init__()
@@ -185,7 +193,14 @@ class ACTConfig(PreTrainedConfig):
             weight_decay=self.optimizer_weight_decay,
         )
 
-    def get_scheduler_preset(self) -> None:
+    def get_scheduler_preset(self) -> LRSchedulerConfig | None:
+        if self.use_warmup_cosine_scheduler:
+            # Import here to avoid circular dependency
+            from lerobot.optim.schedulers import WarmupCosineACTSchedulerConfig
+            return WarmupCosineACTSchedulerConfig(
+                num_warmup_steps=self.warmup_steps,
+                min_lr_ratio=self.min_lr_ratio,
+            )
         return None
 
     def validate_features(self) -> None:

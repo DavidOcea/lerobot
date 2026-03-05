@@ -397,6 +397,22 @@ class SmolVLAPolicy(PreTrainedPolicy):
         original_action_dim = self.config.action_feature.shape[0]
         actions = actions[:, :, :original_action_dim]
 
+         # 相对角度推理：将相对角度转换回绝对角度
+        # 重要：在归一化空间进行恢复，与 ACT 保持一致
+        # 必须在 unnormalize_outputs 之前执行，因为：
+        #   - actions 当前在归一化空间
+        #   - batch[OBS_STATE] 也被 _prepare_batch 归一化了
+        # 只有两者在同一空间，加法才有意义
+        if self.config.use_relative_action and OBS_STATE in batch:
+            # actions shape: (B, chunk_size, action_dim)
+            # state shape: (B, state_dim) - 已被 _prepare_batch 归一化
+            state_norm = batch[OBS_STATE]
+            # 获取实际的 action 维度
+            state_for_action = state_norm[..., :actions.shape[-1]]  # (B, action_dim)
+            # 只对第一步恢复绝对角度（在归一化空间）
+            actions[:, 0:1, :] = actions[:, 0:1, :] + state_for_action.unsqueeze(1)
+
+        # 现在反归一化到原始空间
         actions = self.unnormalize_outputs({ACTION: actions})[ACTION]
 
         if self.config.adapt_to_pi_aloha:
@@ -452,6 +468,18 @@ class SmolVLAPolicy(PreTrainedPolicy):
             batch[ACTION] = self._pi_aloha_encode_actions_inv(batch[ACTION])
         batch = self.normalize_inputs(batch)
         batch = self.normalize_targets(batch)
+        
+        # 相对角度训练：在归一化空间中将 action 转换为相对角度
+        # 重要：只对第一步（chunk[0]）计算相对角度，避免累积误差
+        if self.config.use_relative_action and OBS_STATE in batch:
+            state_expanded = batch[OBS_STATE]  # (B, 1, state_dim)
+            # 获取实际的 action 维度（可能小于 max_action_dim）
+            original_action_dim = batch[ACTION].shape[-1]
+            state_for_action = state_expanded[..., :original_action_dim]  # (B, 1, action_dim)
+            # 只修改 chunk 的第一步：action[0] = action[0] - state
+            # 其他步保持绝对角度（避免累积误差）
+            batch[ACTION][:, 0:1, :] = batch[ACTION][:, 0:1, :] - state_for_action
+        
         images, img_masks = self.prepare_images(batch)
         state = self.prepare_state(batch)
         lang_tokens, lang_masks = self.prepare_language(batch)

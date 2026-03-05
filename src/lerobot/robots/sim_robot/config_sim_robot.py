@@ -23,7 +23,7 @@ def sim_robot_cameras_config() -> dict[str, CameraConfig]:
             width=640,
             height=480
         ),
-        "left_wrist_cam": PyBulletCameraConfig(
+        "right_wrist_cam2": PyBulletCameraConfig(
             position=(0.6, 0, 0.9),  # 调整相机位置
             orientation=(0.5, -0.5, -0.5, 0.5),  # 调整朝向
             width=640,
@@ -35,7 +35,7 @@ def obj_conf() -> list:
     """目标物件的参数"""
     return [
         {"name" : "desk", # 位置和高度都有问题，需要调整
-         "path" : "/home/smai/workspace/dc_dir/sim_lerobot/rf_object_workspace/Assemfinal_dest/urdf/Assemfinal_dest.urdf",
+         "path" : "/root/workspace/dc_dir/urdf/Assemfinal_dest/urdf/Assemfinal_dest.urdf",
          "basePosition" : [0.0, -0.63, 0.0],
          "globalScaling": 0.00085,
          "useFixedBase" : True,
@@ -56,7 +56,7 @@ def obj_conf() -> list:
         #  "color": (0.0, 0.0, 0.0, 1.0)
         #  },
          {"name" : "items2", #长件
-         "path" : "/home/smai/workspace/dc_dir/sim_lerobot/rf_object_workspace/Assemfinal_items2/urdf/Assemfinal_items2.urdf",
+         "path" : "/root/workspace/dc_dir/urdf/Assemfinal_items2/urdf/Assemfinal_items2.urdf",
          "basePosition" : [0.2, -0.55, 0.8],
          "globalScaling": 1.0,
          "useFixedBase" : False,
@@ -68,8 +68,8 @@ def obj_conf() -> list:
 @dataclass
 class SimRobotConfig(RobotConfig):
     # 仿真环境参数
-    headless: bool = False
-    urdf_path: str = "/home/smai/workspace/dc_dir/sim_lerobot/rf2502_new_3/urdf/rf2502_new_3.urdf"
+    headless: bool = True
+    urdf_path: str = "/root/workspace/dc_dir/urdf/rf2502_new_3/urdf/rf2502_new_3.urdf"
     obj_cfg: list = field(default_factory=obj_conf)
     
     # 相机配置

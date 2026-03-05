@@ -28,7 +28,7 @@ camera_cfg = {
         "offset_pos": [-0.0, -0.03, 0.06],
         "offset_orn": p.getQuaternionFromEuler([0, math.radians(30), math.radians(-90)])
     },
-    "left_wrist_cam": {
+    "right_wrist_cam2": {
         "width": 640,
         "height": 480,
         "fov": 60,

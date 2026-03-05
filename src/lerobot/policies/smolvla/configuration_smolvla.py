@@ -30,6 +30,8 @@ class SmolVLAConfig(PreTrainedConfig):
     use_state: bool = True
     # 使用state_dropout
     state_dropout = 0.0
+    # 只对chunk的第一步使用相对角度，避免累积误差
+    use_relative_action: bool = False
 
 
     # Input / output structure.
@@ -89,7 +91,7 @@ class SmolVLAConfig(PreTrainedConfig):
     scheduler_decay_steps: int = 30_000
     scheduler_decay_lr: float = 2.5e-6
 
-    vlm_model_name: str = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"  # Select the VLM backbone.
+    vlm_model_name: str = "/root/data2/dc_dir/models/SmolVLM2-500M-Video-Instruct"  # Select the VLM backbone.
     load_vlm_weights: bool = False  # Set to True in case of training the expert from scratch. True when init from pretrained SmolVLA weights
 
     add_image_special_tokens: bool = False  # Whether to use special image tokens around image features.
