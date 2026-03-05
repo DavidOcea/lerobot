@@ -194,8 +194,18 @@ class ACTPolicy(PreTrainedPolicy):
 
         actions_hat, (mu_hat, log_sigma_x2_hat) = self.model(batch)
 
+        # Apply label smoothing if enabled
+        target_actions = batch[ACTION]
+        if self.config.label_smoothing > 0 and self.training:
+            # Detach predictions to prevent gradients from flowing into the smoothing target
+            # Blend target with prediction: smoothed_target = (1 - alpha) * target + alpha * prediction
+            target_actions = (
+                (1 - self.config.label_smoothing) * target_actions +
+                self.config.label_smoothing * actions_hat.detach()
+            )
+
         l1_loss = (
-            F.l1_loss(batch[ACTION], actions_hat, reduction="none") * ~batch["action_is_pad"].unsqueeze(-1)
+            F.l1_loss(target_actions, actions_hat, reduction="none") * ~batch["action_is_pad"].unsqueeze(-1)
         ).mean()
 
         loss_dict = {"l1_loss": l1_loss.item()}

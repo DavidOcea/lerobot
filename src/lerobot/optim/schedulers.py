@@ -111,6 +111,41 @@ class CosineDecayWithWarmupSchedulerConfig(LRSchedulerConfig):
         return LambdaLR(optimizer, lr_lambda, -1)
 
 
+@LRSchedulerConfig.register_subclass("warmup_cosine_act")
+@dataclass
+class WarmupCosineACTSchedulerConfig(LRSchedulerConfig):
+    """Warmup + Cosine Decay scheduler optimized for ACT training.
+
+    Features:
+    - Linear warmup from 0 to base learning rate
+    - Cosine decay to min_lr_ratio * base_lr
+    - Simple to use with ACT's preset system
+
+    Args:
+        num_warmup_steps: Number of warmup steps at the beginning
+        min_lr_ratio: Minimum learning rate as a ratio of base lr (e.g., 0.1 means final lr = 0.1 * base_lr)
+    """
+
+    min_lr_ratio: float = 0.1
+
+    def build(self, optimizer: Optimizer, num_training_steps: int) -> LambdaLR:
+        def lr_lambda(current_step: int) -> float:
+            # Warmup phase
+            if current_step < self.num_warmup_steps:
+                return float(current_step) / float(max(1, self.num_warmup_steps))
+
+            # Cosine decay phase
+            progress = float(current_step - self.num_warmup_steps) / float(
+                max(1, num_training_steps - self.num_warmup_steps)
+            )
+            cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
+
+            # Scale to [min_lr_ratio, 1.0] range
+            return self.min_lr_ratio + (1.0 - self.min_lr_ratio) * cosine_decay
+
+        return LambdaLR(optimizer, lr_lambda, -1)
+
+
 def save_scheduler_state(scheduler: LRScheduler, save_dir: Path) -> None:
     state_dict = scheduler.state_dict()
     write_json(state_dict, save_dir / SCHEDULER_STATE)
