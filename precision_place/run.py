@@ -21,7 +21,10 @@ import cv2
 import numpy as np
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# 添加 lerobot 根目录和 src 目录到 Python 路径
+LEROBOT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(LEROBOT_ROOT / "src"))
+sys.path.insert(0, str(LEROBOT_ROOT))
 
 from lerobot.robots.supre_robot_follower import SupreRobotFollower
 from lerobot.robots.supre_robot_follower.supre_robot_follower_config import SupreRobotFollowerConfig
