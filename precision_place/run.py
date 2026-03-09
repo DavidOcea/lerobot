@@ -31,7 +31,9 @@ from lerobot.robots.supre_robot_follower.supre_robot_follower_config import Supr
 from lerobot.cameras.opencv.camera_opencv import OpenCVCamera
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 
-from precision_place.dual_point_alignment import PrecisionPlaceController, ARM_CONFIGS
+from precision_place.dual_point_alignment import (
+    PrecisionPlaceController, ARM_CONFIGS, DualPointDetector, JointSensitivity
+)
 
 
 # ==================== 配置 ====================
@@ -52,26 +54,46 @@ SLOT_COLOR = "red"
 
 class PrecisionPlaceSystem:
     """精准放置系统"""
-    
+
     def __init__(self):
         self.robot = None
         self.cameras = {}
         self.controller = None
         self.current_arm = "right"
         self.is_first_run = not (Path(__file__).parent / "calibration_history.json").exists()
-    
-    def connect(self, arm: str = "right"):
-        """连接设备"""
+        self.passive_mode = False  # 被动模式：与示教系统协同
+
+    def connect(self, arm: str = "right", passive: bool = False):
+        """连接设备
+
+        Args:
+            arm: 手臂选择
+            passive: 被动模式，与示教系统协同工作
+        """
         print("\n" + "="*60)
         print("连接设备")
         print("="*60)
-        
+
+        self.passive_mode = passive
+        if passive:
+            print("\n[被动模式] 与示教系统协同工作")
+            print("  - 只读取机器人状态，不发送控制指令")
+            print("  - 请确保示教程序已启动 (./run.sh)")
+
         # 机器人
         print("\n连接机器人...")
-        self.robot = SupreRobotFollower(SupreRobotFollowerConfig())
-        self.robot.connect()
-        print("✓ 机器人已连接")
-        
+        try:
+            self.robot = SupreRobotFollower(SupreRobotFollowerConfig())
+            self.robot.connect()
+            print("✓ 机器人已连接")
+        except Exception as e:
+            if passive:
+                print(f"⚠ 机器人连接失败: {e}")
+                print("  尝试继续（可能示教程序已占用连接）...")
+                self.robot = None
+            else:
+                raise
+
         # 相机
         print("\n连接相机...")
         for name, idx in CAMERA_INDICES.items():
@@ -82,22 +104,138 @@ class PrecisionPlaceSystem:
                 print(f"  ✓ {name} (索引{idx})")
             except Exception as e:
                 print(f"  ✗ {name} (索引{idx}): {e}")
-        
+
         # 控制器
         self.current_arm = arm
         arm_config = ARM_CONFIGS.get(arm)
-        
+
         if arm_config.camera_name in self.cameras:
-            self.controller = PrecisionPlaceController(
-                robot=self.robot,
-                camera=self.cameras[arm_config.camera_name],
-                arm=arm
-            )
+            # 如果机器人连接失败但相机可用，创建一个简化的控制器
+            if self.robot is None:
+                print(f"\n⚠ 使用相机模式（无机器人连接）")
+                self.controller = self._create_camera_only_controller(arm)
+            else:
+                self.controller = PrecisionPlaceController(
+                    robot=self.robot,
+                    camera=self.cameras[arm_config.camera_name],
+                    arm=arm,
+                    passive_mode=passive
+                )
             self.controller.set_marker_colors(WORKPIECE_COLOR, SLOT_COLOR)
             print(f"\n✓ 主用相机: {arm_config.camera_name} (索引{arm_config.camera_index})")
             print(f"✓ 使用手臂: {arm}")
+            if passive:
+                print("✓ 模式: 被动模式（与示教协同）")
         else:
             raise RuntimeError(f"无法连接相机 {arm_config.camera_name}")
+
+    def _create_camera_only_controller(self, arm: str):
+        """创建仅相机的控制器（用于测试或与示教系统配合）"""
+        arm_config = ARM_CONFIGS.get(arm)
+
+        class CameraOnlyController:
+            """仅相机控制器，用于被动模式"""
+            def __init__(self, camera, arm_config):
+                self.camera = camera
+                self.arm_config = arm_config
+                self.arm = arm
+                self.passive_mode = True
+                self.detector = DualPointDetector()
+                self.calibration_points = []
+                self.pixel_to_mm_ratio = 0.5
+                self.joint_names = {}
+                # 构建关节名称
+                for i in range(7):
+                    self.joint_names[i] = f"left_arm_joint_{i+1}"
+                for i in range(7, 14):
+                    self.joint_names[i] = f"right_arm_joint_{i-6}"
+
+            def set_marker_colors(self, wp_color, slot_color):
+                self.detector.set_marker_colors(wp_color, slot_color)
+
+            def test_detection(self):
+                print("\n检测测试 (仅相机模式)")
+                print("按 'q' 退出")
+                while True:
+                    image = self.camera.read()
+                    if image is None:
+                        continue
+                    state = self.detector.detect_dual_marker_state(image)
+                    vis = self.detector.visualize(image, state)
+                    cv2.imshow("Detection Test", vis)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                cv2.destroyAllWindows()
+
+            def calibrate_joint_sensitivity(self, joint_idx, move_degrees=2.0):
+                print(f"\n{'='*60}")
+                print(f"关节灵敏度标定 (仅相机模式)")
+                print(f"关节: {self.joint_names.get(joint_idx, f'joint_{joint_idx}')}")
+                print(f"{'='*60}")
+                print("\n[仅相机模式] 无法读取关节角度")
+                print("请用示教器移动关节，程序将记录图像变化")
+                input("按 Enter 开始...")
+
+                img1 = self.camera.read()
+                if img1 is None:
+                    print("✗ 图像采集失败")
+                    return False, None
+
+                input(f"\n移动完成后按 Enter...")
+                img2 = self.camera.read()
+                if img2 is None:
+                    print("✗ 图像采集失败")
+                    return False, None
+
+                # 计算像素变化
+                g1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+                g2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+                pts = cv2.goodFeaturesToTrack(g1, 100, 0.01, 10)
+                if pts is None or len(pts) < 10:
+                    print("✗ 特征点匹配失败")
+                    return False, None
+
+                p1, st, _ = cv2.calcOpticalFlowPyrLK(g1, g2, pts, None)
+                if p1 is None:
+                    print("✗ 光流计算失败")
+                    return False, None
+
+                good = p1[st == 1] - pts[st == 1]
+                pixel_dx = float(np.mean(good, axis=0)[0])
+                pixel_dy = float(np.mean(good, axis=0)[1])
+
+                sensitivity = JointSensitivity(
+                    joint_idx=joint_idx,
+                    joint_name=self.joint_names.get(joint_idx, f"joint_{joint_idx}"),
+                    pixel_dx_per_deg=pixel_dx / move_degrees,
+                    pixel_dy_per_deg=pixel_dy / move_degrees
+                )
+
+                print(f"\n标定结果:")
+                print(f"  像素变化: ({pixel_dx:.1f}, {pixel_dy:.1f}) pixels")
+                print(f"  灵敏度: X={sensitivity.pixel_dx_per_deg:.2f} px/deg, Y={sensitivity.pixel_dy_per_deg:.2f} px/deg")
+
+                return True, sensitivity
+
+            def calibrate_all_joints(self, move_degrees=2.0):
+                print("\n[仅相机模式] 多点标定")
+                print("需要手动输入关节移动角度")
+                primary_joints = self.arm_config.primary_joints
+
+                for i, jidx in enumerate(primary_joints):
+                    print(f"\n[{i+1}/{len(primary_joints)}] 标定关节 {jidx}")
+                    success, sens = self.calibrate_joint_sensitivity(jidx, move_degrees)
+                    if success:
+                        self.calibration_points.append(sens)
+
+                return len(self.calibration_points) > 0
+
+            def show_calibration_points(self):
+                print("\n标定点:")
+                for i, cp in enumerate(self.calibration_points):
+                    print(f"  [{i+1}] {cp.joint_name}: ({cp.pixel_dx_per_deg:.2f}, {cp.pixel_dy_per_deg:.2f}) px/deg")
+
+        return CameraOnlyController(self.cameras[arm_config.camera_name], arm_config)
     
     def disconnect(self):
         if self.robot:
@@ -190,7 +328,22 @@ class PrecisionPlaceSystem:
         print("\n" + "="*60)
         print("关节灵敏度标定")
         print("="*60)
-        print("""
+
+        if self.passive_mode:
+            print("""
+[示教模式说明]
+  1. 确保示教程序已启动: ./run.sh
+  2. 移动示教器对应关节，执行机器人会跟随
+  3. 系统会自动读取实际移动角度
+
+  关节对应 (右手):
+    关节 7 = right_arm_joint_1 (底座旋转)
+    关节 8 = right_arm_joint_2 (肩部俯仰)
+    关节 9 = right_arm_joint_3 (肩部侧摆)
+    关节 10 = right_arm_joint_4 (肘部俯仰)
+""")
+        else:
+            print("""
 说明:
   此标定会记录每个关节移动1度时，相机画面移动多少像素。
   建议在3个不同高度各做一次标定:
@@ -380,9 +533,9 @@ def main():
             print("8. 完整流程")
             print("9. 连续运行 (10次)")
             print("0. 退出")
-            
+
             choice = input("\n选项: ").strip()
-            
+
             if choice == "1":
                 # 选择手臂
                 print("\n选择手臂:")
@@ -390,7 +543,25 @@ def main():
                 print("  2. 左手")
                 arm_choice = input("选项: ").strip()
                 arm = "left" if arm_choice == "2" else "right"
-                system.connect(arm)
+
+                # 选择模式
+                print("\n连接模式:")
+                print("  1. 独立模式 (默认) - 直接控制机器人")
+                print("  2. 示教模式 - 与示教系统协同，只读取状态")
+                mode_choice = input("选项: ").strip()
+                passive = (mode_choice == "2")
+
+                if passive:
+                    print("\n" + "="*50)
+                    print("示教模式使用说明")
+                    print("="*50)
+                    print("1. 请在另一个终端启动示教程序:")
+                    print("   cd /home/smai/dc_dir && ./run.sh")
+                    print("2. 等待示教程序启动完成")
+                    print("3. 此程序将只读取机器人状态，不发送控制指令")
+                    print("4. 使用示教器移动关节进行标定")
+
+                system.connect(arm, passive=passive)
                 
             elif choice == "2":
                 if not system.controller:

@@ -419,10 +419,11 @@ class PrecisionPlaceController:
     - 方案B: DH参数 + 雅可比 (需提供DH参数)
     """
 
-    def __init__(self, robot, camera, arm: str = "right"):
+    def __init__(self, robot, camera, arm: str = "right", passive_mode: bool = False):
         self.robot = robot
         self.camera = camera
         self.arm = arm
+        self.passive_mode = passive_mode  # 被动模式：只读取，不发送动作
 
         # 加载手臂配置
         self.arm_config = ARM_CONFIGS.get(arm, ARM_CONFIGS['right'])
@@ -541,8 +542,14 @@ class PrecisionPlaceController:
         current_angle = joints[joint_idx]
 
         print(f"\n当前关节角度: {current_angle:.2f}°")
-        print(f"请将关节 {joint_name} 移动 {move_degrees}°")
-        print(f"  目标角度: {current_angle + move_degrees:.2f}°")
+
+        if self.passive_mode:
+            print(f"\n[示教模式] 请用示教器将关节 {joint_name} 移动约 {move_degrees}°")
+            print(f"  目标角度: 约 {current_angle + move_degrees:.2f}°")
+            print(f"  提示: 移动示教器对应关节，执行机器人会跟随移动")
+        else:
+            print(f"请将关节 {joint_name} 移动 {move_degrees}°")
+            print(f"  目标角度: {current_angle + move_degrees:.2f}°")
 
         # 采集初始图像
         print("\n[1/3] 采集初始图像...")
@@ -553,6 +560,14 @@ class PrecisionPlaceController:
 
         # 等待用户移动
         input(f"\n[2/3] 移动完成后按 Enter...")
+
+        # 获取移动后的关节状态，计算实际移动角度
+        obs_after = self.robot.get_observation()
+        joints_after = np.array(obs_after.get('observation.state', []))
+        actual_move = joints_after[joint_idx] - current_angle
+
+        if abs(actual_move) < 0.1:
+            print(f"⚠ 警告: 检测到移动角度很小 ({actual_move:.2f}°)，标定可能不准确")
 
         # 采集移动后图像
         print("[3/3] 采集移动后图像...")
@@ -568,12 +583,18 @@ class PrecisionPlaceController:
             print("✗ 特征点匹配失败")
             return False, JointSensitivity(joint_idx, joint_name)
 
+        # 使用实际移动角度计算灵敏度
+        if abs(actual_move) > 0.1:
+            move_degrees_actual = abs(actual_move)
+        else:
+            move_degrees_actual = move_degrees
+
         # 计算灵敏度
         sensitivity = JointSensitivity(
             joint_idx=joint_idx,
             joint_name=joint_name,
-            pixel_dx_per_deg=pixel_dx / move_degrees,
-            pixel_dy_per_deg=pixel_dy / move_degrees,
+            pixel_dx_per_deg=pixel_dx / move_degrees_actual,
+            pixel_dy_per_deg=pixel_dy / move_degrees_actual,
             mm_dx_per_deg=0.0,  # 需要pixel_to_mm_ratio
             mm_dy_per_deg=0.0,
             calibration_angles=joints.tolist()
@@ -585,6 +606,7 @@ class PrecisionPlaceController:
             sensitivity.mm_dy_per_deg = sensitivity.pixel_dy_per_deg * self.pixel_to_mm_ratio
 
         print(f"\n标定结果:")
+        print(f"  实际移动: {actual_move:.2f}°")
         print(f"  像素变化: ({pixel_dx:.1f}, {pixel_dy:.1f}) pixels")
         print(f"  灵敏度: X={sensitivity.pixel_dx_per_deg:.2f} px/deg, Y={sensitivity.pixel_dy_per_deg:.2f} px/deg")
 
@@ -618,6 +640,11 @@ class PrecisionPlaceController:
         print(f"\n{'#'*60}")
         print("# 多点标定 - 所有主要关节")
         print(f"{'#'*60}")
+
+        if self.passive_mode:
+            print("\n[示教模式]")
+            print("请确保示教程序已启动 (./run.sh)")
+            print("移动示教器对应关节，执行机器人会跟随移动")
 
         # 获取当前高度/姿态信息
         obs = self.robot.get_observation()
