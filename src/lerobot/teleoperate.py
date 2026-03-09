@@ -90,6 +90,19 @@ from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import init_logging, move_cursor_up
 from lerobot.utils.visualization_utils import _init_rerun, log_rerun_data
 
+# 机器人状态共享 (用于与标定程序协同)
+try:
+    import sys
+    from pathlib import Path
+    _lerobot_root = Path(__file__).parent.parent.parent
+    if str(_lerobot_root) not in sys.path:
+        sys.path.insert(0, str(_lerobot_root))
+    from precision_place.robot_status import RobotStatusWriter
+    _status_writer = None
+except ImportError:
+    _status_writer = None
+    RobotStatusWriter = None
+
 
 @dataclass
 class TeleoperateConfig:
@@ -101,19 +114,32 @@ class TeleoperateConfig:
     teleop_time_s: float | None = None
     # Display all cameras on screen
     display_data: bool = False
+    # Share robot status for calibration program (与标定程序协同)
+    share_status: bool = False
 
 
 def teleop_loop(
-    teleop: Teleoperator, robot: Robot, fps: int, display_data: bool = False, duration: float | None = None
+    teleop: Teleoperator, robot: Robot, fps: int, display_data: bool = False, duration: float | None = None,
+    share_status: bool = False, status_writer: 'RobotStatusWriter' = None
 ):
     display_len = max(len(key) for key in robot.action_features)
     start = time.perf_counter()
     while True:
         loop_start = time.perf_counter()
         action = teleop.get_action()
+
+        # 获取观测数据 (用于可视化和状态共享)
+        observation = None
         if display_data:
             observation = robot.get_observation()
             log_rerun_data(observation, action)
+        elif share_status and status_writer is not None:
+            # 仅在需要共享状态时获取观测
+            observation = robot.get_observation()
+
+        # 共享状态 (用于标定程序)
+        if share_status and status_writer is not None and observation is not None:
+            status_writer.write(observation)
 
         robot.send_action(action)
         dt_s = time.perf_counter() - loop_start
@@ -146,11 +172,28 @@ def teleoperate(cfg: TeleoperateConfig):
     teleop.connect()
     robot.connect()
 
+    # 初始化状态共享
+    status_writer = None
+    if cfg.share_status:
+        if RobotStatusWriter is not None:
+            status_writer = RobotStatusWriter()
+            print("✓ 机器人状态共享已启用 (标定程序可读取)")
+        else:
+            print("⚠ 无法启用状态共享: robot_status 模块未找到")
+
     try:
-        teleop_loop(teleop, robot, cfg.fps, display_data=cfg.display_data, duration=cfg.teleop_time_s)
+        teleop_loop(
+            teleop, robot, cfg.fps,
+            display_data=cfg.display_data,
+            duration=cfg.teleop_time_s,
+            share_status=cfg.share_status,
+            status_writer=status_writer
+        )
     except KeyboardInterrupt:
         pass
     finally:
+        if status_writer is not None:
+            status_writer.cleanup()
         if cfg.display_data:
             rr.rerun_shutdown()
         teleop.disconnect()

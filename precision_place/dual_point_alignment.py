@@ -11,6 +11,7 @@
 7. 多点标定插值 (方案A)
 8. 雅可比运动学框架 (方案B预留)
 9. 预设位置
+10. 共享状态读取 (与示教程序协同)
 
 标定方案:
 - 方案A: 多点手动标定 + 线性插值 (已实现)
@@ -25,6 +26,16 @@ from abc import ABC, abstractmethod
 import time
 import json
 from pathlib import Path
+
+# 导入共享状态模块
+try:
+    from precision_place.robot_status import (
+        RobotStatusReader, joints_dict_to_array, JOINT_NAME_TO_INDEX
+    )
+    _has_status_reader = True
+except ImportError:
+    _has_status_reader = False
+    RobotStatusReader = None
 
 
 # ==================== 数据结构 ====================
@@ -417,6 +428,11 @@ class PrecisionPlaceController:
     支持两种模式:
     - 方案A: 多点手动标定 + 插值 (默认)
     - 方案B: DH参数 + 雅可比 (需提供DH参数)
+
+    被动模式:
+    - 与示教程序协同工作
+    - 通过共享文件读取机器人状态
+    - 不发送控制指令
     """
 
     def __init__(self, robot, camera, arm: str = "right", passive_mode: bool = False):
@@ -434,6 +450,12 @@ class PrecisionPlaceController:
         # 运动学模型 (方案B)
         self.kinematics_model: Optional[KinematicsModel] = None
         self._init_kinematics_model()
+
+        # 共享状态读取器 (被动模式使用)
+        self.status_reader: Optional[RobotStatusReader] = None
+        if passive_mode and _has_status_reader:
+            self.status_reader = RobotStatusReader()
+            print("✓ 已启用共享状态读取 (从示教程序获取机器人状态)")
 
         # 方案A: 多点标定数据
         self.calibration_points: List[CalibrationPoint] = []
@@ -508,6 +530,49 @@ class PrecisionPlaceController:
     def set_marker_colors(self, workpiece_color: str, slot_color: str):
         self.detector.set_marker_colors(workpiece_color, slot_color)
 
+    # ==================== 关节状态读取 ====================
+
+    def get_joint_states(self, max_age_ms: float = 200) -> Optional[np.ndarray]:
+        """
+        获取关节状态
+
+        在被动模式下从共享文件读取，在主动模式下直接从机器人读取
+
+        Args:
+            max_age_ms: 最大数据年龄 (毫秒)，仅被动模式有效
+
+        Returns:
+            16维关节角度数组，如果失败返回 None
+        """
+        if self.passive_mode and self.status_reader is not None:
+            # 被动模式: 从共享文件读取
+            joints_dict = self.status_reader.read_joints(max_age_ms)
+            if joints_dict is None:
+                return None
+            return joints_dict_to_array(joints_dict)
+        else:
+            # 主动模式: 直接从机器人读取
+            if self.robot is None:
+                return None
+            try:
+                obs = self.robot.get_observation()
+                joints = np.array(obs.get('observation.state', []))
+                if len(joints) >= 14:  # 至少需要14个关节
+                    if len(joints) < 16:
+                        # 补齐到16维
+                        joints = np.pad(joints, (0, 16 - len(joints)))
+                    return joints
+                return None
+            except Exception as e:
+                print(f"读取关节状态失败: {e}")
+                return None
+
+    def check_shared_status(self) -> Dict[str, Any]:
+        """检查共享状态 (用于调试)"""
+        if self.status_reader is None:
+            return {"error": "状态读取器未初始化"}
+        return self.status_reader.get_status_info()
+
     # ==================== 方案A: 多点标定 ====================
 
     def calibrate_joint_sensitivity(self, joint_idx: int, move_degrees: float = 2.0) -> Tuple[bool, JointSensitivity]:
@@ -532,10 +597,11 @@ class PrecisionPlaceController:
         print(f"{'='*60}")
 
         # 获取当前关节状态
-        obs = self.robot.get_observation()
-        joints = np.array(obs.get('observation.state', []))
-        if len(joints) != 16:
+        joints = self.get_joint_states()
+        if joints is None:
             print("✗ 无法获取关节位置")
+            if self.passive_mode:
+                print("  请确认示教程序已启动并启用状态共享 (share_status=true)")
             return False, JointSensitivity(joint_idx, "")
 
         joint_name = self.joint_names.get(joint_idx, f"joint_{joint_idx}")
@@ -562,8 +628,11 @@ class PrecisionPlaceController:
         input(f"\n[2/3] 移动完成后按 Enter...")
 
         # 获取移动后的关节状态，计算实际移动角度
-        obs_after = self.robot.get_observation()
-        joints_after = np.array(obs_after.get('observation.state', []))
+        joints_after = self.get_joint_states()
+        if joints_after is None:
+            print("✗ 无法获取移动后的关节位置")
+            return False, JointSensitivity(joint_idx, joint_name)
+
         actual_move = joints_after[joint_idx] - current_angle
 
         if abs(actual_move) < 0.1:
@@ -647,8 +716,11 @@ class PrecisionPlaceController:
             print("移动示教器对应关节，执行机器人会跟随移动")
 
         # 获取当前高度/姿态信息
-        obs = self.robot.get_observation()
-        joints = np.array(obs.get('observation.state', []))
+        # 获取关节状态
+        joints = self.get_joint_states()
+        if joints is None:
+            print("✗ 无法获取关节状态")
+            return False
 
         # 确定高度等级
         height_level = self._estimate_height_level(joints)
@@ -910,10 +982,12 @@ class PrecisionPlaceController:
 
     def apply_joint_adjustments(self, adjustments: Dict[int, float]) -> bool:
         """应用关节调整"""
-        obs = self.robot.get_observation()
-        joints = np.array(obs.get('observation.state', []))
+        if self.passive_mode:
+            print("✗ 被动模式下无法应用关节调整")
+            return False
 
-        if len(joints) != 16:
+        joints = self.get_joint_states()
+        if joints is None or len(joints) < 16:
             return False
 
         target = joints.copy()
@@ -926,13 +1000,16 @@ class PrecisionPlaceController:
 
     def _smooth_move_all_joints(self, target_joints: np.ndarray, steps: int = None):
         """平滑移动所有关节"""
+        if self.passive_mode:
+            print("✗ 被动模式下无法移动关节")
+            return False
+
         if steps is None:
             steps = self.smooth_steps
 
-        obs = self.robot.get_observation()
-        current_joints = np.array(obs.get('observation.state', []))
+        current_joints = self.get_joint_states()
 
-        if len(current_joints) != 16:
+        if current_joints is None or len(current_joints) < 16:
             return False
 
         for step in range(1, steps + 1):
@@ -986,8 +1063,11 @@ class PrecisionPlaceController:
                 return True
 
             # 获取当前关节状态
-            obs = self.robot.get_observation()
-            current_joints = np.array(obs.get('observation.state', []))
+            current_joints = self.get_joint_states()
+
+            if current_joints is None:
+                print("✗ 无法获取关节状态")
+                continue
 
             # 计算关节调整量 (使用标定数据)
             adjustments = self.compute_joint_adjustments(
@@ -1094,11 +1174,12 @@ class PrecisionPlaceController:
 
     def save_preset(self, name: str):
         """保存当前位置为预设"""
-        obs = self.robot.get_observation()
-        joints = np.array(obs.get('observation.state', []))
+        joints = self.get_joint_states()
 
-        if len(joints) != 16:
+        if joints is None:
             print("✗ 无法获取关节位置")
+            if self.passive_mode:
+                print("  请确认示教程序已启动并启用状态共享")
             return False
 
         self.presets[name] = joints.copy()
@@ -1147,10 +1228,13 @@ class PrecisionPlaceController:
 
     def raise_height(self, step: float = 2.0):
         """上升 (粗调)"""
-        obs = self.robot.get_observation()
-        joints = np.array(obs.get('observation.state', []))
+        if self.passive_mode:
+            print("✗ 被动模式下无法调整高度")
+            return False
 
-        if len(joints) != 16:
+        joints = self.get_joint_states()
+
+        if joints is None or len(joints) < 16:
             return False
 
         joints[self.height_joint_idx] -= step
@@ -1160,10 +1244,13 @@ class PrecisionPlaceController:
 
     def lower_height(self, step: float = 2.0):
         """下降 (粗调)"""
-        obs = self.robot.get_observation()
-        joints = np.array(obs.get('observation.state', []))
+        if self.passive_mode:
+            print("✗ 被动模式下无法调整高度")
+            return False
 
-        if len(joints) != 16:
+        joints = self.get_joint_states()
+
+        if joints is None or len(joints) < 16:
             return False
 
         joints[self.height_joint_idx] += step
@@ -1204,10 +1291,13 @@ class PrecisionPlaceController:
 
     def open_gripper(self):
         """打开夹爪"""
-        obs = self.robot.get_observation()
-        joints = np.array(obs.get('observation.state', []))
+        if self.passive_mode:
+            print("✗ 被动模式下无法控制夹爪")
+            return False
 
-        if len(joints) != 16:
+        joints = self.get_joint_states()
+
+        if joints is None or len(joints) < 16:
             return False
 
         joints[self.arm_config.gripper_idx] = self.arm_config.gripper_open
@@ -1218,13 +1308,16 @@ class PrecisionPlaceController:
 
     def close_gripper(self, position: float = None):
         """闭合夹爪"""
+        if self.passive_mode:
+            print("✗ 被动模式下无法控制夹爪")
+            return False
+
         if position is None:
             position = self.arm_config.gripper_close
 
-        obs = self.robot.get_observation()
-        joints = np.array(obs.get('observation.state', []))
+        joints = self.get_joint_states()
 
-        if len(joints) != 16:
+        if joints is None or len(joints) < 16:
             return False
 
         joints[self.arm_config.gripper_idx] = position

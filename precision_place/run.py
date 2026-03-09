@@ -133,9 +133,18 @@ class PrecisionPlaceSystem:
         """创建仅相机的控制器（用于测试或与示教系统配合）"""
         arm_config = ARM_CONFIGS.get(arm)
 
+        # 导入共享状态模块
+        try:
+            from precision_place.robot_status import RobotStatusReader, joints_dict_to_array
+            status_reader = RobotStatusReader()
+            print("  ✓ 已加载共享状态读取器")
+        except ImportError:
+            status_reader = None
+            print("  ⚠ 无法加载共享状态模块")
+
         class CameraOnlyController:
-            """仅相机控制器，用于被动模式"""
-            def __init__(self, camera, arm_config):
+            """仅相机控制器，用于被动模式，从共享文件读取关节状态"""
+            def __init__(self, camera, arm_config, status_reader):
                 self.camera = camera
                 self.arm_config = arm_config
                 self.arm = arm
@@ -144,14 +153,26 @@ class PrecisionPlaceSystem:
                 self.calibration_points = []
                 self.pixel_to_mm_ratio = 0.5
                 self.joint_names = {}
+                self.status_reader = status_reader
                 # 构建关节名称
                 for i in range(7):
                     self.joint_names[i] = f"left_arm_joint_{i+1}"
                 for i in range(7, 14):
                     self.joint_names[i] = f"right_arm_joint_{i-6}"
+                self.joint_names[14] = "trunk_joint_1"
+                self.joint_names[15] = "trunk_joint_2"
 
             def set_marker_colors(self, wp_color, slot_color):
                 self.detector.set_marker_colors(wp_color, slot_color)
+
+            def get_joint_states(self, max_age_ms=200):
+                """从共享文件读取关节状态"""
+                if self.status_reader is None:
+                    return None
+                joints_dict = self.status_reader.read_joints(max_age_ms)
+                if joints_dict is None:
+                    return None
+                return joints_dict_to_array(joints_dict)
 
             def test_detection(self):
                 print("\n检测测试 (仅相机模式)")
@@ -169,12 +190,23 @@ class PrecisionPlaceSystem:
 
             def calibrate_joint_sensitivity(self, joint_idx, move_degrees=2.0):
                 print(f"\n{'='*60}")
-                print(f"关节灵敏度标定 (仅相机模式)")
+                print(f"关节灵敏度标定 (共享状态模式)")
                 print(f"关节: {self.joint_names.get(joint_idx, f'joint_{joint_idx}')}")
                 print(f"{'='*60}")
-                print("\n[仅相机模式] 无法读取关节角度")
-                print("请用示教器移动关节，程序将记录图像变化")
-                input("按 Enter 开始...")
+
+                # 从共享文件读取初始关节状态
+                joints = self.get_joint_states()
+                if joints is None:
+                    print("✗ 无法获取关节位置")
+                    print("  请确认示教程序已启动并启用 share_status=true")
+                    return False, None
+
+                current_angle = joints[joint_idx]
+                print(f"\n当前关节角度: {current_angle:.2f}°")
+                print(f"\n[示教模式] 请用示教器移动关节约 {move_degrees}°")
+                print(f"  目标角度: 约 {current_angle + move_degrees:.2f}°")
+
+                input("按 Enter 开始采集初始图像...")
 
                 img1 = self.camera.read()
                 if img1 is None:
@@ -182,6 +214,19 @@ class PrecisionPlaceSystem:
                     return False, None
 
                 input(f"\n移动完成后按 Enter...")
+
+                # 读取移动后的关节状态
+                joints_after = self.get_joint_states()
+                if joints_after is None:
+                    print("✗ 无法获取移动后的关节位置")
+                    return False, None
+
+                actual_move = joints_after[joint_idx] - current_angle
+                print(f"  实际移动: {actual_move:.2f}°")
+
+                if abs(actual_move) < 0.1:
+                    print(f"⚠ 警告: 移动角度很小，标定可能不准确")
+
                 img2 = self.camera.read()
                 if img2 is None:
                     print("✗ 图像采集失败")
@@ -204,14 +249,17 @@ class PrecisionPlaceSystem:
                 pixel_dx = float(np.mean(good, axis=0)[0])
                 pixel_dy = float(np.mean(good, axis=0)[1])
 
+                # 使用实际移动角度
+                actual_deg = abs(actual_move) if abs(actual_move) > 0.1 else move_degrees
                 sensitivity = JointSensitivity(
                     joint_idx=joint_idx,
                     joint_name=self.joint_names.get(joint_idx, f"joint_{joint_idx}"),
-                    pixel_dx_per_deg=pixel_dx / move_degrees,
-                    pixel_dy_per_deg=pixel_dy / move_degrees
+                    pixel_dx_per_deg=pixel_dx / actual_deg,
+                    pixel_dy_per_deg=pixel_dy / actual_deg
                 )
 
                 print(f"\n标定结果:")
+                print(f"  实际移动: {actual_move:.2f}°")
                 print(f"  像素变化: ({pixel_dx:.1f}, {pixel_dy:.1f}) pixels")
                 print(f"  灵敏度: X={sensitivity.pixel_dx_per_deg:.2f} px/deg, Y={sensitivity.pixel_dy_per_deg:.2f} px/deg")
 
