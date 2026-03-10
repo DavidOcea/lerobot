@@ -262,9 +262,9 @@ class DualPointDetector:
             'upper': np.array([85, 255, 255])
         },
         'red': {
-            'lower': np.array([0, 80, 80]),
+            'lower': np.array([0, 50, 50]),
             'upper': np.array([10, 255, 255]),
-            'lower2': np.array([160, 80, 80]),
+            'lower2': np.array([160, 50, 50]),
             'upper2': np.array([180, 255, 255])
         },
         'blue': {

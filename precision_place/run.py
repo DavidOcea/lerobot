@@ -89,7 +89,10 @@ class PrecisionPlaceSystem:
         else:
             print("\n连接机器人...")
             try:
-                self.robot = SupreRobotFollower(SupreRobotFollowerConfig())
+                config = SupreRobotFollowerConfig(
+                    joint_config_file="trunk_config_supre_robot_joint.yaml"
+                )
+                self.robot = SupreRobotFollower(config)
                 self.robot.connect()
                 print("✓ 机器人已连接")
             except Exception as e:
