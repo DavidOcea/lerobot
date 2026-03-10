@@ -20,7 +20,7 @@
 
 import cv2
 import numpy as np
-from typing import Tuple, Optional, List, Dict, Callable
+from typing import Tuple, Optional, List, Dict, Callable, Any
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 import time
