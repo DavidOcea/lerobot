@@ -79,13 +79,13 @@ class ArmConfig:
     dh_params: Optional[List[Dict]] = None
 
 
-# 手臂配置 - 更新为多关节控制
+# 手臂配置 - 7关节标定 (joint_1~6 + trunk_1)
 ARM_CONFIGS = {
     'right': ArmConfig(
         name='right',
         camera_name='right_wrist2',
         camera_index=8,
-        primary_joints=[7, 8, 9, 10],  # right_arm_joint_1~4
+        primary_joints=[7, 8, 9, 10, 11, 12, 14],  # right_arm_joint_1~6 + trunk_joint_1
         gripper_idx=13,
         gripper_open=0.0,
         gripper_close=50.0,
@@ -95,7 +95,7 @@ ARM_CONFIGS = {
         name='left',
         camera_name='left_wrist2',
         camera_index=4,
-        primary_joints=[0, 1, 2, 3],  # left_arm_joint_1~4
+        primary_joints=[0, 1, 2, 3, 4, 5, 14],  # left_arm_joint_1~6 + trunk_joint_1
         gripper_idx=6,
         gripper_open=0.0,
         gripper_close=50.0,
