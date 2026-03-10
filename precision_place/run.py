@@ -283,6 +283,34 @@ class PrecisionPlaceSystem:
                 for i, cp in enumerate(self.calibration_points):
                     print(f"  [{i+1}] {cp.joint_name}: ({cp.pixel_dx_per_deg:.2f}, {cp.pixel_dy_per_deg:.2f}) px/deg")
 
+            def list_presets(self):
+                """列出预设位置 (被动模式不支持)"""
+                print("  [被动模式] 预设位置功能不可用")
+                print("  请使用独立模式保存预设， then use此程序加载")
+
+            def save_preset(self, name):
+                """保存预设位置 (被动模式不支持)"""
+                print(f"  [被动模式] 无法保存预设位置: {name}")
+                print("  请使用独立模式保存预设")
+
+            def load_preset(self, name):
+                """加载预设位置 (被动模式不支持)"""
+                print(f"  [被动模式] 无法加载预设位置: {name}")
+                print("  请使用独立模式加载预设")
+
+            def show_calibration_history(self):
+                """显示标定历史 (被动模式)"""
+                print("\n[被动模式] 标定历史")
+                if not self.calibration_points:
+                    print("  无标定数据")
+                else:
+                    for i, cp in enumerate(self.calibration_points):
+                        print(f"  [{i+1}] {cp.joint_name}: ({cp.pixel_dx_per_deg:.2f}, {cp.pixel_dy_per_deg:.2f}) px/deg")
+
+            def set_marker_colors(self, wp_color, slot_color):
+                """设置标记颜色"""
+                self.detector.set_marker_colors(wp_color, slot_color)
+
         return CameraOnlyController(self.cameras[arm_config.camera_name], arm_config, status_reader)
     
     def disconnect(self):
