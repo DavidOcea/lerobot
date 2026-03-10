@@ -148,7 +148,7 @@ class PrecisionPlaceSystem:
             def __init__(self, camera, arm_config, status_reader):
                 self.camera = camera
                 self.arm_config = arm_config
-                self.arm = arm
+                self.arm = arm_config.name  # 从 arm_config 获取
                 self.passive_mode = True
                 self.detector = DualPointDetector()
                 self.calibration_points = []
@@ -586,19 +586,23 @@ class PrecisionPlaceSystem:
         print("关节灵敏度标定")
         print("="*60)
 
+        # 获取当前配置的关节列表
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        primary_joints = arm_config.primary_joints if arm_config else []
+
         if self.passive_mode:
             print("""
 [示教模式说明]
   1. 确保示教程序已启动: ./run.sh
   2. 移动示教器对应关节，执行机器人会跟随
   3. 系统会自动读取实际移动角度
-
-  关节对应 (右手):
-    关节 7 = right_arm_joint_1 (底座旋转)
-    关节 8 = right_arm_joint_2 (肩部俯仰)
-    关节 9 = right_arm_joint_3 (肩部侧摆)
-    关节 10 = right_arm_joint_4 (肘部俯仰)
+  4. 视频窗口按 Enter 采集图像，按 q 取消
 """)
+            # 动态显示关节列表
+            print(f"  将标定 {len(primary_joints)} 个关节 ({self.current_arm}手):")
+            for i, jidx in enumerate(primary_joints):
+                joint_name = self.controller.joint_names.get(jidx, f"joint_{jidx}")
+                print(f"    {i+1}. 关节 {jidx} = {joint_name}")
         else:
             print("""
 说明:
@@ -615,6 +619,11 @@ class PrecisionPlaceSystem:
   3. 拍摄移动后画面
   4. 计算灵敏度
 """)
+            # 动态显示关节列表
+            print(f"  将标定 {len(primary_joints)} 个关节 ({self.current_arm}手):")
+            for i, jidx in enumerate(primary_joints):
+                joint_name = self.controller.joint_names.get(jidx, f"joint_{jidx}")
+                print(f"    {i+1}. 关节 {jidx} = {joint_name}")
 
         input("\n按 Enter 开始...")
 
