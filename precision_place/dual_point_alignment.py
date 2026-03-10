@@ -1276,16 +1276,22 @@ class PrecisionPlaceController:
         return True
 
     def load_preset(self, name: str) -> bool:
-        """加载预设位置"""
+        """加载预设位置 (平滑移动)"""
         if name not in self.presets:
             print(f"✗ 预设不存在: {name}")
             return False
 
-        joints = self.presets[name]
-        self.robot.send_action({'action': joints.tolist()})
+        target_joints = self.presets[name]
+        print(f"\n移动到预设位置: {name} ...")
 
-        print(f"✓ 已移动到预设位置: {name}")
-        return True
+        # 使用平滑移动
+        success = self._smooth_move_all_joints(target_joints)
+
+        if success:
+            print(f"✓ 已移动到预设位置: {name}")
+        else:
+            print(f"✗ 移动失败")
+        return success
 
     def _load_presets(self):
         """加载预设"""
@@ -1415,23 +1421,42 @@ class PrecisionPlaceController:
 
     # ==================== 自动放置 ====================
 
+    def _smooth_move_height(self, delta: float, steps: int = 5) -> bool:
+        """平滑调整高度
+
+        Args:
+            delta: 高度变化量 (正值下降，负值上升)
+            steps: 插值步数
+        """
+        joints = self.get_joint_states()
+        if joints is None or len(joints) < 16:
+            return False
+
+        target = joints.copy()
+        target[self.height_joint_idx] += delta
+
+        return self._smooth_move_all_joints(target, steps)
+
     def auto_place(self, lower_steps: int = 5, lower_step_size: float = 2.0):
-        """自动放置流程"""
+        """自动放置流程 (平滑移动)"""
         print("\n自动放置...")
 
-        print("\n[1/3] 下降到放置高度")
-        for i in range(lower_steps):
-            print(f"  下降 {i+1}/{lower_steps}")
-            self.lower_height(lower_step_size)
-            time.sleep(0.2)
+        print("\n[1/3] 平滑下降到放置高度")
+        total_delta = lower_step_size * lower_steps
+        if self._smooth_move_height(total_delta, steps=lower_steps):
+            print("  ✓ 下降完成")
+        else:
+            print("  ✗ 下降失败")
+            return False
 
         print("\n[2/3] 松开夹爪")
         self.open_gripper()
 
-        print("\n[3/3] 抬起")
-        for i in range(3):
-            self.raise_height(lower_step_size * 2)
-            time.sleep(0.2)
+        print("\n[3/3] 平滑抬起")
+        if self._smooth_move_height(-lower_step_size * 2, steps=3):
+            print("  ✓ 抬起完成")
+        else:
+            print("  ✗ 抬起失败")
 
         print("\n✓ 自动放置完成")
 
