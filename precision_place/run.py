@@ -395,6 +395,99 @@ class PrecisionPlaceSystem:
                     for i, cp in enumerate(self.calibration_points):
                         print(f"  [{i+1}] {cp.joint_name}: ({cp.pixel_dx_per_deg:.2f}, {cp.pixel_dy_per_deg:.2f}) px/deg")
 
+            def calibrate(self, move_distance_mm: float = 5.0):
+                """像素-毫米标定 (被动模式，带视频显示)"""
+                print("\n" + "="*50)
+                print("像素-毫米标定 (被动模式)")
+                print("="*50)
+
+                print(f"\n[说明] 请用示教器将机器人沿X方向精确移动 {move_distance_mm}mm")
+                print(f"  标定结果将用于像素到毫米的转换")
+
+                window_name = "Pixel-MM Calibration"
+                img1 = None
+                img2 = None
+                phase = 1
+
+                print(f"\n[视频窗口] 按 'Enter' 采集图像，按 'q' 取消")
+
+                while True:
+                    frame = self.camera.read()
+                    if frame is None:
+                        continue
+
+                    # 检测标记点并可视化
+                    state = self.detector.detect_dual_marker_state(frame)
+                    vis = self.detector.visualize(frame, state)
+
+                    if phase == 1:
+                        cv2.putText(vis, "Phase 1: Press ENTER to capture initial image", (10, vis.shape[0] - 40),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                        cv2.putText(vis, "Press 'q' to cancel", (10, vis.shape[0] - 15),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+                    else:
+                        cv2.putText(vis, f"Phase 2: Move robot {move_distance_mm}mm in X direction", (10, vis.shape[0] - 60),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+                        cv2.putText(vis, "Press ENTER to capture final image", (10, vis.shape[0] - 35),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                        cv2.putText(vis, "Press 'q' to cancel", (10, vis.shape[0] - 15),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+
+                    cv2.imshow(window_name, vis)
+
+                    key = cv2.waitKey(1) & 0xFF
+
+                    if key == ord('q'):
+                        cv2.destroyWindow(window_name)
+                        print("✗ 标定已取消")
+                        return False, 0.0
+
+                    elif key == 13 or key == 10:  # Enter key
+                        if phase == 1:
+                            img1 = frame.copy()
+                            print("  ✓ 已采集初始图像")
+                            phase = 2
+                            print(f"\n  请用示教器将机器人沿X方向移动 {move_distance_mm}mm")
+                        else:
+                            img2 = frame.copy()
+                            print("  ✓ 已采集移动后图像")
+                            break
+
+                cv2.destroyWindow(window_name)
+
+                # 计算像素变化
+                g1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
+                g2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+                pts = cv2.goodFeaturesToTrack(g1, 100, 0.01, 10)
+                if pts is None or len(pts) < 10:
+                    print("✗ 特征点匹配失败")
+                    return False, 0.0
+
+                p1, st, _ = cv2.calcOpticalFlowPyrLK(g1, g2, pts, None)
+                if p1 is None:
+                    print("✗ 光流计算失败")
+                    return False, 0.0
+
+                good = p1[st == 1] - pts[st == 1]
+                pixel_dx = float(np.mean(good, axis=0)[0])
+
+                # 计算像素-毫米比例
+                if abs(pixel_dx) > 0.1:
+                    pixel_to_mm = move_distance_mm / abs(pixel_dx)
+                else:
+                    print("✗ 像素变化太小，标定失败")
+                    return False, 0.0
+
+                self.pixel_to_mm_ratio = pixel_to_mm
+
+                print(f"\n标定结果:")
+                print(f"  移动距离: {move_distance_mm} mm")
+                print(f"  像素变化: {pixel_dx:.1f} pixels")
+                print(f"  像素/毫米: {pixel_to_mm:.4f} mm/pixel")
+                print(f"✓ 标定完成")
+
+                return True, pixel_to_mm
+
             def set_marker_colors(self, wp_color, slot_color):
                 """设置标记颜色"""
                 self.detector.set_marker_colors(wp_color, slot_color)
