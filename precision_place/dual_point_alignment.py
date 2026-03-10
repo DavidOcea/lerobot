@@ -435,11 +435,13 @@ class PrecisionPlaceController:
     - 不发送控制指令
     """
 
-    def __init__(self, robot, camera, arm: str = "right", passive_mode: bool = False):
+    def __init__(self, robot, camera, arm: str = "right", passive_mode: bool = False,
+                 use_interpolation: bool = True):
         self.robot = robot
         self.camera = camera
         self.arm = arm
         self.passive_mode = passive_mode  # 被动模式：只读取，不发送动作
+        self.use_interpolation = use_interpolation  # 使用加权插值 (False=最近邻)
 
         # 加载手臂配置
         self.arm_config = ARM_CONFIGS.get(arm, ARM_CONFIGS['right'])
@@ -788,33 +790,118 @@ class PrecisionPlaceController:
 
     def get_interpolated_sensitivities(self, current_joints: np.ndarray) -> List[JointSensitivity]:
         """
-        根据当前关节状态，插值获取灵敏度
+        根据当前关节状态获取灵敏度
 
-        方案A的核心方法
+        根据 use_interpolation 配置选择插值方式:
+        - True: 加权插值 (平滑过渡)
+        - False: 最近邻 (稳定简单)
         """
         if not self.calibration_points:
             return []
 
-        if len(self.calibration_points) == 1:
-            return self.calibration_points[0].sensitivities
+        # 只使用当前手臂的标定点
+        arm_points = [cp for cp in self.calibration_points if cp.arm == self.arm]
+        if not arm_points:
+            arm_points = self.calibration_points
 
-        # 计算与各标定点的距离权重
-        current_level = self._estimate_height_level(current_joints)
-        level_order = {"high": 3, "medium": 2, "low": 1}
+        if len(arm_points) == 1:
+            return arm_points[0].sensitivities
 
-        # 简单实现: 找最近的标定点
+        if self.use_interpolation:
+            return self._weighted_interpolation(current_joints, arm_points)
+        else:
+            return self._nearest_neighbor(current_joints, arm_points)
+
+    def _nearest_neighbor(self, current_joints: np.ndarray,
+                          arm_points: List[CalibrationPoint]) -> List[JointSensitivity]:
+        """最近邻方法: 选择距离最近的标定点"""
+        primary_joints = self.arm_config.primary_joints
         min_dist = float('inf')
-        best_point = self.calibration_points[0]
+        best_point = arm_points[0]
 
-        for cp in self.calibration_points:
-            if cp.arm != self.arm:
-                continue
-            dist = np.linalg.norm(np.array(cp.joint_states) - current_joints)
+        for cp in arm_points:
+            cp_joints = np.array(cp.joint_states)
+            dist = np.linalg.norm(
+                np.array([cp_joints[i] for i in primary_joints]) -
+                np.array([current_joints[i] for i in primary_joints])
+            )
             if dist < min_dist:
                 min_dist = dist
                 best_point = cp
 
+        print(f"  最近邻: {best_point.height_level} (距离={min_dist:.2f})")
         return best_point.sensitivities
+
+    def _weighted_interpolation(self, current_joints: np.ndarray,
+                                 arm_points: List[CalibrationPoint]) -> List[JointSensitivity]:
+        """加权插值方法: 对所有标定点进行距离加权平均"""
+        primary_joints = self.arm_config.primary_joints
+
+        # 计算到各标定点的距离
+        distances = []
+        for cp in arm_points:
+            cp_joints = np.array(cp.joint_states)
+            dist = np.linalg.norm(
+                np.array([cp_joints[i] for i in primary_joints]) -
+                np.array([current_joints[i] for i in primary_joints])
+            )
+            distances.append(dist)
+
+        # 计算权重 (反距离加权)
+        epsilon = 0.001
+        weights = [1.0 / (d + epsilon) for d in distances]
+        total_weight = sum(weights)
+        weights = [w / total_weight for w in weights]
+
+        # 打印调试信息
+        print(f"  插值权重: ", end="")
+        for cp, w in zip(arm_points, weights):
+            print(f"{cp.height_level}={w*100:.1f}% ", end="")
+        print()
+
+        # 对每个关节的灵敏度进行加权平均
+        joint_indices = set()
+        for cp in arm_points:
+            for s in cp.sensitivities:
+                joint_indices.add(s.joint_idx)
+        joint_indices = sorted(joint_indices)
+
+        interpolated = []
+        for jidx in joint_indices:
+            dx_values = []
+            dy_values = []
+            dx_weights = []
+            dy_weights = []
+
+            for cp, w in zip(arm_points, weights):
+                for s in cp.sensitivities:
+                    if s.joint_idx == jidx:
+                        dx_values.append(s.pixel_dx_per_deg)
+                        dy_values.append(s.pixel_dy_per_deg)
+                        dx_weights.append(w)
+                        dy_weights.append(w)
+                        break
+
+            if dx_values:
+                interp_dx = sum(v * w for v, w in zip(dx_values, dx_weights))
+                interp_dy = sum(v * w for v, w in zip(dy_values, dy_weights))
+
+                interp_mm_dx = interp_dx * self.pixel_to_mm_ratio if self.pixel_to_mm_ratio > 0 else 0
+                interp_mm_dy = interp_dy * self.pixel_to_mm_ratio if self.pixel_to_mm_ratio > 0 else 0
+
+                joint_name = self.joint_names.get(jidx, f"joint_{jidx}")
+                sensitivity = JointSensitivity(
+                    joint_idx=jidx,
+                    joint_name=joint_name,
+                    pixel_dx_per_deg=interp_dx,
+                    pixel_dy_per_deg=interp_dy,
+                    mm_dx_per_deg=interp_mm_dx,
+                    mm_dy_per_deg=interp_mm_dy,
+                    calibration_angles=current_joints.tolist()
+                )
+                interpolated.append(sensitivity)
+
+        return interpolated
 
     def _load_calibration_points(self):
         """加载多点标定数据"""
