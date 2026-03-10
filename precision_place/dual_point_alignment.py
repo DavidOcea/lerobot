@@ -557,8 +557,11 @@ class PrecisionPlaceController:
             if self.robot is None:
                 return None
             try:
-                obs = self.robot.get_observation()
-                joints = np.array(obs.get('observation.state', []))
+                # 使用 get_current_position() 获取关节位置
+                pos_dict = self.robot.get_current_position()
+                # 按照配置的 joint_order 转换为数组
+                joint_order = self.robot.observation_joint_names
+                joints = np.array([pos_dict.get(name, 0.0) for name in joint_order])
                 if len(joints) >= 14:  # 至少需要14个关节
                     if len(joints) < 16:
                         # 补齐到16维
