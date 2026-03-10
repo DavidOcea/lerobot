@@ -232,29 +232,40 @@ class PrecisionPlaceSystem:
                     current_joints = self.get_joint_states()
                     current_angle = current_joints[joint_idx] if current_joints is not None else 0.0
 
-                    # 叠加信息
-                    info_y = 30
-                    cv2.putText(vis, f"Joint: {joint_name}", (10, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-                    info_y += 25
-                    cv2.putText(vis, f"Current: {current_angle:.2f} deg", (10, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    info_y += 25
-                    cv2.putText(vis, f"Target: {target_angle:.2f} deg", (10, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                    # 叠加信息 - 使用背景框提高可读性
+                    # 顶部信息框
+                    cv2.rectangle(vis, (5, 5), (280, 110), (0, 0, 0), -1)
+                    cv2.rectangle(vis, (5, 5), (280, 110), (255, 255, 255), 1)
 
-                    # 显示阶段提示
+                    info_y = 25
+                    cv2.putText(vis, f"Joint: {joint_name}", (15, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2)
+                    info_y += 28
+                    cv2.putText(vis, f"Current: {current_angle:.2f} deg", (15, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+                    info_y += 28
+                    cv2.putText(vis, f"Target: +/-{move_degrees:.1f} deg", (15, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 0), 2)
+                    info_y += 28
+
+                    # 显示阶段提示 - 底部信息框
+                    bottom_h = 70 if phase == 2 else 50
+                    cv2.rectangle(vis, (5, vis.shape[0] - bottom_h - 5), (vis.shape[1] - 5, vis.shape[0] - 5), (0, 0, 0), -1)
+                    cv2.rectangle(vis, (5, vis.shape[0] - bottom_h - 5), (vis.shape[1] - 5, vis.shape[0] - 5), (255, 255, 255), 1)
+
                     if phase == 1:
-                        cv2.putText(vis, "Phase 1: Press ENTER to capture initial image", (10, vis.shape[0] - 40),
+                        cv2.putText(vis, "[Phase 1] Press ENTER to capture initial image", (15, vis.shape[0] - 30),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-                        cv2.putText(vis, "Press 'q' to cancel", (10, vis.shape[0] - 15),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+                        cv2.putText(vis, "Press 'q' to cancel", (15, vis.shape[0] - 12),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
                     else:
                         # 显示移动量
                         moved = current_angle - initial_angle
                         move_color = (0, 255, 0) if abs(moved) >= move_degrees * 0.8 else (0, 165, 255)
-                        cv2.putText(vis, f"Moved: {moved:.2f} deg", (10, info_y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, move_color, 2)
-                        cv2.putText(vis, "Phase 2: Press ENTER to capture final image", (10, vis.shape[0] - 40),
+                        status = "OK" if abs(moved) >= move_degrees * 0.8 else "Move more"
+                        cv2.putText(vis, f"Moved: {moved:.2f} deg [{status}]", (15, vis.shape[0] - 50),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.55, move_color, 2)
+                        cv2.putText(vis, "[Phase 2] Press ENTER to capture final image", (15, vis.shape[0] - 28),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-                        cv2.putText(vis, "Press 'q' to cancel", (10, vis.shape[0] - 15),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+                        cv2.putText(vis, "Press 'q' to cancel", (15, vis.shape[0] - 10),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
 
                     cv2.imshow(window_name, vis)
 
