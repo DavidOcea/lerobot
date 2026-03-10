@@ -283,7 +283,7 @@ class PrecisionPlaceSystem:
                 for i, cp in enumerate(self.calibration_points):
                     print(f"  [{i+1}] {cp.joint_name}: ({cp.pixel_dx_per_deg:.2f}, {cp.pixel_dy_per_deg:.2f}) px/deg")
 
-        return CameraOnlyController(self.cameras[arm_config.camera_name], arm_config)
+        return CameraOnlyController(self.cameras[arm_config.camera_name], arm_config, status_reader)
     
     def disconnect(self):
         if self.robot:
