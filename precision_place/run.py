@@ -17,6 +17,7 @@
 
 import sys
 import time
+import json
 import cv2
 import numpy as np
 from pathlib import Path
@@ -161,6 +162,9 @@ class PrecisionPlaceSystem:
                     self.joint_names[i] = f"right_arm_joint_{i-6}"
                 self.joint_names[14] = "trunk_joint_1"
                 self.joint_names[15] = "trunk_joint_2"
+                # 预设位置
+                self.presets: Dict[str, np.ndarray] = {}
+                self._load_presets()
 
             def set_marker_colors(self, wp_color, slot_color):
                 self.detector.set_marker_colors(wp_color, slot_color)
@@ -283,20 +287,54 @@ class PrecisionPlaceSystem:
                 for i, cp in enumerate(self.calibration_points):
                     print(f"  [{i+1}] {cp.joint_name}: ({cp.pixel_dx_per_deg:.2f}, {cp.pixel_dy_per_deg:.2f}) px/deg")
 
+            def _load_presets(self):
+                """加载预设"""
+                path = Path(__file__).parent / "presets.json"
+                if path.exists():
+                    try:
+                        with open(path, 'r') as f:
+                            data = json.load(f)
+                            self.presets = {k: np.array(v) for k, v in data.items()}
+                    except Exception as e:
+                        print(f"  ⚠ 加载预设失败: {e}")
+                        self.presets = {}
+
+            def _save_presets(self):
+                """保存预设"""
+                path = Path(__file__).parent / "presets.json"
+                try:
+                    with open(path, 'w') as f:
+                        json.dump({k: v.tolist() for k, v in self.presets.items()}, f, indent=2)
+                except Exception as e:
+                    print(f"  ⚠ 保存预设失败: {e}")
+
             def list_presets(self):
-                """列出预设位置 (被动模式不支持)"""
-                print("  [被动模式] 预设位置功能不可用")
-                print("  请使用独立模式保存预设， then use此程序加载")
+                """列出预设位置"""
+                if not self.presets:
+                    print("\n  暂无预设位置")
+                    print("  提示: 选择 '保存当前位置' 添加预设")
+                    return
+
+                print("\n预设位置列表:")
+                for name in self.presets:
+                    print(f"  - {name}")
 
             def save_preset(self, name):
-                """保存预设位置 (被动模式不支持)"""
-                print(f"  [被动模式] 无法保存预设位置: {name}")
-                print("  请使用独立模式保存预设")
+                """保存预设位置 (从共享状态读取当前位置)"""
+                joints = self.get_joint_states()
+                if joints is None:
+                    print(f"  ✗ 无法获取当前位置")
+                    print("  请确认示教程序已启动并启用状态共享")
+                    return
+
+                self.presets[name] = joints.copy()
+                self._save_presets()
+                print(f"  ✓ 预设位置已保存: {name}")
 
             def load_preset(self, name):
-                """加载预设位置 (被动模式不支持)"""
-                print(f"  [被动模式] 无法加载预设位置: {name}")
-                print("  请使用独立模式加载预设")
+                """加载预设位置 (被动模式不支持移动)"""
+                print(f"  [被动模式] 无法移动到预设位置: {name}")
+                print("  请使用示教器手动移动，或使用独立模式")
 
             def show_calibration_history(self):
                 """显示标定历史 (被动模式)"""
