@@ -579,12 +579,12 @@ class PrecisionPlaceController:
 
     def calibrate_joint_sensitivity(self, joint_idx: int, move_degrees: float = 2.0) -> Tuple[bool, JointSensitivity]:
         """
-        标定单个关节的灵敏度
+        标定单个关节的灵敏度 (带实时视频显示)
 
         流程:
-        1. 采集当前图像
-        2. 手动移动指定关节 move_degrees 度
-        3. 采集移动后图像
+        1. 显示实时视频，用户按 Enter 采集初始图像
+        2. 继续显示视频，用户移动关节
+        3. 用户按 Enter 采集移动后图像
         4. 计算像素变化 -> 灵敏度
 
         Args:
@@ -607,45 +607,85 @@ class PrecisionPlaceController:
             return False, JointSensitivity(joint_idx, "")
 
         joint_name = self.joint_names.get(joint_idx, f"joint_{joint_idx}")
-        current_angle = joints[joint_idx]
+        initial_angle = joints[joint_idx]
+        target_angle = initial_angle + move_degrees
 
-        print(f"\n当前关节角度: {current_angle:.2f}°")
+        print(f"\n初始角度: {initial_angle:.2f}°")
+        print(f"目标角度: {target_angle:.2f}° (移动约 {move_degrees}°)")
+        print(f"\n[视频窗口] 按 'Enter' 采集图像，按 'q' 取消")
 
-        if self.passive_mode:
-            print(f"\n[示教模式] 请用示教器将关节 {joint_name} 移动约 {move_degrees}°")
-            print(f"  目标角度: 约 {current_angle + move_degrees:.2f}°")
-            print(f"  提示: 移动示教器对应关节，执行机器人会跟随移动")
-        else:
-            print(f"请将关节 {joint_name} 移动 {move_degrees}°")
-            print(f"  目标角度: {current_angle + move_degrees:.2f}°")
+        window_name = f"Calibration: {joint_name}"
+        img1 = None
+        img2 = None
+        phase = 1  # 1=采集初始图像, 2=采集移动后图像
 
-        # 采集初始图像
-        print("\n[1/3] 采集初始图像...")
-        img1 = self.camera.read()
-        if img1 is None:
-            print("✗ 图像采集失败")
-            return False, JointSensitivity(joint_idx, joint_name)
+        while True:
+            # 读取图像
+            frame = self.camera.read()
+            if frame is None:
+                continue
 
-        # 等待用户移动
-        input(f"\n[2/3] 移动完成后按 Enter...")
+            # 检测标记点并可视化
+            state = self.detector.detect_dual_marker_state(frame)
+            vis = self.detector.visualize(frame, state)
 
-        # 获取移动后的关节状态，计算实际移动角度
-        joints_after = self.get_joint_states()
-        if joints_after is None:
-            print("✗ 无法获取移动后的关节位置")
-            return False, JointSensitivity(joint_idx, joint_name)
+            # 获取当前关节角度
+            current_joints = self.get_joint_states()
+            current_angle = current_joints[joint_idx] if current_joints is not None else 0.0
 
-        actual_move = joints_after[joint_idx] - current_angle
+            # 叠加信息
+            info_y = 30
+            cv2.putText(vis, f"Joint: {joint_name}", (10, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            info_y += 25
+            cv2.putText(vis, f"Current: {current_angle:.2f} deg", (10, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            info_y += 25
+            cv2.putText(vis, f"Target: {target_angle:.2f} deg", (10, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+
+            # 显示阶段提示
+            if phase == 1:
+                cv2.putText(vis, "Phase 1: Press ENTER to capture initial image", (10, vis.shape[0] - 40),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                cv2.putText(vis, "Press 'q' to cancel", (10, vis.shape[0] - 15),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+            else:
+                # 显示移动量
+                moved = current_angle - initial_angle
+                move_color = (0, 255, 0) if abs(moved) >= move_degrees * 0.8 else (0, 165, 255)
+                cv2.putText(vis, f"Moved: {moved:.2f} deg", (10, info_y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, move_color, 2)
+                cv2.putText(vis, "Phase 2: Press ENTER to capture final image", (10, vis.shape[0] - 40),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                cv2.putText(vis, "Press 'q' to cancel", (10, vis.shape[0] - 15),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+
+            cv2.imshow(window_name, vis)
+
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord('q'):
+                cv2.destroyWindow(window_name)
+                print("✗ 标定已取消")
+                return False, JointSensitivity(joint_idx, joint_name)
+
+            elif key == 13 or key == 10:  # Enter key
+                if phase == 1:
+                    img1 = frame.copy()
+                    print(f"  ✓ 已采集初始图像 (角度: {current_angle:.2f}°)")
+                    phase = 2
+                    print(f"\n  请移动关节到目标位置 ({target_angle:.2f}°)")
+                else:
+                    img2 = frame.copy()
+                    final_angle = current_angle
+                    print(f"  ✓ 已采集移动后图像 (角度: {final_angle:.2f}°)")
+                    break
+
+        cv2.destroyWindow(window_name)
+
+        # 计算实际移动角度
+        actual_move = final_angle - initial_angle
+        print(f"\n实际移动: {actual_move:.2f}°")
 
         if abs(actual_move) < 0.1:
-            print(f"⚠ 警告: 检测到移动角度很小 ({actual_move:.2f}°)，标定可能不准确")
-
-        # 采集移动后图像
-        print("[3/3] 采集移动后图像...")
-        img2 = self.camera.read()
-        if img2 is None:
-            print("✗ 图像采集失败")
-            return False, JointSensitivity(joint_idx, joint_name)
+            print("⚠ 警告: 移动角度很小，标定可能不准确")
 
         # 计算像素变化
         pixel_dx, pixel_dy = self._compute_pixel_shift(img1, img2)
@@ -655,10 +695,7 @@ class PrecisionPlaceController:
             return False, JointSensitivity(joint_idx, joint_name)
 
         # 使用实际移动角度计算灵敏度
-        if abs(actual_move) > 0.1:
-            move_degrees_actual = abs(actual_move)
-        else:
-            move_degrees_actual = move_degrees
+        move_degrees_actual = abs(actual_move) if abs(actual_move) > 0.1 else move_degrees
 
         # 计算灵敏度
         sensitivity = JointSensitivity(
