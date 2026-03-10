@@ -79,19 +79,19 @@ class PrecisionPlaceSystem:
             print("\n[被动模式] 与示教系统协同工作")
             print("  - 只读取机器人状态，不发送控制指令")
             print("  - 请确保示教程序已启动 (./run.sh)")
+            print("  - 跳过机器人硬件连接，避免冲突")
 
-        # 机器人
-        print("\n连接机器人...")
-        try:
-            self.robot = SupreRobotFollower(SupreRobotFollowerConfig())
-            self.robot.connect()
-            print("✓ 机器人已连接")
-        except Exception as e:
-            if passive:
-                print(f"⚠ 机器人连接失败: {e}")
-                print("  尝试继续（可能示教程序已占用连接）...")
-                self.robot = None
-            else:
+        # 机器人 - 被动模式下跳过连接，避免与示教程序冲突
+        if passive:
+            print("\n跳过机器人连接 (被动模式)")
+            self.robot = None
+        else:
+            print("\n连接机器人...")
+            try:
+                self.robot = SupreRobotFollower(SupreRobotFollowerConfig())
+                self.robot.connect()
+                print("✓ 机器人已连接")
+            except Exception as e:
                 raise
 
         # 相机
