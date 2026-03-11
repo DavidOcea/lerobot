@@ -102,7 +102,12 @@ class PrecisionPlaceSystem:
         print("\n连接相机...")
         for name, idx in CAMERA_INDICES.items():
             try:
-                config = OpenCVCameraConfig(index_or_path=idx, fps=30, width=640, height=480)
+                from lerobot.cameras.opencv.configuration_opencv import ColorMode
+                # 使用 BGR 格式以匹配 OpenCV 的绘图和显示要求
+                config = OpenCVCameraConfig(
+                    index_or_path=idx, fps=30, width=640, height=480,
+                    color_mode=ColorMode.BGR
+                )
                 self.cameras[name] = OpenCVCamera(config)
                 self.cameras[name].connect()
                 print(f"  ✓ {name} (索引{idx})")
