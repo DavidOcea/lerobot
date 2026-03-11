@@ -1144,7 +1144,11 @@ class PrecisionPlaceController:
             alpha = alpha * alpha * (3 - 2 * alpha)  # ease-in-out
 
             interp = current_joints * (1 - alpha) + target_joints * alpha
-            self.robot.send_action({'action': interp.tolist()})
+            # 转换为正确的action格式: {'joint_name.pos': value}
+            action = {f"{name}.pos": float(interp[i])
+                      for i, name in enumerate(self.robot.observation_joint_names)
+                      if i < len(interp)}
+            self.robot.send_action(action)
             time.sleep(self.smooth_delay)
 
         return True
@@ -1371,7 +1375,10 @@ class PrecisionPlaceController:
             return False
 
         joints[self.height_joint_idx] -= step
-        self.robot.send_action({'action': joints.tolist()})
+        action = {f"{name}.pos": float(joints[i])
+                  for i, name in enumerate(self.robot.observation_joint_names)
+                  if i < len(joints)}
+        self.robot.send_action(action)
         time.sleep(self.settle_time)
         return True
 
@@ -1387,7 +1394,10 @@ class PrecisionPlaceController:
             return False
 
         joints[self.height_joint_idx] += step
-        self.robot.send_action({'action': joints.tolist()})
+        action = {f"{name}.pos": float(joints[i])
+                  for i, name in enumerate(self.robot.observation_joint_names)
+                  if i < len(joints)}
+        self.robot.send_action(action)
         time.sleep(self.settle_time)
         return True
 
@@ -1434,7 +1444,10 @@ class PrecisionPlaceController:
             return False
 
         joints[self.arm_config.gripper_idx] = self.arm_config.gripper_open
-        self.robot.send_action({'action': joints.tolist()})
+        action = {f"{name}.pos": float(joints[i])
+                  for i, name in enumerate(self.robot.observation_joint_names)
+                  if i < len(joints)}
+        self.robot.send_action(action)
         time.sleep(0.5)
         print("✓ 夹爪已打开")
         return True
@@ -1454,7 +1467,10 @@ class PrecisionPlaceController:
             return False
 
         joints[self.arm_config.gripper_idx] = position
-        self.robot.send_action({'action': joints.tolist()})
+        action = {f"{name}.pos": float(joints[i])
+                  for i, name in enumerate(self.robot.observation_joint_names)
+                  if i < len(joints)}
+        self.robot.send_action(action)
         time.sleep(0.5)
         print("✓ 夹爪已闭合")
         return True
