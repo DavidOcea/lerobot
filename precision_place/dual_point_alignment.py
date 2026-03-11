@@ -468,11 +468,11 @@ class PrecisionPlaceController:
         self.gain = 0.6
         self.tolerance_mm = 2.0
         self.max_iterations = 15
-        self.settle_time = 0.3
+        self.settle_time = 0.2    # 减少等待时间，因为移动本身已经很慢
 
-        # 运动平滑参数
-        self.smooth_steps = 5
-        self.smooth_delay = 0.05
+        # 运动平滑参数 (全局设置，所有动作都用这个参数)
+        self.smooth_steps = 30     # 分30步实现更平滑的移动
+        self.smooth_delay = 0.1    # 每步0.1秒，总时间3秒
 
         # 高度控制 (用于粗调)
         self.height_joint_idx = self.arm_config.primary_joints[1]  # 通常joint_2影响高度
@@ -1540,35 +1540,198 @@ class PrecisionPlaceController:
         return align_ok
 
     def test_detection(self):
-        """测试检测"""
-        print("\n检测测试")
-        print("按 'q' 退出, 'r' 上升, 'l' 下降, 'o' 打开夹爪, 'c' 闭合夹爪")
+        """测试检测（支持所有关节控制）"""
+        print("\n" + "="*50)
+        print("检测测试 - 完整关节控制")
+        print("="*50)
+        print("\n快捷键:")
+        print("  [基础控制]")
+        print("    q - 退出")
+        print("    s - 保存当前位置为 'detection_best'")
+        print("    h - 显示所有关节状态")
+        print("\n  [高度/位置控制]")
+        print("    r/l - 上升/下降 (joint_2 肩部俯仰, ±2°)")
+        print("    w - 底座旋转 左 (joint_1, ±2°)")
+        print("    a/d - 肩部前倾/后仰微调 (joint_2, ±1°)")
+        print("\n  [手臂关节]")
+        print("    z/x - 肘部 上/下 (joint_3, ±2°)")
+        print("    f/v - 前臂 上/下 (joint_4, ±2°)")
+        print("    t/g - 腕部俯仰 上/下 (joint_5, ±2°)")
+        print("    y/b - 腕部旋转 左/右 (joint_6, ±2°)")
+        print("\n  [腰部控制]")
+        print("    u/j - 腰部旋转 左/右 (trunk_1, ±2°)")
+        print("\n  [夹爪控制]")
+        print("    o/c - 打开/闭合夹爪")
+        print("\n  [预设位置]")
+        print("    1 - 加载预设 'home'")
+        print("    2 - 加载预设 'pickup'")
+        print("="*50)
+
+        # 移动步长（度）
+        step_coarse = 2.0
+        step_fine = 1.0
+
+        # 关节索引映射（右手）
+        joint_indices = {
+            'base': 7,      # joint_1: 底座旋转
+            'shoulder': 8,  # joint_2: 肩部俯仰
+            'elbow': 9,     # joint_3: 肘部俯仰
+            'forearm': 10,  # joint_4: 前臂俯仰
+            'wrist': 11,    # joint_5: 腕部俯仰
+            'wrist_rot': 12,# joint_6: 腕部旋转
+            'trunk': 14,    # trunk_joint_1: 腰部旋转
+        }
+
+        # 关节名称显示
+        joint_names = {
+            joint_indices['base']: 'Base',
+            joint_indices['shoulder']: 'Shoulder',
+            joint_indices['elbow']: 'Elbow',
+            joint_indices['forearm']: 'Forearm',
+            joint_indices['wrist']: 'Wrist',
+            joint_indices['wrist_rot']: 'WristRot',
+            joint_indices['trunk']: 'Trunk',
+        }
+
+        # 显示关节状态的函数
+        def display_joint_states(vis, joints):
+            y = 80
+            for idx, name in joint_names.items():
+                if idx < len(joints):
+                    text = f"{name}: {joints[idx]:.1f}°"
+                    cv2.putText(vis, text, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+                    y += 15
+
+        # 移动单个关节的函数
+        def move_single_joint(joint_idx, delta_deg):
+            joints = self.get_joint_states()
+            if joints is None or joint_idx >= len(joints):
+                return False
+            joints[joint_idx] += delta_deg
+            action = {f"{name}.pos": float(joints[i])
+                      for i, name in enumerate(self.robot.observation_joint_names)
+                      if i < len(joints)}
+            self.robot.send_action(action)
+            time.sleep(0.1)  # 短暂延迟
+            return True
+
+        last_key_time = 0
 
         while True:
             image = self.camera.read()
             state = self.detector.detect_dual_marker_state(image)
             vis = self.detector.visualize(image, state)
 
+            # 显示基本信息
             cv2.putText(vis, f"Arm: {self.arm}", (vis.shape[1]-100, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-
-            # 显示标定状态
             cal_status = f"Cal Points: {len(self.calibration_points)}"
             cv2.putText(vis, cal_status, (vis.shape[1]-150, 55),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
+            # 获取并显示关节状态
+            joints = self.get_joint_states()
+            if joints is not None:
+                display_joint_states(vis, joints)
+
+            # 显示快捷键提示（简化版）
+            help_text = "Q:exit S:save R/L:±height W:±base A/D:±shoulder Z/X:±elbow"
+            cv2.putText(vis, help_text, (10, vis.shape[1]-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+
             cv2.imshow("Detection Test", vis)
 
             key = cv2.waitKey(1) & 0xFF
+
+            # 基础控制
             if key == ord('q'):
                 break
+            elif key == ord('s'):
+                self.save_preset('detection_best')
+                print("\n✓ 位置已保存为 'detection_best'")
+            elif key == ord('h'):
+                if joints is not None:
+                    print("\n当前关节状态:")
+                    for i, name in enumerate(self.robot.observation_joint_names):
+                        if i < len(joints):
+                            print(f"  {name}: {joints[i]:.2f}°")
+
+            # 高度控制（粗调）
             elif key == ord('r'):
                 self.raise_height()
             elif key == ord('l'):
                 self.lower_height()
+
+            # 底座旋转
+            elif key == ord('w'):
+                move_single_joint(joint_indices['base'], -step_coarse)
+                print(f"底座旋转左: {step_coarse}°")
+            elif key == ord('e'):
+                move_single_joint(joint_indices['base'], step_coarse)
+                print(f"底座旋转右: {step_coarse}°")
+
+            # 肩部俯仰微调
+            elif key == ord('a'):
+                move_single_joint(joint_indices['shoulder'], step_fine)
+                print(f"肩部微调: {step_fine}°")
+            elif key == ord('d'):
+                move_single_joint(joint_indices['shoulder'], -step_fine)
+                print(f"肩部微调: -{step_fine}°")
+
+            # 肘部控制
+            elif key == ord('z'):
+                move_single_joint(joint_indices['elbow'], step_coarse)
+                print(f"肘部: {step_coarse}°")
+            elif key == ord('x'):
+                move_single_joint(joint_indices['elbow'], -step_coarse)
+                print(f"肘部: -{step_coarse}°")
+
+            # 前臂控制 (使用 f/v 避免 c 冲突)
+            elif key == ord('f'):
+                move_single_joint(joint_indices['forearm'], step_coarse)
+                print(f"前臂: {step_coarse}°")
+            elif key == ord('v'):
+                move_single_joint(joint_indices['forearm'], -step_coarse)
+                print(f"前臂: -{step_coarse}°")
+
+            # 腕部俯仰 (使用 t/g)
+            elif key == ord('t'):
+                move_single_joint(joint_indices['wrist'], step_coarse)
+                print(f"腕部俯仰: {step_coarse}°")
+            elif key == ord('g'):
+                move_single_joint(joint_indices['wrist'], -step_coarse)
+                print(f"腕部俯仰: -{step_coarse}°")
+
+            # 腕部旋转 (使用 y/b)
+            elif key == ord('y'):
+                move_single_joint(joint_indices['wrist_rot'], step_coarse)
+                print(f"腕部旋转: {step_coarse}°")
+            elif key == ord('b'):
+                move_single_joint(joint_indices['wrist_rot'], -step_coarse)
+                print(f"腕部旋转: -{step_coarse}°")
+
+            # 腰部控制
+            elif key == ord('u'):
+                move_single_joint(joint_indices['trunk'], step_coarse)
+                print(f"腰部: {step_coarse}°")
+            elif key == ord('j'):
+                move_single_joint(joint_indices['trunk'], -step_coarse)
+                print(f"腰部: -{step_coarse}°")
+
+            # 夹爪控制
             elif key == ord('o'):
                 self.open_gripper()
             elif key == ord('c'):
                 self.close_gripper()
+
+            # 预设位置
+            elif key == ord('1'):
+                print("\n加载预设 'home'...")
+                self.load_preset('home')
+            elif key == ord('2'):
+                print("\n加载预设 'pickup'...")
+                self.load_preset('pickup')
+
+            last_key_time = time.time()
 
         cv2.destroyAllWindows()
