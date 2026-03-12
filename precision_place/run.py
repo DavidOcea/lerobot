@@ -200,7 +200,7 @@ class PrecisionPlaceSystem:
                         break
                 cv2.destroyAllWindows()
 
-            def calibrate_joint_sensitivity(self, joint_idx, move_degrees=2.0):
+            def calibrate_joint_sensitivity(self, joint_idx, move_degrees=4.0):
                 """关节灵敏度标定 (带实时视频显示)"""
                 joint_name = self.joint_names.get(joint_idx, f"joint_{joint_idx}")
                 print(f"\n{'='*60}")
@@ -338,7 +338,7 @@ class PrecisionPlaceSystem:
 
                 return True, sensitivity
 
-            def calibrate_all_joints(self, move_degrees=2.0):
+            def calibrate_all_joints(self, move_degrees=4.0):
                 print("\n[仅相机模式] 多点标定")
                 print("需要手动输入关节移动角度")
                 primary_joints = self.arm_config.primary_joints
@@ -634,7 +634,7 @@ class PrecisionPlaceSystem:
 流程:
   对于每个关节，系统会:
   1. 拍摄当前画面
-  2. 提示你手动移动关节2度
+  2. 提示你手动移动关节4度
   3. 拍摄移动后画面
   4. 计算灵敏度
 """)
@@ -647,9 +647,9 @@ class PrecisionPlaceSystem:
         input("\n按 Enter 开始...")
 
         try:
-            move_deg = float(input("移动角度 (默认2度): ").strip() or "2.0")
+            move_deg = float(input("移动角度 (默认4度): ").strip() or "4.0")
         except:
-            move_deg = 2.0
+            move_deg = 4.0
 
         self.controller.calibrate_all_joints(move_deg)
 
