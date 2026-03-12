@@ -415,8 +415,17 @@ class DualPointDetector:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
             cv2.putText(vis, f"Rot: {state.rotation_error:.1f}deg", (10, y+75),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-        
-        return vis
+
+            # 显示目标偏移和误差（如果有目标偏移）
+            if hasattr(self, 'target_offset_x') and (self.target_offset_x != 0 or self.target_offset_y != 0):
+                error_x = state.offset_x - self.target_offset_x
+                error_y = state.offset_y - self.target_offset_y
+                cv2.putText(vis, f"Target: ({self.target_offset_x:.0f}, {self.target_offset_y:.0f})", (10, y+100),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                cv2.putText(vis, f"Error: ({error_x:.0f}, {error_y:.0f})", (10, y+125),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 2)
+
+            return vis
 
 
 # ==================== 控制器 ====================
@@ -469,6 +478,10 @@ class PrecisionPlaceController:
         self.tolerance_mm = 2.0
         self.max_iterations = 15
         self.settle_time = 0.2    # 减少等待时间，因为移动本身已经很慢
+
+        # 对齐目标偏移（像素）- 当工件正确放置时，工件标点中心相对于卡槽标点中心的偏移
+        self.target_offset_x = 0.0
+        self.target_offset_y = 0.0
 
         # 运动平滑参数 (全局设置，所有动作都用这个参数)
         self.smooth_steps = 30     # 分30步实现更平滑的移动
@@ -1034,6 +1047,39 @@ class PrecisionPlaceController:
         # TODO: 实现配置持久化
         pass
 
+    def set_target_offset(self, offset_x: float, offset_y: float):
+        """
+        设置对齐目标偏移（像素）
+
+        当工件正确放置时，工件标点中心相对于卡槽标点中心的偏移量。
+
+        Args:
+            offset_x: X方向目标偏移（像素）
+            offset_y: Y方向目标偏移（像素）
+
+        使用方法:
+            1. 手动将工件放置到正确位置
+            2. 运行检测获取当前偏移
+            3. 调用此方法设置目标偏移
+        """
+        self.target_offset_x = offset_x
+        self.target_offset_y = offset_y
+        print(f"✓ 对齐目标偏移已设置: ({offset_x:.1f}, {offset_y:.1f}) 像素")
+
+    def get_current_offset(self) -> Tuple[float, float]:
+        """
+        获取当前工件和卡槽的偏移
+
+        Returns:
+            (offset_x, offset_y) 卡槽中心 - 工件中心
+        """
+        image = self.camera.read()
+        state = self.detector.detect_dual_marker_state(image)
+
+        if state.workpiece_detected and state.slot_detected:
+            return state.offset_x, state.offset_y
+        return 0.0, 0.0
+
     # ==================== XY对齐 (使用标定数据) ====================
 
     def compute_joint_adjustments(self, pixel_error_x: float, pixel_error_y: float,
@@ -1167,6 +1213,8 @@ class PrecisionPlaceController:
             tolerance_mm = self.tolerance_mm
 
         print(f"\nXY对齐 - 目标精度: {tolerance_mm}mm")
+        if self.target_offset_x != 0 or self.target_offset_y != 0:
+            print(f"对齐目标偏移: ({self.target_offset_x:.1f}, {self.target_offset_y:.1f}) 像素")
 
         # 检查标定数据
         if not self.calibration_points:
@@ -1188,11 +1236,17 @@ class PrecisionPlaceController:
                 print("  标记不完整")
                 continue
 
-            # 计算误差
-            mm_x = state.offset_x * self.pixel_to_mm_ratio
-            mm_y = state.offset_y * self.pixel_to_mm_ratio
+            # 计算误差：当前偏移减去目标偏移
+            current_offset_x = state.offset_x - self.target_offset_x
+            current_offset_y = state.offset_y - self.target_offset_y
+
+            mm_x = current_offset_x * self.pixel_to_mm_ratio
+            mm_y = current_offset_y * self.pixel_to_mm_ratio
             error_mm = np.sqrt(mm_x**2 + mm_y**2)
 
+            print(f"  当前偏移: ({state.offset_x:.1f}, {state.offset_y:.1f}) px")
+            if self.target_offset_x != 0 or self.target_offset_y != 0:
+                print(f"  目标偏移: ({self.target_offset_x:.1f}, {self.target_offset_y:.1f}) px")
             print(f"  误差: ({mm_x:.2f}, {mm_y:.2f})mm, 总: {error_mm:.2f}mm")
 
             if error_mm < tolerance_mm:
@@ -1206,9 +1260,9 @@ class PrecisionPlaceController:
                 print("✗ 无法获取关节状态")
                 continue
 
-            # 计算关节调整量 (使用标定数据)
+            # 计算关节调整量 (使用标定数据，传入相对误差)
             adjustments = self.compute_joint_adjustments(
-                state.offset_x, state.offset_y, current_joints
+                current_offset_x, current_offset_y, current_joints
             )
 
             print(f"  关节调整: {adjustments}")

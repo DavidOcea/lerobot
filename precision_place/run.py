@@ -688,12 +688,50 @@ class PrecisionPlaceSystem:
         if not self.controller:
             print("请先连接设备")
             return
-        
+
         self.controller.list_presets()
         name = input("请输入预设名称: ").strip()
         if name:
             self.controller.load_preset(name)
-    
+
+    def set_target_offset(self):
+        """设置对齐目标偏移"""
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        print("\n" + "="*50)
+        print("设置对齐目标偏移")
+        print("="*50)
+        print("\n说明：")
+        print("  对齐目标是让工件正确放入卡槽")
+        print("  当工件标点在边缘，卡槽标点在外部时")
+        print("  两个标点中心不会重合，需要设置目标偏移")
+        print("\n操作步骤：")
+        print("  1. 手动将工件放置到正确位置")
+        print("  2. 系统会自动检测当前偏移")
+        print("  3. 确认后设置为对齐目标")
+
+        input("\n准备好后按 Enter (手动放置工件到正确位置)...")
+
+        # 获取当前偏移
+        offset_x, offset_y = self.controller.get_current_offset()
+
+        if offset_x == 0 and offset_y == 0:
+            print("\n⚠ 无法获取标点偏移，请确认：")
+            print("  1. 工件和卡槽都能被相机看到")
+            print("  2. 标点颜色正确（绿色=工件，红色=卡槽）")
+            return
+
+        print(f"\n当前偏移: ({offset_x:.1f}, {offset_y:.1f}) 像素")
+        print(f"说明: 卡槽中心相对于工件中心的偏移")
+
+        confirm = input("\n确认设置此为目标偏移? (y/n): ").strip().lower()
+        if confirm == 'y':
+            self.controller.set_target_offset(offset_x, offset_y)
+        else:
+            print("已取消")
+
     # ----------------- 测试 -----------------
     
     def test_detection(self):
@@ -814,9 +852,10 @@ def main():
             print("4. 标定")
             print("5. 标定历史")
             print("6. 预设位置")
-            print("7. 运行对齐")
-            print("8. 完整流程")
-            print("9. 连续运行 (10次)")
+            print("7. 设置对齐目标偏移")
+            print("8. 运行对齐")
+            print("9. 完整流程")
+            print("10. 连续运行 (10次)")
             print("0. 退出")
 
             choice = input("\n选项: ").strip()
@@ -918,15 +957,21 @@ def main():
                         
             elif choice == "7":
                 if not system.controller:
-                    system.connect()
-                system.run_alignment()
-                
+                    print("请先连接设备")
+                else:
+                    system.set_target_offset()
+
             elif choice == "8":
                 if not system.controller:
                     system.connect()
-                system.run_full()
-                
+                system.run_alignment()
+
             elif choice == "9":
+                if not system.controller:
+                    system.connect()
+                system.run_full()
+
+            elif choice == "10":
                 if not system.controller:
                     system.connect()
                 system.continuous_run(10)
