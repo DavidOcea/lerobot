@@ -14,7 +14,7 @@ CAMERA_INDICES = {
 }
 
 # 精准放置主用手腕相机
-PRIMARY_WRIST_CAM = 'right_wrist2'  # 索引8，视野更清晰
+PRIMARY_WRIST_CAM = 'right_wrist'  # 索引6
 
 # 标记颜色配置
 WORKPIECE_MARKER_COLOR = "green"  # 工件标记（绿色）

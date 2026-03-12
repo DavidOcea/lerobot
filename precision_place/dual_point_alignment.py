@@ -83,8 +83,8 @@ class ArmConfig:
 ARM_CONFIGS = {
     'right': ArmConfig(
         name='right',
-        camera_name='right_wrist2',
-        camera_index=8,
+        camera_name='right_wrist',
+        camera_index=6,
         primary_joints=[7, 8, 9, 10, 11, 12, 14],  # right_arm_joint_1~6 + trunk_joint_1
         gripper_idx=13,
         gripper_open=0.0,
@@ -258,7 +258,7 @@ class DualPointDetector:
     
     COLOR_RANGES = {
         'green': {
-            'lower': np.array([35, 50, 50]),
+            'lower': np.array([35, 100, 100]),
             'upper': np.array([85, 255, 255])
         },
         'red': {
@@ -465,7 +465,7 @@ class PrecisionPlaceController:
 
         # 参数
         self.pixel_to_mm_ratio = 0.5  # 兼容旧标定
-        self.gain = 0.6
+        self.gain = 0.3
         self.tolerance_mm = 2.0
         self.max_iterations = 15
         self.settle_time = 0.2    # 减少等待时间，因为移动本身已经很慢
@@ -580,7 +580,7 @@ class PrecisionPlaceController:
 
     # ==================== 方案A: 多点标定 ====================
 
-    def calibrate_joint_sensitivity(self, joint_idx: int, move_degrees: float = 2.0) -> Tuple[bool, JointSensitivity]:
+    def calibrate_joint_sensitivity(self, joint_idx: int, move_degrees: float = 4.0) -> Tuple[bool, JointSensitivity]:
         """
         标定单个关节的灵敏度 (带实时视频显示)
 
@@ -592,7 +592,7 @@ class PrecisionPlaceController:
 
         Args:
             joint_idx: 关节索引
-            move_degrees: 移动角度 (建议1-3度)
+            move_degrees: 移动角度 (建议3-5度)
 
         Returns:
             (success, JointSensitivity)
@@ -742,7 +742,7 @@ class PrecisionPlaceController:
 
         return float(dx), float(dy)
 
-    def calibrate_all_joints(self, move_degrees: float = 2.0) -> bool:
+    def calibrate_all_joints(self, move_degrees: float = 4.0) -> bool:
         """
         标定所有主要关节 (多点标定)
 
@@ -1077,12 +1077,12 @@ class PrecisionPlaceController:
         for s in sensitivities:
             # 目标: pixel_dx_per_deg * delta_deg = -pixel_error_x
             # delta_deg = -pixel_error_x / pixel_dx_per_deg
-            if abs(s.pixel_dx_per_deg) > 0.1:  # 避免除零
+            if abs(s.pixel_dx_per_deg) > 0.001:  # 避免除零，降低阈值以支持低灵敏度关节
                 delta_x = -pixel_error_x / s.pixel_dx_per_deg
             else:
                 delta_x = 0
 
-            if abs(s.pixel_dy_per_deg) > 0.1:
+            if abs(s.pixel_dy_per_deg) > 0.001:
                 delta_y = -pixel_error_y / s.pixel_dy_per_deg
             else:
                 delta_y = 0
@@ -1090,8 +1090,8 @@ class PrecisionPlaceController:
             # 组合X和Y方向的调整 (简单平均，可根据实际情况优化)
             delta = (delta_x + delta_y) / 2 * self.gain
 
-            # 限制单步调整量
-            delta = np.clip(delta, -2.0, 2.0)
+            # 限制单步调整量（降低到1度以减少震荡）
+            delta = np.clip(delta, -1.0, 1.0)
 
             adjustments[s.joint_idx] = delta
 
@@ -1126,7 +1126,7 @@ class PrecisionPlaceController:
         return True
 
     def _smooth_move_all_joints(self, target_joints: np.ndarray, steps: int = None):
-        """平滑移动所有关节"""
+        """平滑移动所有关节（保持夹爪位置不变）"""
         if self.passive_mode:
             print("✗ 被动模式下无法移动关节")
             return False
@@ -1139,11 +1139,17 @@ class PrecisionPlaceController:
         if current_joints is None or len(current_joints) < 16:
             return False
 
+        # 保存夹爪初始位置，在移动过程中保持不变
+        gripper_initial_pos = current_joints[self.arm_config.gripper_idx]
+        gripper_target_pos = target_joints[self.arm_config.gripper_idx]
+
         for step in range(1, steps + 1):
             alpha = step / steps
             alpha = alpha * alpha * (3 - 2 * alpha)  # ease-in-out
 
             interp = current_joints * (1 - alpha) + target_joints * alpha
+            # 保持夹爪在初始位置（不被插值改变）
+            interp[self.arm_config.gripper_idx] = gripper_initial_pos
             # 转换为正确的action格式: {'joint_name.pos': value}
             action = {f"{name}.pos": float(interp[i])
                       for i, name in enumerate(self.robot.observation_joint_names)
