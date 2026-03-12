@@ -258,7 +258,7 @@ class DualPointDetector:
     
     COLOR_RANGES = {
         'green': {
-            'lower': np.array([35, 100, 100]),
+            'lower': np.array([35, 70, 70]),
             'upper': np.array([85, 255, 255])
         },
         'red': {
@@ -465,7 +465,7 @@ class PrecisionPlaceController:
 
         # 参数
         self.pixel_to_mm_ratio = 0.5  # 兼容旧标定
-        self.gain = 0.3
+        self.gain = 0.6
         self.tolerance_mm = 2.0
         self.max_iterations = 15
         self.settle_time = 0.2    # 减少等待时间，因为移动本身已经很慢
@@ -1090,8 +1090,8 @@ class PrecisionPlaceController:
             # 组合X和Y方向的调整 (简单平均，可根据实际情况优化)
             delta = (delta_x + delta_y) / 2 * self.gain
 
-            # 限制单步调整量（降低到1度以减少震荡）
-            delta = np.clip(delta, -1.0, 1.0)
+            # 限制单步调整量
+            delta = np.clip(delta, -2.0, 2.0)
 
             adjustments[s.joint_idx] = delta
 
