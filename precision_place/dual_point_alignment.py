@@ -2,7 +2,7 @@
 双标记点精准对齐系统 - V2
 
 功能:
-1. 双标记点检测 (工件2绿 + 卡槽2红)
+1. 双标记点检测 (工件3绿 + 卡槽3红)
 2. 左手/右手切换
 3. 自动高度调整
 4. XY对齐 + 旋转校正
@@ -51,17 +51,27 @@ class Marker:
 
 @dataclass
 class DualMarkerState:
-    """双标记状态"""
-    workpiece_top: Optional[Marker] = None
-    workpiece_bottom: Optional[Marker] = None
-    slot_top: Optional[Marker] = None
-    slot_bottom: Optional[Marker] = None
+    """三标记状态"""
+    workpiece_1: Optional[Marker] = None
+    workpiece_2: Optional[Marker] = None
+    workpiece_3: Optional[Marker] = None
+    slot_1: Optional[Marker] = None
+    slot_2: Optional[Marker] = None
+    slot_3: Optional[Marker] = None
     offset_x: float = 0
     offset_y: float = 0
     rotation_error: float = 0
     workpiece_detected: bool = False
     slot_detected: bool = False
     alignment_quality: float = 0
+
+    @property
+    def workpiece_markers(self) -> List[Optional[Marker]]:
+        return [self.workpiece_1, self.workpiece_2, self.workpiece_3]
+
+    @property
+    def slot_markers(self) -> List[Optional[Marker]]:
+        return [self.slot_1, self.slot_2, self.slot_3]
 
 
 @dataclass
@@ -322,94 +332,141 @@ class DualPointDetector:
         
         return markers
     
-    def detect_dual_marker_state(self, image: np.ndarray) -> DualMarkerState:
-        """检测双标记状态"""
+    def detect_triple_marker_state(self, image: np.ndarray) -> DualMarkerState:
+        """检测三标记状态（工件3个，卡槽3个）"""
         state = DualMarkerState()
-        
-        # 工件标记
+
+        # 工件标记 - 需要3个，至少2个才能工作
         wp_markers = self.detect_markers_by_color(image, self.workpiece_color)
         if len(wp_markers) >= 2:
+            # 按Y坐标排序（从上到下）
             sorted_wp = sorted(wp_markers, key=lambda m: m.y)
-            state.workpiece_top = sorted_wp[0]
-            state.workpiece_bottom = sorted_wp[-1]
+            if len(sorted_wp) >= 3:
+                state.workpiece_1 = sorted_wp[0]  # 上
+                state.workpiece_2 = sorted_wp[1]  # 中
+                state.workpiece_3 = sorted_wp[2]  # 下
+            else:
+                state.workpiece_1 = sorted_wp[0]
+                state.workpiece_2 = sorted_wp[1]
+                state.workpiece_3 = None
             state.workpiece_detected = True
-        
-        # 卡槽标记
+
+        # 卡槽标记 - 需要3个，至少2个才能工作
         sl_markers = self.detect_markers_by_color(image, self.slot_color)
         if len(sl_markers) >= 2:
+            # 按Y坐标排序（从上到下）
             sorted_sl = sorted(sl_markers, key=lambda m: m.y)
-            state.slot_top = sorted_sl[0]
-            state.slot_bottom = sorted_sl[-1]
+            if len(sorted_sl) >= 3:
+                state.slot_1 = sorted_sl[0]  # 上
+                state.slot_2 = sorted_sl[1]  # 中
+                state.slot_3 = sorted_sl[2]  # 下
+            else:
+                state.slot_1 = sorted_sl[0]
+                state.slot_2 = sorted_sl[1]
+                state.slot_3 = None
             state.slot_detected = True
-        
+
         if state.workpiece_detected and state.slot_detected:
             self._calculate_alignment(state)
-        
+
         return state
-    
+
+    def detect_dual_marker_state(self, image: np.ndarray) -> DualMarkerState:
+        """检测标记状态（兼容旧接口，调用三标记检测）"""
+        return self.detect_triple_marker_state(image)
+
     def _calculate_alignment(self, state: DualMarkerState):
         """计算对齐误差"""
-        wp_cx = (state.workpiece_top.x + state.workpiece_bottom.x) / 2
-        wp_cy = (state.workpiece_top.y + state.workpiece_bottom.y) / 2
-        sl_cx = (state.slot_top.x + state.slot_bottom.x) / 2
-        sl_cy = (state.slot_top.y + state.slot_bottom.y) / 2
-        
-        state.offset_x = sl_cx - wp_cx
-        state.offset_y = sl_cy - wp_cy
-        
-        wp_angle = np.degrees(np.arctan2(
-            state.workpiece_bottom.x - state.workpiece_top.x,
-            state.workpiece_bottom.y - state.workpiece_top.y
-        ))
-        sl_angle = np.degrees(np.arctan2(
-            state.slot_bottom.x - state.slot_top.x,
-            state.slot_bottom.y - state.slot_top.y
-        ))
-        state.rotation_error = wp_angle - sl_angle
-        
-        wp_conf = (state.workpiece_top.confidence + state.workpiece_bottom.confidence) / 2
-        sl_conf = (state.slot_top.confidence + state.slot_bottom.confidence) / 2
-        state.alignment_quality = (wp_conf + sl_conf) / 2
+        # 计算中心（使用所有检测到的标记点）
+        wp_x_sum = sum(m.x for m in state.workpiece_markers if m)
+        wp_y_sum = sum(m.y for m in state.workpiece_markers if m)
+        wp_count = sum(1 for m in state.workpiece_markers if m)
+
+        sl_x_sum = sum(m.x for m in state.slot_markers if m)
+        sl_y_sum = sum(m.y for m in state.slot_markers if m)
+        sl_count = sum(1 for m in state.slot_markers if m)
+
+        if wp_count > 0 and sl_count > 0:
+            wp_cx = wp_x_sum / wp_count
+            wp_cy = wp_y_sum / wp_count
+            sl_cx = sl_x_sum / sl_count
+            sl_cy = sl_y_sum / sl_count
+
+            state.offset_x = sl_cx - wp_cx
+            state.offset_y = sl_cy - wp_cy
+
+            # 计算旋转角度（使用首尾标记点）
+            wp_top = state.workpiece_1
+            wp_bottom = state.workpiece_3 or state.workpiece_2
+            sl_top = state.slot_1
+            sl_bottom = state.slot_3 or state.slot_2
+
+            if wp_top and wp_bottom and sl_top and sl_bottom:
+                wp_angle = np.degrees(np.arctan2(
+                    wp_bottom.x - wp_top.x,
+                    wp_bottom.y - wp_top.y
+                ))
+                sl_angle = np.degrees(np.arctan2(
+                    sl_bottom.x - sl_top.x,
+                    sl_bottom.y - sl_top.y
+                ))
+                state.rotation_error = wp_angle - sl_angle
+                # 归一化到 [-180, 180]
+                while state.rotation_error > 180:
+                    state.rotation_error -= 360
+                while state.rotation_error < -180:
+                    state.rotation_error += 360
+
+            # 计算检测质量
+            wp_conf = sum(m.confidence for m in state.workpiece_markers if m) / max(wp_count, 1)
+            sl_conf = sum(m.confidence for m in state.slot_markers if m) / max(sl_count, 1)
+            state.alignment_quality = (wp_conf + sl_conf) / 2
     
-    def visualize(self, image: np.ndarray, state: DualMarkerState = None) -> np.ndarray:
+    def visualize(self, image: np.ndarray, state: DualMarkerState = None, target_offset_x: float = 0.0,
+                target_offset_y: float = 0.0) -> np.ndarray:
         """可视化"""
         vis = image.copy()
-        
+
         if state is None:
-            state = self.detect_dual_marker_state(image)
-        
+            state = self.detect_triple_marker_state(image)
+
         # 工件标记
-        for m, name in [(state.workpiece_top, "WP-T"), (state.workpiece_bottom, "WP-B")]:
+        for i, m in enumerate(state.workpiece_markers, 1):
             if m:
-                cv2.circle(vis, (int(m.x), int(m.y)), 12, (0, 255, 0), 2)
-                cv2.putText(vis, name, (int(m.x)-20, int(m.y)-15),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        
+                cv2.circle(vis, (int(m.x), int(m.y)), 10, (0, 255, 0), 2)
+                cv2.putText(vis, f"WP{i}", (int(m.x)-15, int(m.y)-15),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 0), 2)
+
         # 卡槽标记
-        for m, name in [(state.slot_top, "SL-T"), (state.slot_bottom, "SL-B")]:
+        for i, m in enumerate(state.slot_markers, 1):
             if m:
-                cv2.circle(vis, (int(m.x), int(m.y)), 12, (0, 0, 255), 2)
-                cv2.putText(vis, name, (int(m.x)-20, int(m.y)-15),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-        
-        # 连线
-        if state.workpiece_top and state.workpiece_bottom:
-            cv2.line(vis, (int(state.workpiece_top.x), int(state.workpiece_top.y)),
-                    (int(state.workpiece_bottom.x), int(state.workpiece_bottom.y)),
-                    (0, 255, 0), 2)
-        
-        if state.slot_top and state.slot_bottom:
-            cv2.line(vis, (int(state.slot_top.x), int(state.slot_top.y)),
-                    (int(state.slot_bottom.x), int(state.slot_bottom.y)),
-                    (0, 0, 255), 2)
-        
+                cv2.circle(vis, (int(m.x), int(m.y)), 10, (0, 0, 255), 2)
+                cv2.putText(vis, f"SL{i}", (int(m.x)-15, int(m.y)-15),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 2)
+
+        # 连线（连接所有工件标点）
+        wp_valid = [m for m in state.workpiece_markers if m]
+        if len(wp_valid) >= 2:
+            for i in range(len(wp_valid) - 1):
+                cv2.line(vis, (int(wp_valid[i].x), int(wp_valid[i].y)),
+                        (int(wp_valid[i+1].x), int(wp_valid[i+1].y)), (0, 255, 0), 2)
+
+        # 连线（连接所有卡槽标点）
+        sl_valid = [m for m in state.slot_markers if m]
+        if len(sl_valid) >= 2:
+            for i in range(len(sl_valid) - 1):
+                cv2.line(vis, (int(sl_valid[i].x), int(sl_valid[i].y)),
+                        (int(sl_valid[i+1].x), int(sl_valid[i+1].y)), (0, 0, 255), 2)
+
         # 状态
         y = 30
-        cv2.putText(vis, f"WP: {'OK' if state.workpiece_detected else 'NO'}", (10, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if state.workpiece_detected else (0, 0, 255), 2)
-        cv2.putText(vis, f"SL: {'OK' if state.slot_detected else 'NO'}", (10, y+25),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if state.slot_detected else (0, 0, 255), 2)
-        
+        wp_count = sum(1 for m in state.workpiece_markers if m)
+        sl_count = sum(1 for m in state.slot_markers if m)
+        cv2.putText(vis, f"WP: {wp_count}/3", (10, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if wp_count >= 2 else (0, 0, 255), 2)
+        cv2.putText(vis, f"SL: {sl_count}/3", (10, y+25),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if sl_count >= 2 else (0, 0, 255), 2)
+
         if state.workpiece_detected and state.slot_detected:
             cv2.putText(vis, f"XY: ({state.offset_x:.0f}, {state.offset_y:.0f})", (10, y+50),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
@@ -425,7 +482,7 @@ class DualPointDetector:
                 cv2.putText(vis, f"Error: ({error_x:.0f}, {error_y:.0f})", (10, y+125),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 2)
 
-            return vis
+        return vis
 
 
 # ==================== 控制器 ====================
@@ -476,12 +533,17 @@ class PrecisionPlaceController:
         self.pixel_to_mm_ratio = 0.5  # 兼容旧标定
         self.gain = 0.6
         self.tolerance_mm = 2.0
+        self.tolerance_deg = 5.0  # 旋转容差（度）
         self.max_iterations = 15
         self.settle_time = 0.2    # 减少等待时间，因为移动本身已经很慢
 
         # 对齐目标偏移（像素）- 当工件正确放置时，工件标点中心相对于卡槽标点中心的偏移
         self.target_offset_x = 0.0
         self.target_offset_y = 0.0
+
+        # 旋转调整增益
+        self.rotation_gain = 0.3
+        self.max_rotation_adjust = 2.0  # 单次最大旋转调整（度）
 
         # 运动平滑参数 (全局设置，所有动作都用这个参数)
         self.smooth_steps = 30     # 分30步实现更平滑的移动
@@ -1173,8 +1235,44 @@ class PrecisionPlaceController:
 
         raise NotImplementedError("雅可比方法待实现，请提供DH参数")
 
-    def apply_joint_adjustments(self, adjustments: Dict[int, float]) -> bool:
-        """应用关节调整"""
+    def compute_rotation_adjustment(self, rotation_error: float, current_joints: np.ndarray) -> Dict[int, float]:
+        """
+        计算旋转调整量
+
+        使用能产生旋转的关节（通常是手腕关节）来纠正旋转误差。
+
+        Args:
+            rotation_error: 旋转误差（度），正值为逆时针偏差
+            current_joints: 当前关节角度
+
+        Returns:
+            {joint_idx: adjustment_degrees}
+        """
+        adjustments = {}
+        abs_rot_error = abs(rotation_error)
+
+        if abs_rot_error < self.tolerance_deg:
+            return adjustments
+
+        # 选择旋转关节：根据手臂不同，通常是某个手腕关节
+        # 右臂使用 joint 12 (right_arm_joint_6 - 手腕旋转)
+        # 左臂使用 joint 5 (left_arm_joint_6 - 手腕旋转)
+        if self.arm == 'right':
+            rotation_joint = 12
+        else:
+            rotation_joint = 5
+
+        # 计算调整量（反向调整）
+        delta = -rotation_error * self.rotation_gain
+
+        # 限制单次调整量
+        delta = np.clip(delta, -self.max_rotation_adjust, self.max_rotation_adjust)
+
+        adjustments[rotation_joint] = delta
+        return adjustments
+
+    def apply_joint_adjustments(self, adjustments: Dict[int, float], rotation_adjustments: Dict[int, float] = None) -> bool:
+        """应用关节调整（位置+旋转）"""
         if self.passive_mode:
             print("✗ 被动模式下无法应用关节调整")
             return False
@@ -1186,6 +1284,11 @@ class PrecisionPlaceController:
         target = joints.copy()
         for jidx, delta in adjustments.items():
             target[jidx] += delta
+
+        # 应用旋转调整
+        if rotation_adjustments:
+            for jidx, delta in rotation_adjustments.items():
+                target[jidx] += delta
 
         # 平滑移动
         self._smooth_move_all_joints(target)
@@ -1247,10 +1350,10 @@ class PrecisionPlaceController:
             image = self.camera.read()
             state = self.detector.detect_dual_marker_state(image)
 
-            wp = sum(1 for m in [state.workpiece_top, state.workpiece_bottom] if m)
-            sl = sum(1 for m in [state.slot_top, state.slot_bottom] if m)
+            wp = sum(1 for m in state.workpiece_markers if m)
+            sl = sum(1 for m in state.slot_markers if m)
 
-            print(f"  工件: {wp}/2, 卡槽: {sl}/2")
+            print(f"  工件: {wp}/3, 卡槽: {sl}/3")
 
             if not state.workpiece_detected or not state.slot_detected:
                 print("  标记不完整")
@@ -1267,10 +1370,17 @@ class PrecisionPlaceController:
             print(f"  当前偏移: ({state.offset_x:.1f}, {state.offset_y:.1f}) px")
             if self.target_offset_x != 0 or self.target_offset_y != 0:
                 print(f"  目标偏移: ({self.target_offset_x:.1f}, {self.target_offset_y:.1f}) px")
-            print(f"  误差: ({mm_x:.2f}, {mm_y:.2f})mm, 总: {error_mm:.2f}mm")
+            print(f"  位置误差: ({mm_x:.2f}, {mm_y:.2f})mm, 总: {error_mm:.2f}mm")
+            print(f"  旋转误差: {state.rotation_error:.2f}deg")
 
-            if error_mm < tolerance_mm:
-                print(f"\n✓ 对齐完成: {error_mm:.2f}mm < {tolerance_mm}mm")
+            # 检查位置和旋转误差
+            position_ok = error_mm < tolerance_mm
+            rotation_ok = abs(state.rotation_error) < self.tolerance_deg
+
+            if position_ok and rotation_ok:
+                print(f"\n✓ 对齐完成")
+                print(f"  位置误差: {error_mm:.2f}mm < {tolerance_mm}mm")
+                print(f"  旋转误差: {abs(state.rotation_error):.2f}deg < {self.tolerance_deg}deg")
                 return True
 
             # 获取当前关节状态
@@ -1285,11 +1395,18 @@ class PrecisionPlaceController:
                 current_offset_x, current_offset_y, current_joints
             )
 
-            print(f"  关节调整: {adjustments}")
+            # 计算旋转调整量
+            rotation_adjustments = self.compute_rotation_adjustment(
+                state.rotation_error, current_joints
+            )
+
+            print(f"  位置调整: {adjustments}")
+            if rotation_adjustments:
+                print(f"  旋转调整: {rotation_adjustments}")
 
             # 应用调整
             if state.alignment_quality > 0.3:
-                self.apply_joint_adjustments(adjustments)
+                self.apply_joint_adjustments(adjustments, rotation_adjustments)
 
             time.sleep(self.settle_time)
 
@@ -1492,10 +1609,10 @@ class PrecisionPlaceController:
             image = self.camera.read()
             state = self.detector.detect_dual_marker_state(image)
 
-            wp = sum(1 for m in [state.workpiece_top, state.workpiece_bottom] if m)
-            sl = sum(1 for m in [state.slot_top, state.slot_bottom] if m)
+            wp = sum(1 for m in state.workpiece_markers if m)
+            sl = sum(1 for m in state.slot_markers if m)
 
-            print(f"  工件: {wp}/2, 卡槽: {sl}/2")
+            print(f"  工件: {wp}/3, 卡槽: {sl}/3")
 
             if wp >= 2 and sl >= 2:
                 print("\n✓ 高度合适")
