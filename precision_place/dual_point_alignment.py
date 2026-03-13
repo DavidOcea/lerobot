@@ -1119,27 +1119,47 @@ class PrecisionPlaceController:
                 self.arm_config.primary_joints[1]: pixel_error_y * 0.1
             }
 
+        # 调试：打印计算过程
+        print(f"    像素误差: X={pixel_error_x:.1f}px, Y={pixel_error_y:.1f}px")
+
+        # 分别处理X和Y方向，选择影响最大的关节
         adjustments = {}
+
+        # 1. 找到对X方向影响最大的关节
+        max_x_sens = None
+        max_x_abs = 0
         for s in sensitivities:
-            # 目标: pixel_dx_per_deg * delta_deg = -pixel_error_x
-            # delta_deg = -pixel_error_x / pixel_dx_per_deg
-            if abs(s.pixel_dx_per_deg) > 0.001:  # 避免除零，降低阈值以支持低灵敏度关节
-                delta_x = -pixel_error_x / s.pixel_dx_per_deg
-            else:
-                delta_x = 0
+            if abs(s.pixel_dx_per_deg) > max_x_abs:
+                max_x_abs = abs(s.pixel_dx_per_deg)
+                max_x_sens = s
 
-            if abs(s.pixel_dy_per_deg) > 0.001:
-                delta_y = -pixel_error_y / s.pixel_dy_per_deg
-            else:
-                delta_y = 0
+        # 2. 找到对Y方向影响最大的关节
+        max_y_sens = None
+        max_y_abs = 0
+        for s in sensitivities:
+            if abs(s.pixel_dy_per_deg) > max_y_abs:
+                max_y_abs = abs(s.pixel_dy_per_deg)
+                max_y_sens = s
 
-            # 组合X和Y方向的调整 (简单平均，可根据实际情况优化)
-            delta = (delta_x + delta_y) / 2 * self.gain
+        # 3. 计算X方向调整
+        if max_x_sens:
+            delta_x = -pixel_error_x / max_x_sens.pixel_dx_per_deg
+            delta_x = np.clip(delta_x * self.gain, -2.0, 2.0)
+            adjustments[max_x_sens.joint_idx] = adjustments.get(max_x_sens.joint_idx, 0) + delta_x
+            print(f"    关节 {max_x_sens.joint_idx} (X主): sens={max_x_sens.pixel_dx_per_deg:.2f}, 调整={delta_x:.2f}")
 
-            # 限制单步调整量
-            delta = np.clip(delta, -2.0, 2.0)
-
-            adjustments[s.joint_idx] = delta
+        # 4. 计算Y方向调整
+        if max_y_sens and max_y_sens.joint_idx != max_x_sens.joint_idx:
+            delta_y = -pixel_error_y / max_y_sens.pixel_dy_per_deg
+            delta_y = np.clip(delta_y * self.gain, -2.0, 2.0)
+            adjustments[max_y_sens.joint_idx] = adjustments.get(max_y_sens.joint_idx, 0) + delta_y
+            print(f"    关节 {max_y_sens.joint_idx} (Y主): sens={max_y_sens.pixel_dy_per_deg:.2f}, 调整={delta_y:.2f}")
+        elif max_y_sens and max_y_sens.joint_idx == max_x_sens.joint_idx:
+            # 如果是同一个关节，需要合并
+            delta = (delta_x + delta_y) / 2
+            delta = np.clip(delta * self.gain, -2.0, 2.0)
+            adjustments[max_y_sens.joint_idx] = delta
+            print(f"    关节 {max_y_sens.joint_idx} (XY合一): X调整={delta_x:.2f}, Y调整={delta_y:.2f}, 合并={delta:.2f}")
 
         return adjustments
 
