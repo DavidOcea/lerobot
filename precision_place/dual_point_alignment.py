@@ -798,6 +798,158 @@ class PrecisionPlaceController:
 
         return True, sensitivity
 
+    def calibrate_joint_sensitivity_auto(self, joint_idx: int, move_degrees: float = 4.0,
+                                         settle_time: float = 0.5, show_progress: bool = True) -> Tuple[bool, JointSensitivity]:
+        """
+        自动标定单个关节的灵敏度（无需人工干预）
+
+        流程:
+        1. 获取当前关节角度
+        2. 采集初始图像
+        3. 自动移动关节指定角度
+        4. 等待稳定
+        5. 采集移动后图像
+        6. 计算像素变化和灵敏度
+
+        Args:
+            joint_idx: 关节索引
+            move_degrees: 移动角度（建议3-5度）
+            settle_time: 移动后等待稳定的时间（秒）
+            show_progress: 是否显示进度信息
+
+        Returns:
+            (success, JointSensitivity)
+        """
+        if self.passive_mode:
+            print("✗ 自动标定需要独立模式（不能使用被动模式）")
+            return False, JointSensitivity(joint_idx, "")
+
+        if show_progress:
+            print(f"\n{'='*60}")
+            print(f"自动标定关节: {self.joint_names.get(joint_idx, f'joint_{joint_idx}')}")
+            print(f"{'='*60}")
+
+        # 1. 获取当前关节状态
+        joints = self.get_joint_states()
+        if joints is None:
+            print("✗ 无法获取关节位置")
+            return False, JointSensitivity(joint_idx, "")
+
+        joint_name = self.joint_names.get(joint_idx, f"joint_{joint_idx}")
+        initial_angle = joints[joint_idx]
+        target_angle = initial_angle + move_degrees
+
+        if show_progress:
+            print(f"  初始角度: {initial_angle:.2f}°")
+            print(f"  目标角度: {target_angle:.2f}° (移动 {move_degrees}°)")
+
+        # 2. 采集初始图像
+        if show_progress:
+            print(f"  [1/4] 采集初始图像...")
+        img1 = self.camera.read()
+        if img1 is None:
+            print("  ✗ 无法采集图像")
+            return False, JointSensitivity(joint_idx, joint_name)
+
+        # 3. 自动移动关节
+        if show_progress:
+            print(f"  [2/4] 自动移动关节 {move_degrees}°...")
+        target_joints = joints.copy()
+        target_joints[joint_idx] = target_angle
+
+        # 平滑移动到目标位置
+        self._smooth_move_single_joint(joint_idx, target_angle, steps=10)
+
+        # 4. 等待稳定
+        if show_progress:
+            print(f"  [3/4] 等待稳定 ({settle_time}秒)...")
+        time.sleep(settle_time)
+
+        # 5. 采集移动后图像
+        if show_progress:
+            print(f"  [4/4] 采集移动后图像...")
+        img2 = self.camera.read()
+        if img2 is None:
+            print("  ✗ 无法采集图像")
+            return False, JointSensitivity(joint_idx, joint_name)
+
+        # 获取最终角度
+        final_joints = self.get_joint_states()
+        final_angle = final_joints[joint_idx] if final_joints is not None else target_angle
+
+        if show_progress:
+            print(f"  最终角度: {final_angle:.2f}°")
+
+        # 6. 计算实际移动角度
+        actual_move = final_angle - initial_angle
+        if show_progress:
+            print(f"  实际移动: {actual_move:.2f}°")
+
+        if abs(actual_move) < 0.5:
+            print("  ⚠ 警告: 移动角度太小，标定可能不准确")
+
+        # 7. 计算像素变化
+        if show_progress:
+            print(f"  计算像素变化...")
+        pixel_dx, pixel_dy = self._compute_pixel_shift(img1, img2)
+
+        if pixel_dx is None:
+            print("  ✗ 特征点匹配失败")
+            return False, JointSensitivity(joint_idx, joint_name)
+
+        # 8. 使用实际移动角度计算灵敏度
+        move_degrees_actual = abs(actual_move) if abs(actual_move) > 0.5 else move_degrees
+
+        # 9. 计算灵敏度
+        sensitivity = JointSensitivity(
+            joint_idx=joint_idx,
+            joint_name=joint_name,
+            pixel_dx_per_deg=pixel_dx / move_degrees_actual,
+            pixel_dy_per_deg=pixel_dy / move_degrees_actual,
+            mm_dx_per_deg=0.0,
+            mm_dy_per_deg=0.0,
+            calibration_angles=joints.tolist()
+        )
+
+        # 更新mm灵敏度
+        if self.pixel_to_mm_ratio > 0:
+            sensitivity.mm_dx_per_deg = sensitivity.pixel_dx_per_deg * self.pixel_to_mm_ratio
+            sensitivity.mm_dy_per_deg = sensitivity.pixel_dy_per_deg * self.pixel_to_mm_ratio
+
+        if show_progress:
+            print(f"\n  ✓ 标定结果:")
+            print(f"    实际移动: {actual_move:.2f}°")
+            print(f"    像素变化: ({pixel_dx:.1f}, {pixel_dy:.1f}) pixels")
+            print(f"    灵敏度: X={sensitivity.pixel_dx_per_deg:.2f} px/deg, Y={sensitivity.pixel_dy_per_deg:.2f} px/deg")
+
+        return True, sensitivity
+
+    def _smooth_move_single_joint(self, joint_idx: int, target_angle: float, steps: int = 10):
+        """平滑移动单个关节"""
+        if self.passive_mode:
+            return False
+
+        joints = self.get_joint_states()
+        if joints is None or len(joints) < 16:
+            return False
+
+        initial_angle = joints[joint_idx]
+
+        for step in range(1, steps + 1):
+            alpha = step / steps
+            alpha = alpha * alpha * (3 - 2 * alpha)  # ease-in-out
+
+            current_angle = initial_angle + (target_angle - initial_angle) * alpha
+
+            # 构建action格式
+            action = {f"{name}.pos": joints[i] for i, name in enumerate(self.robot.observation_joint_names)}
+            action[f"{self.robot.observation_joint_names[joint_idx]}.pos"] = float(current_angle)
+
+            self.robot.send_action({'action': list(action.values())})
+            time.sleep(0.05)  # 每步50ms
+
+        return True
+
     def _compute_pixel_shift(self, img1: np.ndarray, img2: np.ndarray) -> Tuple[Optional[float], Optional[float]]:
         """使用光流计算图像间的像素偏移"""
         g1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
@@ -885,6 +1037,101 @@ class PrecisionPlaceController:
             return True
         else:
             print(f"\n✗ 标定失败: 没有关节标定成功")
+            return False
+
+    def calibrate_all_joints_auto(self, move_degrees: float = 4.0, settle_time: float = 0.5,
+                                  return_after_calib: bool = True) -> bool:
+        """
+        自动标定所有主要关节（无需人工干预）
+
+        Args:
+            move_degrees: 每个关节的移动角度（建议3-5度）
+            settle_time: 移动后等待稳定的时间（秒）
+            return_after_calib: 标定完成后是否返回初始位置
+
+        Returns:
+            是否所有关节都标定成功
+        """
+        if self.passive_mode:
+            print("✗ 自动标定需要独立模式（不能使用被动模式）")
+            return False
+
+        print(f"\n{'#'*60}")
+        print("# 自动标定 - 所有主要关节")
+        print(f"{'#'*60}")
+
+        # 保存初始位置以便后续返回
+        initial_joints = self.get_joint_states()
+        if initial_joints is None:
+            print("✗ 无法获取关节状态")
+            return False
+
+        # 确定高度等级
+        height_level = self._estimate_height_level(initial_joints)
+        print(f"\n当前高度等级: {height_level}")
+
+        # 创建新的标定点
+        cal_point = CalibrationPoint(
+            height_level=height_level,
+            joint_states=initial_joints.tolist(),
+            sensitivities=[],
+            pixel_to_mm=self.pixel_to_mm_ratio,
+            timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
+            arm=self.arm
+        )
+
+        # 标定每个主要关节
+        primary_joints = self.arm_config.primary_joints
+
+        print(f"\n将自动标定 {len(primary_joints)} 个关节:")
+        for i, jidx in enumerate(primary_joints):
+            print(f"  {i+1}. {self.joint_names.get(jidx, f'joint_{jidx}')} (索引{jidx})")
+
+        input("\n按 Enter 开始自动标定...")
+
+        success_count = 0
+        failed_joints = []
+
+        for i, jidx in enumerate(primary_joints):
+            print(f"\n{'='*40}")
+            print(f"[{i+1}/{len(primary_joints)}] 自动标定关节 {jidx}")
+            print(f"{'='*40}")
+
+            success, sensitivity = self.calibrate_joint_sensitivity_auto(
+                jidx, move_degrees, settle_time, show_progress=True
+            )
+
+            if success:
+                cal_point.sensitivities.append(sensitivity)
+                success_count += 1
+            else:
+                print(f"✗ 关节 {jidx} 标定失败，跳过")
+                failed_joints.append(jidx)
+
+        # 返回初始位置（可选）
+        if return_after_calib:
+            print(f"\n返回初始位置...")
+            self._smooth_move_all_joints(initial_joints)
+
+        # 保存标定点
+        if success_count > 0:
+            self.calibration_points.append(cal_point)
+            self._save_calibration_points()
+
+            print(f"\n{'='*60}")
+            print(f"✓ 自动标定完成: {success_count}/{len(primary_joints)} 个关节成功")
+            print(f"✓ 已保存到高度等级 '{height_level}'")
+
+            if failed_joints:
+                print(f"\n⚠ 以下关节标定失败: {failed_joints}")
+                print(f"  可能原因:")
+                print(f"    - 该关节在当前姿态下无法产生足够的图像位移")
+                print(f"    - 纹理不足导致光流匹配失败")
+                print(f"    - 标点移出视野")
+
+            return True
+        else:
+            print(f"\n✗ 自动标定失败: 没有关节标定成功")
             return False
 
     def _estimate_height_level(self, joints: np.ndarray) -> str:

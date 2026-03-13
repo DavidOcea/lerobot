@@ -351,6 +351,12 @@ class PrecisionPlaceSystem:
 
                 return len(self.calibration_points) > 0
 
+            def calibrate_all_joints_auto(self, move_degrees=4.0, settle_time=0.5, return_after_calib=True):
+                """自动标定（被动模式下不支持）"""
+                print("\n✗ 自动标定需要独立模式（不能使用被动模式）")
+                print("  请使用 '独立模式' 连接设备")
+                return False
+
             def show_calibration_points(self):
                 print("\n标定点:")
                 for i, cp in enumerate(self.calibration_points):
@@ -653,6 +659,66 @@ class PrecisionPlaceSystem:
 
         self.controller.calibrate_all_joints(move_deg)
 
+    def calibrate_joints_auto(self):
+        """关节灵敏度自动标定（无需手动移动）"""
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        print("\n" + "="*60)
+        print("关节灵敏度自动标定")
+        print("="*60)
+
+        # 检查是否为被动模式
+        if self.passive_mode:
+            print("\n✗ 自动标定需要独立模式（不能使用被动模式）")
+            print("  请选择 '独立模式' 连接设备")
+            return
+
+        # 获取当前配置的关节列表
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        primary_joints = arm_config.primary_joints if arm_config else []
+
+        print("""
+说明:
+  自动标定会自动移动每个关节4度并采集图像。
+  不需要手动操作，系统会完成以下步骤:
+    1. 采集初始图像
+    2. 自动移动关节
+    3. 等待稳定
+    4. 采集移动后图像
+    5. 计算灵敏度
+
+建议在3个不同高度各做一次标定:
+    - 高位置 (卡槽上方约15cm)
+    - 中位置 (卡槽上方约10cm)
+    - 低位置 (卡槽上方约5cm)
+""")
+        print(f"  将自动标定 {len(primary_joints)} 个关节 ({self.current_arm}手):")
+        for i, jidx in enumerate(primary_joints):
+            joint_name = self.controller.joint_names.get(jidx, f"joint_{jidx}")
+            print(f"    {i+1}. 关节 {jidx} = {joint_name}")
+
+        input("\n按 Enter 开始自动标定...")
+
+        try:
+            move_deg = float(input("移动角度 (默认4度): ").strip() or "4.0")
+        except:
+            move_deg = 4.0
+
+        settle_time = 0.5
+        try:
+            settle_time = float(input("稳定等待时间秒 (默认0.5): ").strip() or "0.5")
+        except:
+            settle_time = 0.5
+
+        return_after = True
+        ans = input("标定后返回初始位置? (y/n，默认y): ").strip().lower()
+        if ans == 'n':
+            return_after = False
+
+        self.controller.calibrate_all_joints_auto(move_deg, settle_time, return_after)
+
     def show_calibration_history(self):
         """显示标定历史"""
         if not self.controller:
@@ -907,8 +973,10 @@ def main():
             elif choice == "4":
                 print("\n标定选项:")
                 print("  1. 像素-毫米标定 (基础标定)")
-                print("  2. 关节灵敏度标定 (多点标定，推荐)")
-                print("  3. 运行全部标定")
+                print("  2. 关节灵敏度标定 (手动移动)")
+                print("  3. 关节灵敏度标定 (自动移动，推荐)")
+                print("  4. 运行全部标定 (手动)")
+                print("  5. 运行全部标定 (自动)")
 
                 calib_choice = input("选项: ").strip()
 
@@ -923,10 +991,21 @@ def main():
                 elif calib_choice == "3":
                     if not system.controller:
                         system.connect()
+                    system.calibrate_joints_auto()
+                elif calib_choice == "4":
+                    if not system.controller:
+                        system.connect()
                     print("\n[1/2] 像素-毫米标定")
                     system.calibrate()
-                    print("\n[2/2] 关节灵敏度标定")
+                    print("\n[2/2] 关节灵敏度标定 (手动)")
                     system.calibrate_joints()
+                elif calib_choice == "5":
+                    if not system.controller:
+                        system.connect()
+                    print("\n[1/2] 像素-毫米标定")
+                    system.calibrate()
+                    print("\n[2/2] 关节灵敏度标定 (自动)")
+                    system.calibrate_joints_auto()
                 else:
                     print("无效选项")
                 
