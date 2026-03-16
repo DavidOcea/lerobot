@@ -43,8 +43,8 @@ class StereoCalibration:
     camera1: CameraCalibration = None
     camera2: CameraCalibration = None
     R: np.ndarray = field(default_factory=lambda: np.eye(3))
-    T: np.ndarray = field(default_factory=lambda: np.array([50.0, 0.0, 0.0]))
-    baseline: float = 50.0  # 基线距离 (mm)
+    T: np.ndarray = field(default_factory=lambda: np.array([80.0, 0.0, 0.0]))
+    baseline: float = 80.0  # 基线距离 (mm)
 
     def __post_init__(self):
         if self.camera1 is None:
