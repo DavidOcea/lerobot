@@ -36,6 +36,14 @@ from precision_place.dual_point_alignment import (
     PrecisionPlaceController, ARM_CONFIGS, DualPointDetector, JointSensitivity
 )
 
+# 尝试导入Z轴控制器
+try:
+    from precision_place.z_axis_controller import ZAxisController
+    _has_z_controller = True
+except ImportError:
+    _has_z_controller = False
+    ZAxisController = None
+
 
 # ==================== 配置 ====================
 
@@ -746,6 +754,390 @@ class PrecisionPlaceSystem:
         # 关节灵敏度标定点
         print("\n[关节灵敏度标定点]")
         self.controller.show_calibration_points()
+
+        # Z轴标定数据
+        print("\n[Z轴标定数据]")
+        self._show_z_axis_calibration()
+
+    def _show_z_axis_calibration(self):
+        """显示Z轴标定数据"""
+        if not _has_z_controller:
+            print("  Z轴控制器未加载")
+            return
+
+        import json
+        from pathlib import Path
+
+        z_calib_path = Path(__file__).parent / "z_axis_calibration.json"
+        if z_calib_path.exists():
+            with open(z_calib_path, 'r') as f:
+                data = json.load(f)
+
+            baseline = data.get('baseline', 0)
+            marker_diameter = data.get('marker_diameter', 15.0)
+
+            print(f"  双目基线: {baseline:.1f} mm")
+            print(f"  标记直径: {marker_diameter:.1f} mm")
+
+            sensitivities = data.get('joint_sensitivities', {})
+            if sensitivities:
+                print("  Z轴关节灵敏度:")
+                for k, v in sensitivities.items():
+                    joint_name = v.get('joint_name', f'joint_{k}')
+                    mm_per_deg = v.get('mm_per_deg', 0)
+                    calib_height = v.get('calibration_height', 0)
+                    print(f"    {joint_name}: {mm_per_deg:.2f} mm/deg @ {calib_height:.0f}mm")
+        else:
+            print("  暂无Z轴标定数据")
+
+    # ----------------- Z轴标定 -----------------
+
+    def calibrate_z_axis_joints(self):
+        """Z轴关节灵敏度标定（手动/示教模式）"""
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        if not _has_z_controller:
+            print("✗ Z轴控制器未加载")
+            return
+
+        print("\n" + "="*60)
+        print("Z轴关节灵敏度标定")
+        print("="*60)
+
+        # Z轴控制关节
+        z_joints = [7, 8, 10, 12]  # joint_1, joint_2, joint_4, joint_6
+        joint_names = {
+            7: 'right_arm_joint_1 (底座旋转)',
+            8: 'right_arm_joint_2 (肩部俯仰)',
+            10: 'right_arm_joint_4 (前臂俯仰)',
+            12: 'right_arm_joint_6 (手腕旋转)'
+        }
+
+        print("""
+Z轴控制原理:
+  - 这些关节的转动会影响末端高度
+  - 灵敏度 = 高度变化(mm) / 关节角度变化(deg)
+  - 标定后系统可以精确控制Z轴
+
+标定关节:
+  1. joint_1 (底座旋转) - 主要影响
+  2. joint_2 (肩部俯仰) - 次要影响
+  3. joint_4 (前臂俯仰) - 次要影响
+  4. joint_6 (手腕旋转) - 较小影响
+""")
+
+        input("\n按 Enter 开始...")
+
+        # 创建 Z 轴控制器
+        z_ctrl = ZAxisController()
+
+        # 设置相机
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera1 = self.cameras.get(arm_config.camera_name)
+        camera2 = self.cameras.get(arm_config.camera2_name) if arm_config.camera2_name else None
+
+        if camera1 is None:
+            print("✗ 主相机未连接")
+            return
+
+        z_ctrl.set_cameras(camera1, camera2)
+
+        # 尝试加载已有标定
+        z_ctrl.load_calibration()
+
+        try:
+            move_deg = float(input("移动角度 (默认4度): ").strip() or "4.0")
+        except:
+            move_deg = 4.0
+
+        success_count = 0
+
+        for joint_idx in z_joints:
+            print(f"\n{'='*50}")
+            print(f"标定关节: {joint_names.get(joint_idx, f'joint_{joint_idx}')}")
+            print(f"{'='*50}")
+
+            # 使用视频窗口进行标定
+            success, sensitivity = self._calibrate_z_joint_interactive(
+                z_ctrl, joint_idx, move_deg
+            )
+
+            if success and sensitivity is not None:
+                z_ctrl.joint_sensitivities[joint_idx] = sensitivity
+                success_count += 1
+                print(f"  ✓ 灵敏度: {sensitivity.mm_per_deg:.2f} mm/deg")
+
+        # 保存标定数据
+        if success_count > 0:
+            z_ctrl._save_calibration()
+            print(f"\n{'='*60}")
+            print(f"✓ Z轴标定完成: {success_count}/{len(z_joints)} 个关节成功")
+            print(f"{'='*60}")
+        else:
+            print("\n✗ Z轴标定失败")
+
+    def _calibrate_z_joint_interactive(self, z_ctrl, joint_idx, move_deg):
+        """交互式Z轴关节标定（带视频显示）"""
+        joint_name = z_ctrl.JOINT_NAMES.get(joint_idx, f'joint_{joint_idx}')
+
+        print(f"\n[视频窗口] 按 Enter 采集图像，按 q 取消")
+
+        window_name = f"Z-Axis Calibration: {joint_name}"
+        phase = 1  # 1=采集初始, 2=采集移动后
+        z_before = None
+        z_after = None
+        angle_before = None
+        angle_after = None
+
+        while True:
+            # 读取图像
+            frame = z_ctrl.camera1.read()
+            if frame is None:
+                continue
+
+            # 估计深度
+            estimate = z_ctrl.estimate_z(frame, z_ctrl.camera2.read() if z_ctrl.camera2 else None)
+
+            # 可视化
+            vis = frame.copy()
+            cv2.rectangle(vis, (5, 5), (300, 100), (0, 0, 0), -1)
+
+            y = 25
+            cv2.putText(vis, f"Z-Axis: {joint_name}", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            y += 25
+            depth_color = (0, 255, 0) if estimate.confidence > 0.5 else (0, 165, 255)
+            cv2.putText(vis, f"Depth: {estimate.z:.1f}mm +/- {estimate.uncertainty:.1f}", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, depth_color, 2)
+            y += 25
+            cv2.putText(vis, f"Method: {estimate.method}", (15, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+            # 获取关节角度
+            current_joints = self.controller.get_joint_states()
+            current_angle = current_joints[joint_idx] if current_joints is not None else 0.0
+
+            # 底部提示
+            bottom_h = 70 if phase == 2 else 50
+            cv2.rectangle(vis, (5, vis.shape[0] - bottom_h - 5), (vis.shape[1] - 5, vis.shape[0] - 5), (0, 0, 0), -1)
+
+            if phase == 1:
+                cv2.putText(vis, "[Phase 1] Press ENTER to capture initial depth", (15, vis.shape[0] - 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                cv2.putText(vis, "Press 'q' to cancel", (15, vis.shape[0] - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
+            else:
+                moved = current_angle - angle_before if angle_before else 0
+                status = "OK" if abs(moved) >= move_deg * 0.7 else "Move more"
+                cv2.putText(vis, f"Moved: {moved:.2f} deg [{status}]", (15, vis.shape[0] - 50),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0) if status == "OK" else (0, 165, 255), 2)
+                cv2.putText(vis, "[Phase 2] Press ENTER to capture final depth", (15, vis.shape[0] - 28),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                cv2.putText(vis, "Press 'q' to cancel", (15, vis.shape[0] - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.45, (150, 150, 150), 1)
+
+            cv2.imshow(window_name, vis)
+
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord('q'):
+                cv2.destroyWindow(window_name)
+                print("  ✗ 标定已取消")
+                return False, None
+
+            elif key == 13 or key == 10:  # Enter
+                if phase == 1:
+                    if estimate.confidence < 0.3:
+                        print(f"  ✗ 深度估计不可靠 (置信度: {estimate.confidence:.2f})")
+                        continue
+
+                    z_before = estimate.z
+                    angle_before = current_angle
+                    print(f"  ✓ 初始深度: {z_before:.1f}mm, 角度: {angle_before:.2f}°")
+                    phase = 2
+                    print(f"\n  请用示教器移动关节约 {move_deg}°")
+                else:
+                    if estimate.confidence < 0.3:
+                        print(f"  ✗ 深度估计不可靠 (置信度: {estimate.confidence:.2f})")
+                        continue
+
+                    z_after = estimate.z
+                    angle_after = current_angle
+                    print(f"  ✓ 移动后深度: {z_after:.1f}mm, 角度: {angle_after:.2f}°")
+                    break
+
+        cv2.destroyWindow(window_name)
+
+        # 计算灵敏度
+        delta_angle = angle_after - angle_before
+        delta_z = z_after - z_before
+
+        if abs(delta_angle) < 0.5:
+            print("  ⚠ 角度变化太小，标定可能不准确")
+            return False, None
+
+        mm_per_deg = delta_z / delta_angle
+
+        from precision_place.z_axis_controller import ZJointSensitivity
+        sensitivity = ZJointSensitivity(
+            joint_idx=joint_idx,
+            joint_name=joint_name,
+            mm_per_deg=mm_per_deg,
+            calibration_height=z_before
+        )
+
+        print(f"\n  标定结果:")
+        print(f"    角度变化: {delta_angle:.2f}°")
+        print(f"    Z变化: {delta_z:.1f}mm")
+        print(f"    灵敏度: {mm_per_deg:.2f} mm/deg")
+
+        return True, sensitivity
+
+    def calibrate_z_axis_joints_auto(self):
+        """Z轴关节灵敏度自动标定（独立模式）"""
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        if self.passive_mode:
+            print("\n✗ 自动标定需要独立模式（不能使用被动模式）")
+            print("  请选择 '独立模式' 连接设备")
+            return
+
+        if not _has_z_controller:
+            print("✗ Z轴控制器未加载")
+            return
+
+        if self.robot is None:
+            print("✗ 需要机器人连接")
+            return
+
+        print("\n" + "="*60)
+        print("Z轴关节灵敏度自动标定")
+        print("="*60)
+
+        print("""
+说明:
+  自动标定会自动移动每个Z轴关节并记录深度变化。
+  不需要手动操作。
+
+Z轴控制关节:
+  - joint_1 (底座旋转): 主要影响
+  - joint_2 (肩部俯仰): 次要影响
+  - joint_4 (前臂俯仰): 次要影响
+  - joint_6 (手腕旋转): 较小影响
+""")
+
+        input("\n按 Enter 开始自动标定...")
+
+        try:
+            move_deg = float(input("移动角度 (默认4度): ").strip() or "4.0")
+        except:
+            move_deg = 4.0
+
+        # 创建 Z 轴控制器
+        z_ctrl = ZAxisController()
+
+        # 设置相机
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera1 = self.cameras.get(arm_config.camera_name)
+        camera2 = self.cameras.get(arm_config.camera2_name) if arm_config.camera2_name else None
+
+        if camera1 is None:
+            print("✗ 主相机未连接")
+            return
+
+        z_ctrl.set_cameras(camera1, camera2)
+        z_ctrl.load_calibration()
+
+        # 执行自动标定
+        success = z_ctrl.calibrate_all_z_joints_auto(self.robot, move_deg)
+
+        if success:
+            print("\n✓ Z轴自动标定完成")
+        else:
+            print("\n✗ Z轴自动标定失败")
+
+    def calibrate_stereo_baseline(self):
+        """双相机基线标定"""
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        if not _has_z_controller:
+            print("✗ Z轴控制器未加载")
+            return
+
+        print("\n" + "="*60)
+        print("双相机基线标定")
+        print("="*60)
+
+        # 检查副相机
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera1 = self.cameras.get(arm_config.camera_name)
+        camera2 = self.cameras.get(arm_config.camera2_name) if arm_config.camera2_name else None
+
+        if camera1 is None:
+            print("✗ 主相机未连接")
+            return
+
+        if camera2 is None:
+            print("✗ 副相机未连接")
+            print(f"  当前配置: 主相机={arm_config.camera_name}, 副相机={arm_config.camera2_name}")
+            return
+
+        print(f"""
+双目基线标定用于提高深度估计精度。
+
+当前配置:
+  主相机: {arm_config.camera_name}
+  副相机: {arm_config.camera2_name}
+
+标定方法:
+  1. 自动标定 - 机器人移动已知距离
+  2. 手动标定 - 输入已知深度
+  3. 单目辅助 - 使用单目深度估计
+""")
+
+        method = input("选择方法 (1/2/3): ").strip()
+
+        z_ctrl = ZAxisController()
+        z_ctrl.set_cameras(camera1, camera2)
+        z_ctrl.load_calibration()
+
+        if method == "1":
+            if self.passive_mode:
+                print("\n✗ 自动标定需要独立模式")
+                return
+            if self.robot is None:
+                print("\n✗ 需要机器人连接")
+                return
+
+            try:
+                move_dist = float(input("移动距离mm (默认20): ").strip() or "20")
+            except:
+                move_dist = 20.0
+
+            success, baseline = z_ctrl.calibrate_stereo_baseline_auto(self.robot, move_dist)
+
+        elif method == "2":
+            try:
+                known_depth = float(input("已知深度mm (默认100): ").strip() or "100")
+            except:
+                known_depth = 100.0
+
+            success, baseline = z_ctrl.calibrate_stereo_baseline_manual(known_depth)
+
+        elif method == "3":
+            success, baseline = z_ctrl.calibrate_stereo_baseline_with_depth()
+
+        else:
+            print("无效选项")
+            return
+
+        if success:
+            print(f"\n✓ 基线标定完成: {baseline:.1f}mm")
+        else:
+            print("\n✗ 基线标定失败")
     
     # ----------------- 预设位置 -----------------
     
@@ -987,6 +1379,10 @@ def main():
                 print("  3. 关节灵敏度标定 (自动移动，推荐)")
                 print("  4. 运行全部标定 (手动)")
                 print("  5. 运行全部标定 (自动)")
+                print("  ---")
+                print("  6. Z轴关节灵敏度标定 (手动)")
+                print("  7. Z轴关节灵敏度标定 (自动)")
+                print("  8. 双相机基线标定")
 
                 calib_choice = input("选项: ").strip()
 
@@ -1016,6 +1412,18 @@ def main():
                     system.calibrate()
                     print("\n[2/2] 关节灵敏度标定 (自动)")
                     system.calibrate_joints_auto()
+                elif calib_choice == "6":
+                    if not system.controller:
+                        system.connect()
+                    system.calibrate_z_axis_joints()
+                elif calib_choice == "7":
+                    if not system.controller:
+                        system.connect()
+                    system.calibrate_z_axis_joints_auto()
+                elif calib_choice == "8":
+                    if not system.controller:
+                        system.connect()
+                    system.calibrate_stereo_baseline()
                 else:
                     print("无效选项")
                 
