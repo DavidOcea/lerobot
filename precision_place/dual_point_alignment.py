@@ -1,21 +1,27 @@
 """
-双标记点精准对齐系统 - V2
+双标记点精准对齐系统 - V3
 
 功能:
 1. 双标记点检测 (工件3绿 + 卡槽3红)
 2. 左手/右手切换
 3. 自动高度调整
 4. XY对齐 + 旋转校正
-5. 夹爪控制
-6. 运动平滑
-7. 多点标定插值 (方案A)
-8. 雅可比运动学框架 (方案B预留)
-9. 预设位置
-10. 共享状态读取 (与示教程序协同)
+5. Z轴精确控制 (双目立体视觉 + 单目尺寸估计)
+6. 夹爪控制
+7. 运动平滑
+8. 多点标定插值 (方案A)
+9. 雅可比运动学框架 (方案B预留)
+10. 预设位置
+11. 共享状态读取 (与示教程序协同)
 
 标定方案:
 - 方案A: 多点手动标定 + 线性插值 (已实现)
 - 方案B: DH参数 + 雅可比矩阵 (框架预留)
+
+Z轴控制:
+- 双目立体视觉: 精度±0.5mm
+- 单目尺寸估计: 精度±1.5mm
+- 卡尔曼滤波融合
 """
 
 import cv2
@@ -36,6 +42,14 @@ try:
 except ImportError:
     _has_status_reader = False
     RobotStatusReader = None
+
+# 导入Z轴控制器
+try:
+    from precision_place.z_axis_controller import ZAxisController, DepthEstimate
+    _has_z_controller = True
+except ImportError:
+    _has_z_controller = False
+    ZAxisController = None
 
 
 # ==================== 数据结构 ====================
@@ -64,6 +78,10 @@ class DualMarkerState:
     workpiece_detected: bool = False
     slot_detected: bool = False
     alignment_quality: float = 0
+    # P1新增：退化模式标记
+    degraded_mode: bool = False  # 是否处于退化模式（标记不足）
+    degraded_reason: str = ""    # 退化原因
+    predicted_slot_center: Optional[Tuple[float, float]] = None  # 预测的卡槽中心
 
     @property
     def workpiece_markers(self) -> List[Optional[Marker]]:
@@ -73,6 +91,16 @@ class DualMarkerState:
     def slot_markers(self) -> List[Optional[Marker]]:
         return [self.slot_1, self.slot_2, self.slot_3]
 
+    @property
+    def slot_marker_count(self) -> int:
+        """检测到的卡槽标记数量"""
+        return sum(1 for m in self.slot_markers if m)
+
+    @property
+    def workpiece_marker_count(self) -> int:
+        """检测到的工件标记数量"""
+        return sum(1 for m in self.workpiece_markers if m)
+
 
 @dataclass
 class ArmConfig:
@@ -80,9 +108,12 @@ class ArmConfig:
     name: str
     camera_name: str
     camera_index: int
+    # 第二相机 (用于双目Z轴控制)
+    camera2_name: str = ""
+    camera2_index: int = -1
     # 主要控制关节索引 (用于方案A的简化控制)
-    primary_joints: List[int]  # 主要影响XY的关节索引列表
-    gripper_idx: int
+    primary_joints: List[int] = field(default_factory=list)
+    gripper_idx: int = 0
     gripper_open: float = 0.0
     gripper_close: float = 50.0
     # DH参数 (方案B预留)
@@ -95,6 +126,8 @@ ARM_CONFIGS = {
         name='right',
         camera_name='right_wrist',
         camera_index=6,
+        camera2_name='right_wrist2',
+        camera2_index=8,
         primary_joints=[7, 8, 9, 10, 11, 12, 14],  # right_arm_joint_1~6 + trunk_joint_1
         gripper_idx=13,
         gripper_open=0.0,
@@ -103,8 +136,10 @@ ARM_CONFIGS = {
     ),
     'left': ArmConfig(
         name='left',
-        camera_name='left_wrist2',
-        camera_index=4,
+        camera_name='left_wrist',
+        camera_index=2,
+        camera2_name='left_wrist2',
+        camera2_index=4,
         primary_joints=[0, 1, 2, 3, 4, 5, 14],  # left_arm_joint_1~6 + trunk_joint_1
         gripper_idx=6,
         gripper_open=0.0,
@@ -332,44 +367,103 @@ class DualPointDetector:
         
         return markers
     
-    def detect_triple_marker_state(self, image: np.ndarray) -> DualMarkerState:
-        """检测三标记状态（工件3个，卡槽3个）"""
+    def detect_triple_marker_state(self, image: np.ndarray,
+                                    allow_degraded: bool = True) -> DualMarkerState:
+        """
+        检测三标记状态（工件3个，卡槽3个）
+
+        Args:
+            image: 输入图像
+            allow_degraded: 是否允许退化模式（标记不足时仍尝试工作）
+
+        Returns:
+            DualMarkerState: 检测状态
+        """
         state = DualMarkerState()
 
-        # 工件标记 - 需要3个，至少2个才能工作
+        # 工件标记 - 需要3个，至少1个即可工作（退化模式）
         wp_markers = self.detect_markers_by_color(image, self.workpiece_color)
-        if len(wp_markers) >= 2:
-            # 按Y坐标排序（从上到下）
+        if len(wp_markers) >= 1:
             sorted_wp = sorted(wp_markers, key=lambda m: m.y)
-            if len(sorted_wp) >= 3:
-                state.workpiece_1 = sorted_wp[0]  # 上
-                state.workpiece_2 = sorted_wp[1]  # 中
-                state.workpiece_3 = sorted_wp[2]  # 下
-            else:
-                state.workpiece_1 = sorted_wp[0]
+            state.workpiece_1 = sorted_wp[0]
+            if len(sorted_wp) >= 2:
                 state.workpiece_2 = sorted_wp[1]
-                state.workpiece_3 = None
+            if len(sorted_wp) >= 3:
+                state.workpiece_3 = sorted_wp[2]
             state.workpiece_detected = True
 
-        # 卡槽标记 - 需要3个，至少2个才能工作
+        # 卡槽标记 - 需要3个，至少1个即可工作（退化模式）
         sl_markers = self.detect_markers_by_color(image, self.slot_color)
-        if len(sl_markers) >= 2:
-            # 按Y坐标排序（从上到下）
+        if len(sl_markers) >= 1:
             sorted_sl = sorted(sl_markers, key=lambda m: m.y)
-            if len(sorted_sl) >= 3:
-                state.slot_1 = sorted_sl[0]  # 上
-                state.slot_2 = sorted_sl[1]  # 中
-                state.slot_3 = sorted_sl[2]  # 下
-            else:
-                state.slot_1 = sorted_sl[0]
+            state.slot_1 = sorted_sl[0]
+            if len(sorted_sl) >= 2:
                 state.slot_2 = sorted_sl[1]
-                state.slot_3 = None
+            if len(sorted_sl) >= 3:
+                state.slot_3 = sorted_sl[2]
             state.slot_detected = True
 
+        # 检查是否处于退化模式
         if state.workpiece_detected and state.slot_detected:
+            wp_count = state.workpiece_marker_count
+            sl_count = state.slot_marker_count
+
+            if wp_count < 2 or sl_count < 2:
+                state.degraded_mode = True
+                reasons = []
+                if wp_count < 2:
+                    reasons.append(f"工件标记不足({wp_count}/2)")
+                if sl_count < 2:
+                    reasons.append(f"卡槽标记不足({sl_count}/2)")
+                state.degraded_reason = ", ".join(reasons)
+
             self._calculate_alignment(state)
 
         return state
+
+    def detect_with_secondary_camera(self, image1: np.ndarray, image2: np.ndarray = None) -> DualMarkerState:
+        """
+        使用双相机检测标记（融合结果）
+
+        当主相机卡槽标记不足时，尝试使用副相机补充
+
+        Args:
+            image1: 主相机图像
+            image2: 副相机图像
+
+        Returns:
+            融合后的检测状态
+        """
+        # 主相机检测
+        state1 = self.detect_triple_marker_state(image1)
+
+        if image2 is None:
+            return state1
+
+        # 如果主相机检测正常，直接返回
+        if state1.slot_marker_count >= 2 and not state1.degraded_mode:
+            return state1
+
+        # 副相机检测
+        state2 = self.detect_triple_marker_state(image2)
+
+        # 尝试融合：使用检测到更多标记的相机结果
+        if state2.slot_marker_count > state1.slot_marker_count:
+            # 副相机卡槽标记更多，使用副相机的卡槽数据
+            # 但工件标记仍使用主相机（工件在夹爪上，主相机更稳定）
+            state1.slot_1 = state2.slot_1
+            state1.slot_2 = state2.slot_2
+            state1.slot_3 = state2.slot_3
+            state1.slot_detected = state2.slot_detected
+
+            # 重新计算对齐
+            if state1.workpiece_detected and state1.slot_detected:
+                self._calculate_alignment(state1)
+                state1.degraded_mode = state1.slot_marker_count < 2
+                if state1.degraded_mode:
+                    state1.degraded_reason = f"融合后卡槽标记仍不足({state1.slot_marker_count}/2)"
+
+        return state1
 
     def detect_dual_marker_state(self, image: np.ndarray) -> DualMarkerState:
         """检测标记状态（兼容旧接口，调用三标记检测）"""
@@ -495,6 +589,10 @@ class PrecisionPlaceController:
     - 方案A: 多点手动标定 + 插值 (默认)
     - 方案B: DH参数 + 雅可比 (需提供DH参数)
 
+    Z轴控制:
+    - 双目立体视觉 (主方法)
+    - 单目尺寸估计 (备份)
+
     被动模式:
     - 与示教程序协同工作
     - 通过共享文件读取机器人状态
@@ -502,12 +600,14 @@ class PrecisionPlaceController:
     """
 
     def __init__(self, robot, camera, arm: str = "right", passive_mode: bool = False,
-                 use_interpolation: bool = True):
+                 use_interpolation: bool = True, camera2=None, enable_z_control: bool = True):
         self.robot = robot
-        self.camera = camera
+        self.camera = camera  # 主相机
+        self.camera2 = camera2  # 第二相机 (用于双目Z轴控制)
         self.arm = arm
         self.passive_mode = passive_mode  # 被动模式：只读取，不发送动作
         self.use_interpolation = use_interpolation  # 使用加权插值 (False=最近邻)
+        self.enable_z_control = enable_z_control and _has_z_controller  # 是否启用Z轴控制
 
         # 加载手臂配置
         self.arm_config = ARM_CONFIGS.get(arm, ARM_CONFIGS['right'])
@@ -541,6 +641,15 @@ class PrecisionPlaceController:
         self.target_offset_x = 0.0
         self.target_offset_y = 0.0
 
+        # P1: 历史偏移记录（用于预测）
+        self._historical_offset_x: List[float] = []
+        self._historical_offset_y: List[float] = []
+        self._max_history_length = 10
+
+        # P1: 预测模式参数
+        self.use_prediction: bool = True  # 是否使用预测位置
+        self._predicted_slot_center: Optional[Tuple[float, float]] = None
+
         # 旋转调整增益
         self.rotation_gain = 0.3
         self.max_rotation_adjust = 2.0  # 单次最大旋转调整（度）
@@ -552,6 +661,18 @@ class PrecisionPlaceController:
         # 高度控制 (用于粗调)
         self.height_joint_idx = self.arm_config.primary_joints[1]  # 通常joint_2影响高度
 
+        # Z轴精确控制
+        self.z_controller: Optional[ZAxisController] = None
+        if self.enable_z_control:
+            self.z_controller = ZAxisController(marker_diameter_mm=15.0)
+            if camera2 is not None:
+                self.z_controller.set_cameras(camera, camera2)
+            print("✓ Z轴精确控制已启用")
+
+        # Z轴目标深度 (mm)
+        self.target_z: Optional[float] = None
+        self.z_tolerance_mm = 1.0  # Z轴容差
+
         # 预设位置
         self.presets: Dict[str, np.ndarray] = {}
         self._load_presets()
@@ -562,6 +683,12 @@ class PrecisionPlaceController:
 
         # 关节名称映射
         self.joint_names = self._build_joint_names()
+
+    def set_camera2(self, camera2):
+        """设置第二相机"""
+        self.camera2 = camera2
+        if self.z_controller is not None:
+            self.z_controller.set_cameras(self.camera, camera2)
 
     def _build_joint_names(self) -> Dict[int, str]:
         """构建关节索引到名称的映射"""
@@ -964,6 +1091,10 @@ class PrecisionPlaceController:
             return None, None
 
         good = p1[st == 1] - pts[st == 1]
+        # 检查是否有足够的有效匹配点
+        if len(good) < 5:
+            return None, None
+
         dx = np.mean(good, axis=0)[0]
         dy = np.mean(good, axis=0)[1]
 
@@ -1135,17 +1266,42 @@ class PrecisionPlaceController:
             return False
 
     def _estimate_height_level(self, joints: np.ndarray) -> str:
-        """根据关节状态估计高度等级"""
-        # 简单实现: 根据joint_2 (肩部俯仰) 判断
-        if len(self.arm_config.primary_joints) < 2:
+        """
+        根据关节状态估计高度等级
+
+        使用多关节加权评估末端高度：
+        - 肩部俯仰 (joint_2): 主要影响高度
+        - 肘部俯仰 (joint_3): 次要影响
+        - 躯干 (trunk_1): 影响整体高度基准
+        """
+        if len(self.arm_config.primary_joints) < 3:
             return "medium"
 
-        joint_2_idx = self.arm_config.primary_joints[1]
-        angle = joints[joint_2_idx] if joint_2_idx < len(joints) else 0
+        primary_joints = self.arm_config.primary_joints
 
-        if angle > 45:
+        # 获取关键关节角度
+        shoulder_idx = primary_joints[1]  # joint_2: 肩部俯仰
+        elbow_idx = primary_joints[2]     # joint_3: 肘部俯仰
+        trunk_idx = 14                    # trunk_joint_1
+
+        shoulder_angle = joints[shoulder_idx] if shoulder_idx < len(joints) else 0
+        elbow_angle = joints[elbow_idx] if elbow_idx < len(joints) else 0
+        trunk_angle = joints[trunk_idx] if trunk_idx < len(joints) else 0
+
+        # 加权计算高度分数
+        # 肩部角度越大(手臂越抬高)，末端越高
+        # 肘部角度影响前臂位置
+        # 躯干角度影响整体高度基准
+        height_score = (
+            shoulder_angle * 0.50 +  # 肩部权重最大
+            elbow_angle * 0.30 +     # 肘部次之
+            trunk_angle * 0.20       # 躯干影响最小
+        )
+
+        # 根据分数判断高度等级
+        if height_score > 35:
             return "high"
-        elif angle > 20:
+        elif height_score > 15:
             return "medium"
         else:
             return "low"
@@ -1451,24 +1607,37 @@ class PrecisionPlaceController:
                 max_y_sens = s
 
         # 3. 计算X方向调整
-        if max_x_sens:
+        delta_x = 0.0
+        delta_y = 0.0
+        if max_x_sens and abs(max_x_sens.pixel_dx_per_deg) > 0.01:
             delta_x = -pixel_error_x / max_x_sens.pixel_dx_per_deg
             delta_x = np.clip(delta_x * self.gain, -2.0, 2.0)
-            adjustments[max_x_sens.joint_idx] = adjustments.get(max_x_sens.joint_idx, 0) + delta_x
-            print(f"    关节 {max_x_sens.joint_idx} (X主): sens={max_x_sens.pixel_dx_per_deg:.2f}, 调整={delta_x:.2f}")
 
         # 4. 计算Y方向调整
-        if max_y_sens and max_y_sens.joint_idx != max_x_sens.joint_idx:
+        if max_y_sens and abs(max_y_sens.pixel_dy_per_deg) > 0.01:
             delta_y = -pixel_error_y / max_y_sens.pixel_dy_per_deg
             delta_y = np.clip(delta_y * self.gain, -2.0, 2.0)
+
+        # 5. 合并调整（处理同一关节控制XY的情况）
+        if max_x_sens and max_y_sens:
+            if max_x_sens.joint_idx == max_y_sens.joint_idx:
+                # 同一个关节控制XY，合并调整量
+                delta = (delta_x + delta_y) / 2
+                delta = np.clip(delta, -2.0, 2.0)
+                adjustments[max_x_sens.joint_idx] = delta
+                print(f"    关节 {max_x_sens.joint_idx} (XY合一): X调整={delta_x:.2f}, Y调整={delta_y:.2f}, 合并={delta:.2f}")
+            else:
+                # 不同关节分别控制X和Y
+                adjustments[max_x_sens.joint_idx] = adjustments.get(max_x_sens.joint_idx, 0) + delta_x
+                adjustments[max_y_sens.joint_idx] = adjustments.get(max_y_sens.joint_idx, 0) + delta_y
+                print(f"    关节 {max_x_sens.joint_idx} (X主): sens={max_x_sens.pixel_dx_per_deg:.2f}, 调整={delta_x:.2f}")
+                print(f"    关节 {max_y_sens.joint_idx} (Y主): sens={max_y_sens.pixel_dy_per_deg:.2f}, 调整={delta_y:.2f}")
+        elif max_x_sens:
+            adjustments[max_x_sens.joint_idx] = adjustments.get(max_x_sens.joint_idx, 0) + delta_x
+            print(f"    关节 {max_x_sens.joint_idx} (X主): sens={max_x_sens.pixel_dx_per_deg:.2f}, 调整={delta_x:.2f}")
+        elif max_y_sens:
             adjustments[max_y_sens.joint_idx] = adjustments.get(max_y_sens.joint_idx, 0) + delta_y
             print(f"    关节 {max_y_sens.joint_idx} (Y主): sens={max_y_sens.pixel_dy_per_deg:.2f}, 调整={delta_y:.2f}")
-        elif max_y_sens and max_y_sens.joint_idx == max_x_sens.joint_idx:
-            # 如果是同一个关节，需要合并
-            delta = (delta_x + delta_y) / 2
-            delta = np.clip(delta * self.gain, -2.0, 2.0)
-            adjustments[max_y_sens.joint_idx] = delta
-            print(f"    关节 {max_y_sens.joint_idx} (XY合一): X调整={delta_x:.2f}, Y调整={delta_y:.2f}, 合并={delta:.2f}")
 
         return adjustments
 
@@ -1577,8 +1746,22 @@ class PrecisionPlaceController:
 
     # ==================== 对齐流程 ====================
 
-    def align_xy(self, tolerance_mm: float = None) -> bool:
-        """XY对齐 (使用标定数据)"""
+    def align_xy(self, tolerance_mm: float = None, use_secondary_camera: bool = True) -> bool:
+        """
+        XY对齐 (使用标定数据)
+
+        P1改进:
+        - 支持退化模式（标记不足时仍尝试工作）
+        - 支持副相机融合检测
+        - 支持预测位置功能
+
+        Args:
+            tolerance_mm: 目标精度
+            use_secondary_camera: 是否使用副相机辅助检测
+
+        Returns:
+            是否对齐成功
+        """
         if tolerance_mm is None:
             tolerance_mm = self.tolerance_mm
 
@@ -1591,20 +1774,72 @@ class PrecisionPlaceController:
             print("警告: 无多点标定数据，精度可能受限")
             print("建议运行 calibrate_all_joints() 进行标定")
 
+        # 异常恢复参数
+        consecutive_failures = 0
+        max_consecutive_failures = 3
+        recovery_attempts = 0
+        max_recovery_attempts = 2
+        degraded_warnings = 0  # 退化模式警告计数
+
         for i in range(self.max_iterations):
             print(f"\n[对齐 {i+1}/{self.max_iterations}]")
 
+            # P1: 获取图像并尝试双相机融合
             image = self.camera.read()
-            state = self.detector.detect_dual_marker_state(image)
+            image2 = None
+            if use_secondary_camera and self.camera2 is not None:
+                image2 = self.camera2.read()
 
-            wp = sum(1 for m in state.workpiece_markers if m)
-            sl = sum(1 for m in state.slot_markers if m)
+            # P1: 使用双相机融合检测
+            if image2 is not None:
+                state = self.detector.detect_with_secondary_camera(image, image2)
+            else:
+                state = self.detector.detect_dual_marker_state(image)
+
+            wp = state.workpiece_marker_count
+            sl = state.slot_marker_count
+
+            # P1: 显示退化模式警告
+            if state.degraded_mode:
+                degraded_warnings += 1
+                print(f"  ⚠ 退化模式: {state.degraded_reason}")
+            else:
+                degraded_warnings = 0
 
             print(f"  工件: {wp}/3, 卡槽: {sl}/3")
 
             if not state.workpiece_detected or not state.slot_detected:
-                print("  标记不完整")
-                continue
+                consecutive_failures += 1
+                print(f"  标记不完整 ({consecutive_failures}/{max_consecutive_failures})")
+
+                # P1: 尝试使用预测位置
+                if self.use_prediction and state.workpiece_detected and self._has_valid_prediction():
+                    print("  尝试使用预测位置...")
+                    predicted_state = self._create_predicted_state(state)
+                    if predicted_state is not None:
+                        state = predicted_state
+                        print(f"  ✓ 使用预测偏移: ({state.offset_x:.1f}, {state.offset_y:.1f})")
+                    else:
+                        # 异常恢复
+                        self._handle_detection_failure(state, consecutive_failures, max_consecutive_failures,
+                                                       recovery_attempts, max_recovery_attempts)
+                        if consecutive_failures >= max_consecutive_failures * 2:
+                            return False
+                        continue
+                else:
+                    # 异常恢复
+                    recovery_attempts = self._handle_detection_failure(state, consecutive_failures,
+                                                                       max_consecutive_failures,
+                                                                       recovery_attempts, max_recovery_attempts)
+                    if consecutive_failures >= max_consecutive_failures * 2:
+                        return False
+                    continue
+
+            # 成功检测，重置计数器
+            consecutive_failures = 0
+
+            # P1: 记录历史偏移（用于预测）
+            self._record_offset(state.offset_x, state.offset_y)
 
             # 计算误差：当前偏移减去目标偏移
             current_offset_x = state.offset_x - self.target_offset_x
@@ -1617,17 +1852,27 @@ class PrecisionPlaceController:
             print(f"  当前偏移: ({state.offset_x:.1f}, {state.offset_y:.1f}) px")
             if self.target_offset_x != 0 or self.target_offset_y != 0:
                 print(f"  目标偏移: ({self.target_offset_x:.1f}, {self.target_offset_y:.1f}) px")
+
+            # P1: 退化模式下显示精度警告
+            if state.degraded_mode:
+                print(f"  ⚠ 精度可能降低 (标记不足)")
             print(f"  位置误差: ({mm_x:.2f}, {mm_y:.2f})mm, 总: {error_mm:.2f}mm")
             print(f"  旋转误差: {state.rotation_error:.2f}deg")
 
             # 检查位置和旋转误差
-            position_ok = error_mm < tolerance_mm
-            rotation_ok = abs(state.rotation_error) < self.tolerance_deg
+            # P1: 退化模式下使用更宽松的容差
+            actual_tolerance = tolerance_mm * 1.5 if state.degraded_mode else tolerance_mm
+            actual_rot_tolerance = self.tolerance_deg * 1.5 if state.degraded_mode else self.tolerance_deg
+
+            position_ok = error_mm < actual_tolerance
+            rotation_ok = abs(state.rotation_error) < actual_rot_tolerance
 
             if position_ok and rotation_ok:
                 print(f"\n✓ 对齐完成")
-                print(f"  位置误差: {error_mm:.2f}mm < {tolerance_mm}mm")
-                print(f"  旋转误差: {abs(state.rotation_error):.2f}deg < {self.tolerance_deg}deg")
+                print(f"  位置误差: {error_mm:.2f}mm < {actual_tolerance:.2f}mm")
+                print(f"  旋转误差: {abs(state.rotation_error):.2f}deg < {actual_rot_tolerance:.2f}deg")
+                if state.degraded_mode:
+                    print(f"  ⚠ 本次对齐在退化模式下完成，建议检查实际效果")
                 return True
 
             # 获取当前关节状态
@@ -1642,23 +1887,104 @@ class PrecisionPlaceController:
                 current_offset_x, current_offset_y, current_joints
             )
 
-            # 计算旋转调整量
-            rotation_adjustments = self.compute_rotation_adjustment(
-                state.rotation_error, current_joints
-            )
+            # 计算旋转调整量 (退化模式下跳过旋转校正)
+            rotation_adjustments = {}
+            if not state.degraded_mode and sl >= 2:
+                rotation_adjustments = self.compute_rotation_adjustment(
+                    state.rotation_error, current_joints
+                )
 
             print(f"  位置调整: {adjustments}")
             if rotation_adjustments:
                 print(f"  旋转调整: {rotation_adjustments}")
 
             # 应用调整
-            if state.alignment_quality > 0.3:
+            min_quality = 0.2 if state.degraded_mode else 0.3  # 退化模式下降低质量阈值
+            if state.alignment_quality > min_quality:
                 self.apply_joint_adjustments(adjustments, rotation_adjustments)
 
             time.sleep(self.settle_time)
 
-        print("\n✗ 对齐未完成")
+        print("\n✗ 对齐未完成 (达到最大迭代次数)")
         return False
+
+    def _handle_detection_failure(self, state: DualMarkerState, consecutive_failures: int,
+                                    max_consecutive_failures: int, recovery_attempts: int,
+                                    max_recovery_attempts: int) -> int:
+        """处理检测失败"""
+        if consecutive_failures >= max_consecutive_failures and recovery_attempts < max_recovery_attempts:
+            if not self.passive_mode:
+                recovery_attempts += 1
+                print(f"\n  [恢复尝试 {recovery_attempts}/{max_recovery_attempts}] 调整高度...")
+
+                if not state.slot_detected and state.workpiece_detected:
+                    print("  卡槽标记丢失，尝试上升...")
+                    self.raise_height(2.0)
+                elif not state.workpiece_detected and state.slot_detected:
+                    print("  工件标记丢失，尝试微调...")
+                    self.raise_height(1.0)
+                else:
+                    print("  标记均丢失，尝试上升...")
+                    self.raise_height(3.0)
+
+                time.sleep(0.5)
+            else:
+                print("  [被动模式] 无法自动恢复，请手动调整")
+
+            if consecutive_failures >= max_consecutive_failures * 2:
+                print("\n⚠ 持续检测失败，可能原因:")
+                print("  1. 标记被遮挡或移出视野")
+                print("  2. 光照变化导致颜色检测失败")
+                print("  3. 高度/角度不合适")
+                print("  建议手动调整后重试")
+
+        return recovery_attempts
+
+    def _record_offset(self, offset_x: float, offset_y: float):
+        """记录历史偏移（用于预测）"""
+        self._historical_offset_x.append(offset_x)
+        self._historical_offset_y.append(offset_y)
+
+        if len(self._historical_offset_x) > self._max_history_length:
+            self._historical_offset_x.pop(0)
+            self._historical_offset_y.pop(0)
+
+    def _has_valid_prediction(self) -> bool:
+        """检查是否有有效的预测数据"""
+        return len(self._historical_offset_x) >= 3
+
+    def _create_predicted_state(self, current_state: DualMarkerState) -> Optional[DualMarkerState]:
+        """
+        基于历史数据创建预测状态
+
+        当卡槽标记丢失时，使用历史偏移预测当前位置
+        """
+        if not self._has_valid_prediction():
+            return None
+
+        # 使用最近的偏移平均值作为预测
+        recent_x = self._historical_offset_x[-5:] if len(self._historical_offset_x) >= 5 else self._historical_offset_x
+        recent_y = self._historical_offset_y[-5:] if len(self._historical_offset_y) >= 5 else self._historical_offset_y
+
+        predicted_offset_x = sum(recent_x) / len(recent_x)
+        predicted_offset_y = sum(recent_y) / len(recent_y)
+
+        # 创建预测状态
+        state = DualMarkerState(
+            workpiece_1=current_state.workpiece_1,
+            workpiece_2=current_state.workpiece_2,
+            workpiece_3=current_state.workpiece_3,
+            workpiece_detected=True,
+            slot_detected=True,
+            offset_x=predicted_offset_x,
+            offset_y=predicted_offset_y,
+            rotation_error=0,  # 预测模式下跳过旋转校正
+            alignment_quality=0.5,  # 中等质量
+            degraded_mode=True,
+            degraded_reason="使用预测偏移"
+        )
+
+        return state
 
     # ==================== 兼容旧接口 ====================
 
@@ -1872,6 +2198,241 @@ class PrecisionPlaceController:
                 self.raise_height(1.0)
 
         print("\n✗ 高度调整未完成")
+        return False
+
+    # ==================== Z轴精确控制 ====================
+
+    def set_target_z(self, target_z: float):
+        """
+        设置Z轴目标深度
+
+        Args:
+            target_z: 目标深度 (mm)，即标记点到相机的距离
+        """
+        self.target_z = target_z
+        if self.z_controller is not None:
+            self.z_controller.set_target_z(target_z)
+        print(f"✓ Z轴目标深度: {target_z:.1f}mm")
+
+    def set_marker_diameter(self, diameter_mm: float):
+        """
+        设置标记点直径
+
+        Args:
+            diameter_mm: 标记点直径 (mm)
+        """
+        if self.z_controller is not None:
+            self.z_controller.depth_estimator.set_marker_diameter(diameter_mm)
+        print(f"✓ 标记点直径: {diameter_mm:.1f}mm")
+
+    def calibrate_z_baseline(self, baseline_mm: float):
+        """
+        设置双目基线距离
+
+        Args:
+            baseline_mm: 两个相机之间的距离 (mm)
+        """
+        if self.z_controller is not None:
+            self.z_controller.depth_estimator.set_baseline(baseline_mm)
+        print(f"✓ 双目基线距离: {baseline_mm:.1f}mm")
+
+    def estimate_current_z(self) -> Optional[float]:
+        """
+        估计当前Z轴深度
+
+        Returns:
+            当前深度 (mm)，失败返回 None
+        """
+        if self.z_controller is None:
+            return None
+
+        image1 = self.camera.read()
+        image2 = None
+        if self.camera2 is not None:
+            image2 = self.camera2.read()
+
+        estimate = self.z_controller.estimate_z(image1, image2, self.detector.workpiece_color)
+
+        if estimate.confidence > 0:
+            return estimate.z
+        return None
+
+    def align_z(self, tolerance_mm: float = None) -> bool:
+        """
+        Z轴对齐
+
+        Args:
+            tolerance_mm: Z轴容差 (mm)
+
+        Returns:
+            是否对齐成功
+        """
+        if self.z_controller is None:
+            print("✗ Z轴控制器未启用")
+            return False
+
+        if self.target_z is None:
+            print("✗ 未设置Z轴目标，请先调用 set_target_z()")
+            return False
+
+        if tolerance_mm is None:
+            tolerance_mm = self.z_tolerance_mm
+
+        if self.passive_mode:
+            print("✗ 被动模式下无法执行Z轴对齐")
+            return False
+
+        print(f"\nZ轴对齐 - 目标: {self.target_z:.1f}mm, 容差: ±{tolerance_mm}mm")
+
+        for i in range(self.max_iterations):
+            print(f"\n[Z轴 {i+1}/{self.max_iterations}]")
+
+            # 获取图像
+            image1 = self.camera.read()
+            image2 = None
+            if self.camera2 is not None:
+                image2 = self.camera2.read()
+
+            # 估计深度
+            estimate = self.z_controller.estimate_z(image1, image2, self.detector.workpiece_color)
+
+            print(f"  深度: {estimate.z:.1f}mm ±{estimate.uncertainty:.1f}mm ({estimate.method})")
+
+            # 计算误差
+            z_error = self.z_controller.compute_z_error(estimate.z)
+            print(f"  误差: {z_error:.1f}mm")
+
+            # 检查是否对齐
+            if abs(z_error) < tolerance_mm:
+                print(f"\n✓ Z轴对齐完成 (误差: {z_error:.2f}mm < {tolerance_mm}mm)")
+                return True
+
+            # 计算调整量
+            adjustments = self.z_controller.compute_z_adjustment()
+            adj_str = ', '.join([f'{self.z_controller.JOINT_NAMES.get(k, str(k))}:{v:.2f}°'
+                                 for k, v in adjustments.items()])
+            print(f"  调整: {adj_str}")
+
+            # 应用调整
+            joints = self.get_joint_states()
+            if joints is not None:
+                for joint_idx, adjustment_deg in adjustments.items():
+                    joints[joint_idx] += adjustment_deg
+                action = {f"{name}.pos": float(joints[i])
+                          for i, name in enumerate(self.robot.observation_joint_names)
+                          if i < len(joints)}
+                self.robot.send_action(action)
+                time.sleep(self.settle_time)
+
+        print("\n✗ Z轴对齐未完成 (达到最大迭代次数)")
+        return False
+
+    def align_xyz(self, tolerance_xy: float = None, tolerance_z: float = None) -> bool:
+        """
+        XYZ三维对齐
+
+        Args:
+            tolerance_xy: XY容差 (mm)
+            tolerance_z: Z容差 (mm)
+
+        Returns:
+            是否对齐成功
+        """
+        if tolerance_xy is None:
+            tolerance_xy = self.tolerance_mm
+        if tolerance_z is None:
+            tolerance_z = self.z_tolerance_mm
+
+        print(f"\n{'='*60}")
+        print(f"三维对齐 - XY容差: ±{tolerance_xy}mm, Z容差: ±{tolerance_z}mm")
+        print(f"{'='*60}")
+
+        # 先粗调高度确保能看到标记
+        self.auto_adjust_height()
+
+        # 迭代对齐
+        for i in range(self.max_iterations):
+            print(f"\n[三维对齐 {i+1}/{self.max_iterations}]")
+
+            # XY对齐
+            xy_ok = self._align_xy_single_iteration(tolerance_xy)
+
+            # Z轴对齐
+            z_ok = self._align_z_single_iteration(tolerance_z)
+
+            if xy_ok and z_ok:
+                print(f"\n✓ 三维对齐完成!")
+                return True
+
+            time.sleep(self.settle_time)
+
+        print("\n✗ 三维对齐未完成")
+        return False
+
+    def _align_xy_single_iteration(self, tolerance: float) -> bool:
+        """XY单次对齐迭代"""
+        image = self.camera.read()
+        state = self.detector.detect_dual_marker_state(image)
+
+        if not state.workpiece_detected or not state.slot_detected:
+            print("  XY: 标记不完整")
+            return False
+
+        current_offset_x = state.offset_x - self.target_offset_x
+        current_offset_y = state.offset_y - self.target_offset_y
+
+        mm_x = current_offset_x * self.pixel_to_mm_ratio
+        mm_y = current_offset_y * self.pixel_to_mm_ratio
+        error_mm = np.sqrt(mm_x**2 + mm_y**2)
+
+        print(f"  XY误差: ({mm_x:.2f}, {mm_y:.2f})mm, 总: {error_mm:.2f}mm")
+
+        if error_mm < tolerance and abs(state.rotation_error) < self.tolerance_deg:
+            print(f"  XY: ✓ 对齐")
+            return True
+
+        current_joints = self.get_joint_states()
+        if current_joints is not None:
+            adjustments = self.compute_joint_adjustments(current_offset_x, current_offset_y, current_joints)
+            rotation_adjustments = self.compute_rotation_adjustment(state.rotation_error, current_joints)
+            self.apply_joint_adjustments(adjustments, rotation_adjustments)
+
+        return False
+
+    def _align_z_single_iteration(self, tolerance: float) -> bool:
+        """Z轴单次对齐迭代"""
+        if self.z_controller is None or self.target_z is None:
+            return True  # Z轴未启用视为通过
+
+        image1 = self.camera.read()
+        image2 = self.camera2.read() if self.camera2 else None
+
+        estimate = self.z_controller.estimate_z(image1, image2, self.detector.workpiece_color)
+
+        if estimate.confidence < 0.1:
+            print("  Z: 深度估计失败")
+            return False
+
+        z_error = self.z_controller.compute_z_error(estimate.z)
+        print(f"  Z误差: {z_error:.1f}mm (深度: {estimate.z:.1f}mm)")
+
+        if abs(z_error) < tolerance:
+            print(f"  Z: ✓ 对齐")
+            return True
+
+        if not self.passive_mode:
+            # 获取多关节调整量
+            adjustments = self.z_controller.compute_z_adjustment()
+            joints = self.get_joint_states()
+            if joints is not None:
+                # 应用所有关节调整
+                for joint_idx, adjustment_deg in adjustments.items():
+                    joints[joint_idx] += adjustment_deg
+                action = {f"{name}.pos": float(joints[i])
+                          for i, name in enumerate(self.robot.observation_joint_names)
+                          if i < len(joints)}
+                self.robot.send_action(action)
+
         return False
 
     # ==================== 夹爪控制 ====================

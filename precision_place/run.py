@@ -319,6 +319,11 @@ class PrecisionPlaceSystem:
                     return False, None
 
                 good = p1[st == 1] - pts[st == 1]
+                # 检查是否有足够的有效匹配点
+                if len(good) < 5:
+                    print("✗ 有效特征点不足")
+                    return False, None
+
                 pixel_dx = float(np.mean(good, axis=0)[0])
                 pixel_dy = float(np.mean(good, axis=0)[1])
 
@@ -494,6 +499,11 @@ class PrecisionPlaceSystem:
                     return False, 0.0
 
                 good = p1[st == 1] - pts[st == 1]
+                # 检查是否有足够的有效匹配点
+                if len(good) < 5:
+                    print("✗ 有效特征点不足")
+                    return False, 0.0
+
                 pixel_dx = float(np.mean(good, axis=0)[0])
 
                 # 计算像素-毫米比例

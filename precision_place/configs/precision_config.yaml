@@ -1,4 +1,6 @@
 # 精准放置配置
+# 注意: 此文件仅为遗留配置，当前活跃代码使用 config.py
+# 保留此文件是为了兼容 _archived 目录中的旧代码
 
 # 相机
 cameras:
@@ -8,7 +10,7 @@ cameras:
     left_wrist2: 4
     right_wrist: 6
     right_wrist2: 8
-  primary: right_wrist2  # 索引8
+  primary: right_wrist  # 索引6 (与 config.py 保持一致)
 
 # 标记颜色
 markers:
@@ -19,7 +21,7 @@ markers:
 precision:
   tolerance_mm: 2.0
   rotation_tolerance_deg: 2.0
-  
+
 # 视觉伺服参数
 visual_servo:
   pixel_to_mm_ratio: 0.5
