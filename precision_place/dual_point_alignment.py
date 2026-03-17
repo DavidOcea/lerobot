@@ -124,7 +124,8 @@ class ArmConfig:
 
 
 # 手臂配置 - 7关节标定 (joint_1~6 + trunk_1)
-# 注意: 如果两个腕部相机安装方向相反(旋转180度)，需要配置camera_flip
+# 重要: 如果两个腕部相机安装方向相反，需要配置camera_flip
+# 当相机旋转180度安装时，X和Y方向都会翻转，需要设为(True, True)
 ARM_CONFIGS = {
     'right': ArmConfig(
         name='right',
@@ -138,11 +139,11 @@ ARM_CONFIGS = {
         gripper_close=50.0,
         dh_params=None,  # 待用户提供
         # 相机方向翻转配置:
-        # 如果 right_wrist2 与 right_wrist 安装方向相反(旋转180度)，
-        # 则X和Y方向都需要翻转
+        # 格式: (x_flip, y_flip) - True表示该相机方向与标定相机相反
+        # 两个相机安装方向相反时，需要为副相机设置翻转
         camera_flip={
-            'right_wrist': (False, False),   # 主相机作为参考
-            'right_wrist2': (True, True),    # 如果方向相反，设为(True, True)
+            'right_wrist': (False, False),    # 主相机作为参考方向
+            'right_wrist2': (True, True),     # 副相机安装方向相反，需要翻转X和Y
         }
     ),
     'left': ArmConfig(
@@ -157,8 +158,8 @@ ARM_CONFIGS = {
         gripper_close=50.0,
         dh_params=None,  # 待用户提供
         camera_flip={
-            'left_wrist': (False, False),
-            'left_wrist2': (True, True),  # 如果方向相反，设为(True, True)
+            'left_wrist': (False, False),     # 主相机作为参考方向
+            'left_wrist2': (True, True),      # 副相机安装方向相反，需要翻转X和Y
         }
     )
 }
@@ -1627,6 +1628,157 @@ class PrecisionPlaceController:
             flipped.append(flipped_s)
 
         return flipped
+
+    def verify_sensitivity_direction(self, joint_idx: int = 7, move_deg: float = 2.0) -> bool:
+        """
+        验证灵敏度方向是否正确
+
+        通过移动关节并观察像素变化方向来验证灵敏度符号是否正确。
+
+        Args:
+            joint_idx: 要测试的关节索引（默认joint_7 = right_arm_joint_1）
+            move_deg: 移动角度（默认2度）
+
+        Returns:
+            是否正确（True=方向正确，False=需要翻转）
+        """
+        if self.passive_mode:
+            print("✗ 被动模式下无法验证")
+            return False
+
+        print("\n" + "="*60)
+        print("灵敏度方向验证")
+        print("="*60)
+        print(f"\n测试关节: {self.joint_names.get(joint_idx, f'joint_{joint_idx}')} (索引{joint_idx})")
+        print(f"移动角度: {move_deg}度")
+
+        # 获取当前灵敏度
+        current_joints = self.get_joint_states()
+        if current_joints is None:
+            print("✗ 无法获取关节状态")
+            return False
+
+        sensitivities = self.get_interpolated_sensitivities(current_joints)
+        test_sens = None
+        for s in sensitivities:
+            if s.joint_idx == joint_idx:
+                test_sens = s
+                break
+
+        if test_sens is None:
+            print(f"✗ 未找到关节 {joint_idx} 的灵敏度数据")
+            return False
+
+        print(f"\n当前灵敏度: X={test_sens.pixel_dx_per_deg:.2f}, Y={test_sens.pixel_dy_per_deg:.2f} px/deg")
+
+        # 采集初始图像
+        print("\n[1] 采集初始图像...")
+        img1 = self.camera.read()
+        if img1 is None:
+            print("✗ 无法读取图像")
+            return False
+
+        # 获取初始像素偏移
+        state1 = self.detector.detect_dual_marker_state(img1)
+        if not state1.workpiece_detected or not state1.slot_detected:
+            print("✗ 标记检测失败，请确保标记在视野内")
+            return False
+
+        initial_offset_x = state1.offset_x
+        initial_offset_y = state1.offset_y
+        print(f"  初始像素偏移: X={initial_offset_x:.1f}, Y={initial_offset_y:.1f}")
+
+        # 移动关节
+        print(f"\n[2] 移动关节 {move_deg}度...")
+        current_angle = current_joints[joint_idx]
+        target_angle = current_angle + move_deg
+
+        # 平滑移动
+        success = self._smooth_move_single_joint_for_test(joint_idx, target_angle)
+        if not success:
+            print("✗ 移动失败")
+            return False
+
+        time.sleep(0.5)
+
+        # 采集移动后图像
+        print("\n[3] 采集移动后图像...")
+        img2 = self.camera.read()
+        if img2 is None:
+            print("✗ 无法读取图像")
+            # 移回原位
+            self._smooth_move_single_joint_for_test(joint_idx, current_angle)
+            return False
+
+        state2 = self.detector.detect_dual_marker_state(img2)
+        if not state2.workpiece_detected or not state2.slot_detected:
+            print("✗ 标记检测失败")
+            # 移回原位
+            self._smooth_move_single_joint_for_test(joint_idx, current_angle)
+            return False
+
+        final_offset_x = state2.offset_x
+        final_offset_y = state2.offset_y
+
+        # 计算实际像素变化
+        actual_dx = final_offset_x - initial_offset_x
+        actual_dy = final_offset_y - initial_offset_y
+
+        # 计算预期像素变化
+        expected_dx = test_sens.pixel_dx_per_deg * move_deg
+        expected_dy = test_sens.pixel_dy_per_deg * move_deg
+
+        print(f"\n结果分析:")
+        print(f"  实际像素变化: X={actual_dx:.1f}, Y={actual_dy:.1f}")
+        print(f"  预期像素变化: X={expected_dx:.1f}, Y={expected_dy:.1f}")
+
+        # 判断方向是否正确
+        x_correct = (actual_dx * expected_dx) > 0  # 同号表示方向正确
+        y_correct = (actual_dy * expected_dy) > 0
+
+        print(f"\n方向判断:")
+        print(f"  X方向: {'✓ 正确' if x_correct else '✗ 需要翻转'}")
+        print(f"  Y方向: {'✓ 正确' if y_correct else '✗ 需要翻转'}")
+
+        # 移回原位
+        print(f"\n[4] 返回原位...")
+        self._smooth_move_single_joint_for_test(joint_idx, current_angle)
+        time.sleep(0.5)
+
+        if not x_correct or not y_correct:
+            print("\n" + "!"*60)
+            print("! 警告: 灵敏度方向不正确，可能导致对齐失败")
+            print("! 解决方法:")
+            print("!   1. 在当前姿态下重新标定")
+            print("!   2. 或在 ARM_CONFIGS 中设置 camera_flip")
+            print("!"*60)
+            return False
+
+        print("\n✓ 灵敏度方向正确")
+        return True
+
+    def _smooth_move_single_joint_for_test(self, joint_idx: int, target_angle: float, steps: int = 10) -> bool:
+        """平滑移动单个关节（用于测试）"""
+        current_joints = self.get_joint_states()
+        if current_joints is None:
+            return False
+
+        initial_angle = current_joints[joint_idx]
+
+        for step in range(1, steps + 1):
+            alpha = step / steps
+            alpha = alpha * alpha * (3 - 2 * alpha)
+
+            current_angle = initial_angle + (target_angle - initial_angle) * alpha
+
+            # 构建action
+            action = {f"{name}.pos": float(current_joints[i] if i != joint_idx else current_angle)
+                      for i, name in enumerate(self.robot.observation_joint_names)
+                      if i < len(current_joints)}
+            self.robot.send_action(action)
+            time.sleep(0.05)
+
+        return True
 
     # ==================== 方案B: DH参数接口 ====================
 

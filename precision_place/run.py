@@ -796,6 +796,65 @@ class PrecisionPlaceSystem:
         print("\n[Z轴标定数据]")
         self._show_z_axis_calibration()
 
+    def verify_sensitivity_direction(self):
+        """验证灵敏度方向是否正确"""
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        print("\n此功能将移动关节并观察像素变化来验证灵敏度方向")
+        print("如果方向不正确，对齐时会向错误方向移动")
+
+        try:
+            joint_idx = int(input("测试关节索引 (默认7=right_arm_joint_1): ").strip() or "7")
+            move_deg = float(input("移动角度 (默认2.0): ").strip() or "2.0")
+        except:
+            joint_idx = 7
+            move_deg = 2.0
+
+        self.controller.verify_sensitivity_direction(joint_idx, move_deg)
+
+    def flip_sensitivity_direction(self):
+        """翻转灵敏度方向（修复相机方向问题）"""
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        print("\n翻转灵敏度方向")
+        print("当两个相机安装方向相反时，灵敏度符号需要翻转")
+        print("\n当前状态:")
+        print(f"  X翻转: {self.controller._camera_flip_x}")
+        print(f"  Y翻转: {self.controller._camera_flip_y}")
+
+        print("\n选项:")
+        print("  1. 翻转X方向")
+        print("  2. 翻转Y方向")
+        print("  3. 翻转X和Y方向")
+        print("  4. 取消翻转")
+        print("  0. 取消")
+
+        choice = input("选项: ").strip()
+
+        if choice == "1":
+            self.controller._camera_flip_x = True
+            self.controller._camera_flip_y = False
+        elif choice == "2":
+            self.controller._camera_flip_x = False
+            self.controller._camera_flip_y = True
+        elif choice == "3":
+            self.controller._camera_flip_x = True
+            self.controller._camera_flip_y = True
+        elif choice == "4":
+            self.controller._camera_flip_x = False
+            self.controller._camera_flip_y = False
+        else:
+            print("已取消")
+            return
+
+        print(f"\n已更新: X翻转={self.controller._camera_flip_x}, Y翻转={self.controller._camera_flip_y}")
+        print("注意: 此设置仅在当前会话有效")
+        print("如需永久生效，请在 ARM_CONFIGS 中设置 camera_flip")
+
     def _show_z_axis_calibration(self):
         """显示Z轴标定数据"""
         if not _has_z_controller:
@@ -1469,6 +1528,8 @@ def main():
                 print("  6. Z轴关节灵敏度标定 (手动)")
                 print("  7. Z轴关节灵敏度标定 (自动)")
                 print("  8. 双相机基线标定")
+                print("  9. 验证灵敏度方向 (测试相机翻转)")
+                print("  0. 修复灵敏度方向 (翻转X/Y)")
 
                 calib_choice = input("选项: ").strip()
 
@@ -1510,6 +1571,14 @@ def main():
                     if not system.controller:
                         system.connect()
                     system.calibrate_stereo_baseline()
+                elif calib_choice == "9":
+                    if not system.controller:
+                        system.connect()
+                    system.verify_sensitivity_direction()
+                elif calib_choice == "0":
+                    if not system.controller:
+                        system.connect()
+                    system.flip_sensitivity_direction()
                 else:
                     print("无效选项")
                 
