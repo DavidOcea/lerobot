@@ -1669,6 +1669,10 @@ class PrecisionPlaceController:
                 adjustments[max_y_sens.joint_idx] = adjustments.get(max_y_sens.joint_idx, 0) + delta_y
                 print(f"    关节 {max_x_sens.joint_idx} (X主): sens={max_x_sens.pixel_dx_per_deg:.2f}, 调整={delta_x:.2f}")
                 print(f"    关节 {max_y_sens.joint_idx} (Y主): sens={max_y_sens.pixel_dy_per_deg:.2f}, 调整={delta_y:.2f}")
+
+                # DEBUG: 打印预期的像素变化
+                expected_dx = delta_x * max_x_sens.pixel_dx_per_deg
+                print(f"    [DEBUG] 预期X像素变化: {expected_dx:.1f}px (来自关节{max_x_sens.joint_idx})")
         elif max_x_sens:
             adjustments[max_x_sens.joint_idx] = adjustments.get(max_x_sens.joint_idx, 0) + delta_x
             print(f"    关节 {max_x_sens.joint_idx} (X主): sens={max_x_sens.pixel_dx_per_deg:.2f}, 调整={delta_x:.2f}")
@@ -1954,12 +1958,29 @@ class PrecisionPlaceController:
             if rotation_adjustments:
                 print(f"  旋转调整: {rotation_adjustments}")
 
+            # 保存调整前的像素误差（用于验证）
+            pre_offset_x = current_offset_x
+            pre_offset_y = current_offset_y
+
             # 应用调整
             min_quality = 0.2 if state.degraded_mode else 0.3  # 退化模式下降低质量阈值
             if state.alignment_quality > min_quality:
                 self.apply_joint_adjustments(adjustments, rotation_adjustments)
 
             time.sleep(self.settle_time)
+
+            # DEBUG: 验证调整效果 - 获取新的像素误差并与预期比较
+            if self.alignment_quality > min_quality:
+                new_image = self.camera.read()
+                new_state = self.detector.detect_dual_marker_state(new_image)
+                if new_state.workpiece_detected and new_state.slot_detected:
+                    actual_dx = new_state.offset_x - pre_offset_x
+                    actual_dy = new_state.offset_y - pre_offset_y
+                    print(f"  [验证] 实际像素变化: X={actual_dx:.1f}px, Y={actual_dy:.1f}px")
+                    print(f"         预期减少: X约-16px (如果灵敏度为8)")
+                    if abs(actual_dx) < 5 and abs(pre_offset_x) > 50:
+                        print(f"  ⚠ 警告: X像素变化很小，灵敏度可能不正确！")
+                        print(f"         建议: 在当前姿态下重新标定关节灵敏度")
 
         print("\n✗ 对齐未完成 (达到最大迭代次数)")
         return False
