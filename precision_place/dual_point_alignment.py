@@ -1106,10 +1106,10 @@ class PrecisionPlaceController:
             current_angle = initial_angle + (target_angle - initial_angle) * alpha
 
             # 构建action格式
-            action = {f"{name}.pos": joints[i] for i, name in enumerate(self.robot.observation_joint_names)}
+            action = {f"{name}.pos": float(joints[i]) for i, name in enumerate(self.robot.observation_joint_names)}
             action[f"{self.robot.observation_joint_names[joint_idx]}.pos"] = float(current_angle)
 
-            self.robot.send_action({'action': list(action.values())})
+            self.robot.send_action(action)
             time.sleep(0.05)  # 每步50ms
 
         return True
