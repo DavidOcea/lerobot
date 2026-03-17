@@ -321,12 +321,49 @@ class DualPointDetector:
     def __init__(self):
         self.workpiece_color = "green"
         self.slot_color = "red"
-        self.min_area = 200
-        self.max_area = 5000
-    
+        self.min_area = 100      # 最小面积，降低以支持小标记
+        self.max_area = 50000    # 最大面积，提高以支持近距离大标记
+
     def set_marker_colors(self, workpiece_color: str, slot_color: str):
         self.workpiece_color = workpiece_color
         self.slot_color = slot_color
+
+    def set_area_range(self, min_area: int, max_area: int):
+        """设置标记检测的面积范围
+
+        Args:
+            min_area: 最小像素面积
+            max_area: 最大像素面积
+        """
+        self.min_area = min_area
+        self.max_area = max_area
+        print(f"标记面积范围: {min_area} - {max_area} px²")
+
+    def auto_adjust_area_range(self, marker_diameter_mm: float, distance_mm: float):
+        """根据标记尺寸和距离自动调整面积范围
+
+        Args:
+            marker_diameter_mm: 标记直径
+            distance_mm: 预期距离
+        """
+        # 计算预期像素直径 (f=311px, sensor=5.76mm)
+        fx = 311.0
+        sensor_width = 5.76
+        pixel_diameter = fx * marker_diameter_mm / distance_mm
+
+        # 计算面积
+        radius = pixel_diameter / 2
+        expected_area = 3.14159 * radius * radius
+
+        # 设置范围 (预期面积的 0.3-3 倍)
+        self.min_area = int(expected_area * 0.3)
+        self.max_area = int(expected_area * 3)
+
+        print(f"自动调整面积范围: {self.min_area} - {self.max_area} px²")
+        print(f"  标记直径: {marker_diameter_mm}mm")
+        print(f"  预期距离: {distance_mm}mm")
+        print(f"  预期像素直径: {pixel_diameter:.0f}px")
+        print(f"  预期面积: {expected_area:.0f}px²")
     
     def detect_markers_by_color(self, image: np.ndarray, color: str) -> List[Marker]:
         """检测指定颜色的所有标记"""

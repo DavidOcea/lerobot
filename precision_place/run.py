@@ -1201,14 +1201,62 @@ Z轴控制关节:
             print("已取消")
 
     # ----------------- 测试 -----------------
-    
+
     def test_detection(self):
         """测试检测"""
         if not self.controller:
             print("请先连接设备")
             return
-        
+
         self.controller.test_detection()
+
+    def set_marker_area_range(self):
+        """设置标记检测面积范围"""
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        print("\n" + "="*50)
+        print("设置标记检测面积范围")
+        print("="*50)
+
+        print("""
+当标记太大或太小检测不到时，需要调整面积范围。
+
+当前标记检测设置:
+  - 面积太小会被忽略（噪声）
+  - 面积太大也会被忽略（可能是其他物体）
+
+常见问题:
+  - 标记太大检测不到: 增大最大面积
+  - 标记太小检测不到: 减小最小面积
+""")
+
+        print("设置方法:")
+        print("  1. 根据标记尺寸自动计算")
+        print("  2. 手动输入面积范围")
+
+        choice = input("选择: ").strip()
+
+        if choice == "1":
+            try:
+                diameter = float(input("标记直径: ").strip() or "20")
+                distance = float(input("预期距离: ").strip() or "50")
+
+                self.controller.detector.auto_adjust_area_range(diameter, distance)
+            except:
+                print("输入无效")
+
+        elif choice == "2":
+            try:
+                min_area = int(input("最小面积 (默认100): ").strip() or "100")
+                max_area = int(input("最大面积 (默认50000): ").strip() or "50000")
+
+                self.controller.detector.set_area_range(min_area, max_area)
+            except:
+                print("输入无效")
+        else:
+            print("已取消")
     
     # ----------------- 对齐 -----------------
     
@@ -1324,6 +1372,7 @@ def main():
             print("8. 运行对齐")
             print("9. 完整流程")
             print("10. 连续运行 (10次)")
+            print("11. 设置标记面积范围")
             print("0. 退出")
 
             choice = input("\n选项: ").strip()
@@ -1472,7 +1521,12 @@ def main():
                 if not system.controller:
                     system.connect()
                 system.continuous_run(10)
-                
+
+            elif choice == "11":
+                if not system.controller:
+                    system.connect()
+                system.set_marker_area_range()
+
             elif choice == "0":
                 break
             else:
