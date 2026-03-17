@@ -963,7 +963,7 @@ class PrecisionPlaceController:
         return True, sensitivity
 
     def calibrate_joint_sensitivity_auto(self, joint_idx: int, move_degrees: float = 4.0,
-                                         settle_time: float = 0.5, show_progress: bool = True) -> Tuple[bool, JointSensitivity]:
+                                         settle_time: float = 1.0, show_progress: bool = True) -> Tuple[bool, JointSensitivity]:
         """
         自动标定单个关节的灵敏度（无需人工干预）
 
@@ -1207,7 +1207,7 @@ class PrecisionPlaceController:
             print(f"\n✗ 标定失败: 没有关节标定成功")
             return False
 
-    def calibrate_all_joints_auto(self, move_degrees: float = 4.0, settle_time: float = 0.5,
+    def calibrate_all_joints_auto(self, move_degrees: float = 4.0, settle_time: float = 1.0,
                                   return_after_calib: bool = True) -> bool:
         """
         自动标定所有主要关节（无需人工干预）
@@ -1737,11 +1737,13 @@ class PrecisionPlaceController:
         target = joints.copy()
         for jidx, delta in adjustments.items():
             target[jidx] += delta
+            print(f"[DEBUG] apply_joint_adjustments: target[{jidx}] = {joints[jidx]:.4f} + {delta:.4f} = {target[jidx]:.4f}")
 
         # 应用旋转调整
         if rotation_adjustments:
             for jidx, delta in rotation_adjustments.items():
                 target[jidx] += delta
+                print(f"[DEBUG] 旋转调整: target[{jidx}] += {delta:.4f}")
 
         # 平滑移动
         self._smooth_move_all_joints(target)
@@ -1756,14 +1758,25 @@ class PrecisionPlaceController:
         if steps is None:
             steps = self.smooth_steps
 
+        print(f"[DEBUG] _smooth_move_all_joints: steps={steps}, smooth_delay={self.smooth_delay}")
+        print(f"[DEBUG] observation_joint_names: {self.robot.observation_joint_names}")
+
         current_joints = self.get_joint_states()
 
         if current_joints is None or len(current_joints) < 16:
+            print(f"[DEBUG] get_joint_states failed: current_joints={current_joints}")
             return False
 
         # 保存夹爪初始位置，在移动过程中保持不变
         gripper_initial_pos = current_joints[self.arm_config.gripper_idx]
         gripper_target_pos = target_joints[self.arm_config.gripper_idx]
+
+        # DEBUG: 打印目标关节值
+        print(f"[DEBUG] 开始平滑移动:")
+        print(f"  current_joints[7] (right_arm_joint_1) = {current_joints[7]:.4f}")
+        print(f"  target_joints[7] = {target_joints[7]:.4f}")
+        print(f"  delta = {target_joints[7] - current_joints[7]:.4f}")
+        print(f"  arm_config.gripper_idx = {self.arm_config.gripper_idx}")
 
         for step in range(1, steps + 1):
             alpha = step / steps
@@ -1772,6 +1785,11 @@ class PrecisionPlaceController:
             interp = current_joints * (1 - alpha) + target_joints * alpha
             # 保持夹爪在初始位置（不被插值改变）
             interp[self.arm_config.gripper_idx] = gripper_initial_pos
+
+            # DEBUG: 打印每步的插值值
+            if step <= 3 or step == steps:
+                print(f"[DEBUG] step {step}/{steps}: alpha={alpha:.4f}, interp[7]={interp[7]:.4f}")
+
             # 转换为正确的action格式: {'joint_name.pos': value}
             action = {f"{name}.pos": float(interp[i])
                       for i, name in enumerate(self.robot.observation_joint_names)
@@ -1779,6 +1797,7 @@ class PrecisionPlaceController:
             self.robot.send_action(action)
             time.sleep(self.smooth_delay)
 
+        print(f"[DEBUG] 平滑移动完成")
         return True
 
     # ==================== 对齐流程 ====================

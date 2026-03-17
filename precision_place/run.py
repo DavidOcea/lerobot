@@ -724,11 +724,11 @@ class PrecisionPlaceSystem:
         except:
             move_deg = 4.0
 
-        settle_time = 0.5
+        settle_time = 1.0
         try:
-            settle_time = float(input("稳定等待时间秒 (默认0.5): ").strip() or "0.5")
+            settle_time = float(input("稳定等待时间秒 (默认1.0): ").strip() or "1.0")
         except:
-            settle_time = 0.5
+            settle_time = 1.0
 
         return_after = True
         ans = input("标定后返回初始位置? (y/n，默认y): ").strip().lower()

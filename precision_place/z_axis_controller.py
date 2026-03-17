@@ -607,13 +607,48 @@ class ZAxisController:
         self._save_calibration()
         return True
 
-    def calibrate_all_z_joints_auto(self, robot, move_deg: float = 3.0) -> bool:
+    def _smooth_move_single_joint(self, robot, joint_idx: int, target_angle: float, steps: int = 20) -> bool:
+        """
+        平滑移动单个关节
+
+        Args:
+            robot: 机器人对象
+            joint_idx: 关节索引
+            target_angle: 目标角度
+            steps: 分多少步移动
+
+        Returns:
+            是否成功
+        """
+        current_joints = robot.get_current_position()
+        if current_joints is None:
+            return False
+
+        joint_names = list(current_joints.keys())
+        initial_angle = current_joints[joint_names[joint_idx]]
+
+        for step in range(1, steps + 1):
+            alpha = step / steps
+            alpha = alpha * alpha * (3 - 2 * alpha)  # ease-in-out 缓动
+
+            current_angle = initial_angle + (target_angle - initial_angle) * alpha
+
+            # 构建action
+            action = current_joints.copy()
+            action[joint_names[joint_idx]] = current_angle
+            robot.send_action(action)
+            time.sleep(0.05)  # 每步50ms
+
+        return True
+
+    def calibrate_all_z_joints_auto(self, robot, move_deg: float = 3.0, settle_time: float = 1.0) -> bool:
         """
         自动标定所有Z轴相关关节
 
         Args:
             robot: 机器人对象
             move_deg: 标定时关节移动角度
+            settle_time: 移动后等待稳定时间（秒）
 
         Returns:
             是否成功
@@ -645,12 +680,11 @@ class ZAxisController:
             ):
                 continue
 
-            # 移动关节
+            # 平滑移动关节到目标位置
             target_angle = initial_angle + move_deg
-            action = current_joints.copy()
-            action[joint_names[joint_idx]] = target_angle
-            robot.send_action(action)
-            time.sleep(1.0)
+            print(f"  平滑移动关节: {initial_angle:.2f}° -> {target_angle:.2f}°")
+            self._smooth_move_single_joint(robot, joint_idx, target_angle, steps=20)
+            time.sleep(settle_time)  # 等待稳定
 
             # 记录终点
             current_joints = robot.get_current_position()
@@ -661,9 +695,9 @@ class ZAxisController:
 
             success_count += 1
 
-            # 返回初始位置
-            action[joint_names[joint_idx]] = initial_angle
-            robot.send_action(action)
+            # 平滑返回初始位置
+            print(f"  平滑返回初始位置")
+            self._smooth_move_single_joint(robot, joint_idx, initial_angle, steps=20)
             time.sleep(0.5)
 
         print(f"\n{'='*60}")

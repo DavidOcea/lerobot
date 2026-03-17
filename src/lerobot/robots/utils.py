@@ -104,6 +104,11 @@ def ensure_safe_goal_position(
         safe_diff = max(safe_diff, -max_diff)
         safe_goal_pos = present_pos + safe_diff
         safe_goal_positions[key] = safe_goal_pos
+
+        # DEBUG: 打印关键关节的安全检查结果
+        if key == 'right_arm_joint_1':
+            print(f"[DEBUG] ensure_safe: key={key}, goal={goal_pos:.4f}, present={present_pos:.4f}, diff={diff:.4f}, max_diff={max_diff:.4f}, safe_diff={safe_diff:.4f}, safe_goal={safe_goal_pos:.4f}")
+
         if abs(safe_goal_pos - goal_pos) > 1e-4:
             warnings_dict[key] = {
                 "original goal_pos": goal_pos,
