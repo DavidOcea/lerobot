@@ -118,9 +118,13 @@ class ArmConfig:
     gripper_close: float = 50.0
     # DH参数 (方案B预留)
     dh_params: Optional[List[Dict]] = None
+    # 相机方向翻转 (如果两个腕部相机安装方向相反)
+    # 格式: {相机名: (x_flip, y_flip)}，True表示该相机方向与主标定相机相反
+    camera_flip: Dict[str, Tuple[bool, bool]] = field(default_factory=dict)
 
 
 # 手臂配置 - 7关节标定 (joint_1~6 + trunk_1)
+# 注意: 如果两个腕部相机安装方向相反(旋转180度)，需要配置camera_flip
 ARM_CONFIGS = {
     'right': ArmConfig(
         name='right',
@@ -132,7 +136,14 @@ ARM_CONFIGS = {
         gripper_idx=13,
         gripper_open=0.0,
         gripper_close=50.0,
-        dh_params=None  # 待用户提供
+        dh_params=None,  # 待用户提供
+        # 相机方向翻转配置:
+        # 如果 right_wrist2 与 right_wrist 安装方向相反(旋转180度)，
+        # 则X和Y方向都需要翻转
+        camera_flip={
+            'right_wrist': (False, False),   # 主相机作为参考
+            'right_wrist2': (True, True),    # 如果方向相反，设为(True, True)
+        }
     ),
     'left': ArmConfig(
         name='left',
@@ -144,7 +155,11 @@ ARM_CONFIGS = {
         gripper_idx=6,
         gripper_open=0.0,
         gripper_close=50.0,
-        dh_params=None  # 待用户提供
+        dh_params=None,  # 待用户提供
+        camera_flip={
+            'left_wrist': (False, False),
+            'left_wrist2': (True, True),  # 如果方向相反，设为(True, True)
+        }
     )
 }
 
@@ -175,6 +190,7 @@ class CalibrationPoint:
     pixel_to_mm: float = 0.5  # 该高度下的像素-毫米转换比例
     timestamp: str = ""
     arm: str = "right"  # 对应的手臂
+    camera_name: str = ""  # 标定时使用的相机名称 (用于检测方向差异)
 
 
 # ==================== 方案B: 雅可比运动学框架 ====================
@@ -665,6 +681,10 @@ class PrecisionPlaceController:
         # 方案A: 多点标定数据
         self.calibration_points: List[CalibrationPoint] = []
         self._load_calibration_points()
+
+        # 相机方向翻转状态
+        self._camera_flip_x = False
+        self._camera_flip_y = False
 
         # 参数
         self.pixel_to_mm_ratio = 0.5  # 兼容旧标定
@@ -1170,7 +1190,8 @@ class PrecisionPlaceController:
             sensitivities=[],
             pixel_to_mm=self.pixel_to_mm_ratio,
             timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
-            arm=self.arm
+            arm=self.arm,
+            camera_name=self.arm_config.camera_name  # 记录标定时的相机
         )
 
         # 标定每个主要关节
@@ -1245,7 +1266,8 @@ class PrecisionPlaceController:
             sensitivities=[],
             pixel_to_mm=self.pixel_to_mm_ratio,
             timestamp=time.strftime('%Y-%m-%d %H:%M:%S'),
-            arm=self.arm
+            arm=self.arm,
+            camera_name=self.arm_config.camera_name  # 记录标定时的相机
         )
 
         # 标定每个主要关节
@@ -1360,12 +1382,14 @@ class PrecisionPlaceController:
             arm_points = self.calibration_points
 
         if len(arm_points) == 1:
-            return arm_points[0].sensitivities
-
-        if self.use_interpolation:
-            return self._weighted_interpolation(current_joints, arm_points)
+            sensitivities = arm_points[0].sensitivities
+        elif self.use_interpolation:
+            sensitivities = self._weighted_interpolation(current_joints, arm_points)
         else:
-            return self._nearest_neighbor(current_joints, arm_points)
+            sensitivities = self._nearest_neighbor(current_joints, arm_points)
+
+        # 应用相机方向翻转
+        return self._apply_camera_flip_to_sensitivities(sensitivities)
 
     def _nearest_neighbor(self, current_joints: np.ndarray,
                           arm_points: List[CalibrationPoint]) -> List[JointSensitivity]:
@@ -1475,11 +1499,15 @@ class PrecisionPlaceController:
                     joint_states=cp_data['joint_states'],
                     sensitivities=sensitivities,
                     timestamp=cp_data.get('timestamp', ''),
-                    arm=cp_data.get('arm', 'right')
+                    arm=cp_data.get('arm', 'right'),
+                    camera_name=cp_data.get('camera_name', '')  # 加载相机名称
                 )
                 self.calibration_points.append(cp)
 
             print(f"✓ 已加载 {len(self.calibration_points)} 个标定点")
+
+            # 检测相机方向翻转
+            self._check_camera_flip()
 
     def _save_calibration_points(self):
         """保存多点标定数据"""
@@ -1507,7 +1535,8 @@ class PrecisionPlaceController:
                     for s in cp.sensitivities
                 ],
                 'timestamp': cp.timestamp,
-                'arm': cp.arm
+                'arm': cp.arm,
+                'camera_name': cp.camera_name  # 保存相机名称
             }
             data['points'].append(cp_data)
 
@@ -1525,10 +1554,79 @@ class PrecisionPlaceController:
         print(f"{'='*60}")
 
         for i, cp in enumerate(self.calibration_points):
-            print(f"\n[{i+1}] {cp.timestamp} | {cp.arm} | 高度: {cp.height_level}")
+            camera_info = f" | 相机: {cp.camera_name}" if cp.camera_name else ""
+            print(f"\n[{i+1}] {cp.timestamp} | {cp.arm}{camera_info} | 高度: {cp.height_level}")
             print(f"    关节数: {len(cp.sensitivities)}")
             for s in cp.sensitivities:
                 print(f"      - {s.joint_name}: ({s.pixel_dx_per_deg:.2f}, {s.pixel_dy_per_deg:.2f}) px/deg")
+
+    def _check_camera_flip(self):
+        """
+        检测相机方向翻转
+
+        如果标定时的相机与当前运行的相机不同，检查是否需要翻转灵敏度符号
+        """
+        self._camera_flip_x = False
+        self._camera_flip_y = False
+
+        if not self.calibration_points:
+            return
+
+        # 获取标定时的相机名称
+        calib_camera = self.calibration_points[0].camera_name
+        current_camera = self.arm_config.camera_name
+
+        if not calib_camera:
+            print("  ⚠ 标定数据中缺少相机信息，无法检测方向翻转")
+            return
+
+        if calib_camera == current_camera:
+            print(f"  ✓ 标定相机与当前相机一致: {current_camera}")
+            return
+
+        # 检查是否在 camera_flip 配置中标记为翻转
+        camera_flip_config = self.arm_config.camera_flip
+        if current_camera in camera_flip_config:
+            flip_x, flip_y = camera_flip_config[current_camera]
+            self._camera_flip_x = flip_x
+            self._camera_flip_y = flip_y
+            if flip_x or flip_y:
+                print(f"  ⚠ 检测到相机方向翻转: {calib_camera} -> {current_camera}")
+                print(f"      X翻转: {flip_x}, Y翻转: {flip_y}")
+                print(f"      将自动调整灵敏度符号")
+        else:
+            # 相机不同但未配置翻转，发出警告
+            print(f"  ⚠ 警告: 标定相机({calib_camera})与当前相机({current_camera})不同")
+            print(f"      如果相机安装方向不同，可能需要重新标定或配置 camera_flip")
+
+    def _apply_camera_flip_to_sensitivities(self, sensitivities: List[JointSensitivity]) -> List[JointSensitivity]:
+        """
+        应用相机方向翻转到灵敏度数据
+
+        如果相机安装方向相反（旋转180度），需要翻转X和Y方向的灵敏度符号
+        """
+        if not (self._camera_flip_x or self._camera_flip_y):
+            return sensitivities
+
+        flipped = []
+        for s in sensitivities:
+            new_dx = -s.pixel_dx_per_deg if self._camera_flip_x else s.pixel_dx_per_deg
+            new_dy = -s.pixel_dy_per_deg if self._camera_flip_y else s.pixel_dy_per_deg
+            new_mm_dx = -s.mm_dx_per_deg if self._camera_flip_x else s.mm_dx_per_deg
+            new_mm_dy = -s.mm_dy_per_deg if self._camera_flip_y else s.mm_dy_per_deg
+
+            flipped_s = JointSensitivity(
+                joint_idx=s.joint_idx,
+                joint_name=s.joint_name,
+                pixel_dx_per_deg=new_dx,
+                pixel_dy_per_deg=new_dy,
+                mm_dx_per_deg=new_mm_dx,
+                mm_dy_per_deg=new_mm_dy,
+                calibration_angles=s.calibration_angles
+            )
+            flipped.append(flipped_s)
+
+        return flipped
 
     # ==================== 方案B: DH参数接口 ====================
 
