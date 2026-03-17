@@ -28,8 +28,10 @@ class CameraCalibration:
     """相机标定数据"""
     name: str
     index: int
-    fx: float = 500.0
-    fy: float = 500.0
+    # 物理焦距 2.8mm, 传感器 1/2.5" (5.76mm x 4.32mm), 图像 640x480
+    # fx = 2.8 * 640 / 5.76 = 311 px
+    fx: float = 311.0
+    fy: float = 311.0
     cx: float = 320.0
     cy: float = 240.0
     distortion: np.ndarray = field(default_factory=lambda: np.zeros(5))
