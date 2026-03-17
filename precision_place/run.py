@@ -433,7 +433,7 @@ class PrecisionPlaceSystem:
                     for i, cp in enumerate(self.calibration_points):
                         print(f"  [{i+1}] {cp.joint_name}: ({cp.pixel_dx_per_deg:.2f}, {cp.pixel_dy_per_deg:.2f}) px/deg")
 
-            def calibrate(self, move_distance_mm: float = 5.0):
+            def calibrate(self, move_distance_mm: float = 10.0):
                 """像素-毫米标定 (被动模式，带视频显示)"""
                 print("\n" + "="*50)
                 print("像素-毫米标定 (被动模式)")
@@ -441,6 +441,10 @@ class PrecisionPlaceSystem:
 
                 print(f"\n[说明] 请用示教器将机器人沿X方向精确移动 {move_distance_mm}mm")
                 print(f"  标定结果将用于像素到毫米的转换")
+                print(f"\n[重要提示]")
+                print(f"  1. 请确保标记点在相机视野内")
+                print(f"  2. 移动方向应沿画面水平方向(X方向)")
+                print(f"  3. 移动距离建议 {move_distance_mm}mm 或更多以确保像素变化明显")
 
                 window_name = "Pixel-MM Calibration"
                 img1 = None
@@ -458,17 +462,39 @@ class PrecisionPlaceSystem:
                     state = self.detector.detect_dual_marker_state(frame)
                     vis = self.detector.visualize(frame, state)
 
+                    # 绘制移动方向指引箭头
+                    h, w = vis.shape[:2]
+                    arrow_y = h - 100
+                    arrow_start = (w // 4, arrow_y)
+                    arrow_end = (3 * w // 4, arrow_y)
+
                     if phase == 1:
-                        cv2.putText(vis, "Phase 1: Press ENTER to capture initial image", (10, vis.shape[0] - 40),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-                        cv2.putText(vis, "Press 'q' to cancel", (10, vis.shape[0] - 15),
+                        # 第一阶段：采集初始图像
+                        cv2.putText(vis, "Phase 1: Press ENTER to capture initial image", (10, 30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                        cv2.putText(vis, "Press 'q' to cancel", (10, 55),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
+                        # 提示标记检测状态
+                        if state.workpiece_detected or state.slot_detected:
+                            cv2.putText(vis, f"Markers detected: WP={state.workpiece_marker_count}, Slot={state.slot_marker_count}",
+                                       (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                        else:
+                            cv2.putText(vis, "No markers detected - check camera view", (10, 80),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                     else:
-                        cv2.putText(vis, f"Phase 2: Move robot {move_distance_mm}mm in X direction", (10, vis.shape[0] - 60),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-                        cv2.putText(vis, "Press ENTER to capture final image", (10, vis.shape[0] - 35),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-                        cv2.putText(vis, "Press 'q' to cancel", (10, vis.shape[0] - 15),
+                        # 第二阶段：移动机器人并采集最终图像
+                        # 绘制大的移动方向箭头
+                        cv2.arrowedLine(vis, arrow_start, arrow_end, (0, 255, 255), 3, tipLength=0.1)
+                        cv2.putText(vis, f"Move {move_distance_mm}mm in X direction", (arrow_start[0], arrow_y - 15),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                        cv2.putText(vis, "-->", (w // 2 - 20, arrow_y + 8),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
+
+                        cv2.putText(vis, "Phase 2: Move robot, then press ENTER", (10, 30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                        cv2.putText(vis, "Press ENTER to capture final image", (10, 55),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                        cv2.putText(vis, "Press 'q' to cancel", (10, 80),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (128, 128, 128), 1)
 
                     cv2.imshow(window_name, vis)
@@ -485,7 +511,8 @@ class PrecisionPlaceSystem:
                             img1 = frame.copy()
                             print("  ✓ 已采集初始图像")
                             phase = 2
-                            print(f"\n  请用示教器将机器人沿X方向移动 {move_distance_mm}mm")
+                            print(f"\n  >>> 请用示教器将机器人沿X方向移动 {move_distance_mm}mm <<<")
+                            print(f"      (画面上黄色箭头指示移动方向)")
                         else:
                             img2 = frame.copy()
                             print("  ✓ 已采集移动后图像")
@@ -617,7 +644,17 @@ class PrecisionPlaceSystem:
             print("请先连接设备")
             return
 
-        self.controller.calibrate()
+        # 让用户输入移动距离
+        print("\n[像素-毫米标定]")
+        print("  此标定需要您手动移动机器人来确定像素到毫米的转换比例")
+        print("  移动距离越大，标定精度越高")
+
+        try:
+            move_mm = float(input("移动距离mm (默认10mm): ").strip() or "10.0")
+        except:
+            move_mm = 10.0
+
+        self.controller.calibrate(move_mm)
 
     def calibrate_joints(self):
         """关节灵敏度标定 (多点标定)"""
