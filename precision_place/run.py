@@ -127,17 +127,20 @@ class PrecisionPlaceSystem:
         arm_config = ARM_CONFIGS.get(arm)
 
         if arm_config.camera_name in self.cameras:
-            # 如果机器人连接失败但相机可用，创建一个简化的控制器
-            if self.robot is None:
-                print(f"\n⚠ 使用相机模式（无机器人连接）")
-                self.controller = self._create_camera_only_controller(arm)
-            else:
-                self.controller = PrecisionPlaceController(
-                    robot=self.robot,
-                    camera=self.cameras[arm_config.camera_name],
-                    arm=arm,
-                    passive_mode=passive
-                )
+            # 获取副相机（用于Z轴深度估计）
+            camera2 = None
+            if arm_config.camera2_name and arm_config.camera2_name in self.cameras:
+                camera2 = self.cameras[arm_config.camera2_name]
+                print(f"✓ 副用相机: {arm_config.camera2_name} (索引{arm_config.camera2_index})")
+
+            # 统一使用 PrecisionPlaceController（支持被动模式和Z轴控制）
+            self.controller = PrecisionPlaceController(
+                robot=self.robot,  # 被动模式下为 None
+                camera=self.cameras[arm_config.camera_name],
+                arm=arm,
+                passive_mode=passive,
+                camera2=camera2
+            )
             self.controller.set_marker_colors(WORKPIECE_COLOR, SLOT_COLOR)
             print(f"\n✓ 主用相机: {arm_config.camera_name} (索引{arm_config.camera_index})")
             print(f"✓ 使用手臂: {arm}")

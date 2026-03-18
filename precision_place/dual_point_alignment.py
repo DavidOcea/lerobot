@@ -2324,34 +2324,91 @@ class PrecisionPlaceController:
 
     # ==================== 兼容旧接口 ====================
 
-    def calibrate(self, move_distance_mm: float = 5.0) -> Tuple[bool, float]:
-        """像素-毫米标定 (兼容旧接口)"""
+    def calibrate(self, move_distance_mm: float = 10.0) -> Tuple[bool, float]:
+        """像素-毫米标定 (带视频显示)
+
+        Args:
+            move_distance_mm: 移动距离，默认10mm
+
+        Returns:
+            (success, ratio) 成功与否和转换比例
+        """
         print("\n" + "="*50)
         print("像素-毫米标定")
         print("="*50)
+        print(f"\n移动距离: {move_distance_mm}mm")
+        print("\n操作步骤:")
+        print(f"  1. 按 Enter 采集初始图像")
+        print(f"  2. 使用示教器沿X方向移动 {move_distance_mm}mm")
+        print(f"  3. 按 Enter 采集移动后图像")
+        print("\n提示: 确保标记在视野内可见")
 
-        print("\n[1/4] 采集初始位置...")
-        img1 = self.camera.read()
+        window_name = "Pixel-MM Calibration"
+        img1 = None
+        img2 = None
+        phase = 1  # 1=采集初始图像, 2=采集移动后图像
 
-        print(f"\n[2/4] 请将机器人沿X方向精确移动 {move_distance_mm}mm")
-        input("    移动完成后按 Enter...")
+        while True:
+            # 读取图像
+            frame = self.camera.read()
+            if frame is None:
+                continue
 
-        print("\n[3/4] 采集移动后位置...")
-        img2 = self.camera.read()
+            # 检测标记并可视化
+            state = self.detector.detect_dual_marker_state(frame)
+            vis = self.detector.visualize(frame, state)
 
-        print("\n[4/4] 计算标定参数...")
+            # 显示阶段提示
+            if phase == 1:
+                cv2.putText(vis, "Phase 1: Press ENTER to capture initial image", (10, vis.shape[0] - 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                cv2.putText(vis, f"Move distance: {move_distance_mm}mm", (10, vis.shape[0] - 35),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+            else:
+                cv2.putText(vis, f"Move robot {move_distance_mm}mm along X axis", (10, vis.shape[0] - 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+                cv2.putText(vis, "Phase 2: Press ENTER to capture final image", (10, vis.shape[0] - 35),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
-        pixel_dx, _ = self._compute_pixel_shift(img1, img2)
+            cv2.putText(vis, "Press 'q' to cancel", (10, vis.shape[0] - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (128, 128, 128), 1)
+
+            cv2.imshow(window_name, vis)
+
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord('q'):
+                cv2.destroyWindow(window_name)
+                print("✗ 标定已取消")
+                return False, 0
+
+            elif key == 13 or key == 10:  # Enter key
+                if phase == 1:
+                    img1 = frame.copy()
+                    print(f"✓ 已采集初始图像")
+                    phase = 2
+                    print(f"\n请沿X方向移动 {move_distance_mm}mm...")
+                else:
+                    img2 = frame.copy()
+                    print(f"✓ 已采集移动后图像")
+                    break
+
+        cv2.destroyWindow(window_name)
+
+        # 计算像素偏移
+        print("\n计算标定参数...")
+        pixel_dx, pixel_dy = self._compute_pixel_shift(img1, img2)
 
         if pixel_dx is None or abs(pixel_dx) < 1:
-            print("✗ 像素偏移太小")
+            print("✗ 像素偏移太小或特征点匹配失败")
             return False, 0
 
         pixel_offset = abs(pixel_dx)
         ratio = move_distance_mm / pixel_offset
 
         print(f"\n计算结果:")
-        print(f"  像素偏移: {pixel_offset:.1f} pixels")
+        print(f"  X方向像素偏移: {pixel_dx:.1f} pixels")
+        print(f"  Y方向像素偏移: {pixel_dy:.1f} pixels")
         print(f"  转换比例: {ratio:.4f} mm/pixel")
 
         self.calibration_history.append({
@@ -2962,6 +3019,20 @@ class PrecisionPlaceController:
             image = self.camera.read()
             state = self.detector.detect_dual_marker_state(image)
             vis = self.detector.visualize(image, state)
+
+            # Z轴深度估计（如果有副相机和Z控制器）
+            if self.camera2 is not None and self.z_controller is not None:
+                image2 = self.camera2.read()
+                if image2 is not None:
+                    estimate = self.z_controller.estimate_z(image, image2, self.detector.workpiece_color)
+                    if estimate.confidence > 0:
+                        z_text = f"Z: {estimate.z:.1f}mm +/-{estimate.uncertainty:.1f} ({estimate.method})"
+                        color = (0, 255, 255)  # 黄色
+                    else:
+                        z_text = f"Z: -- (no marker)"
+                        color = (128, 128, 128)
+                    cv2.putText(vis, z_text, (10, 200),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
             # 显示基本信息
             cv2.putText(vis, f"Arm: {self.arm}", (vis.shape[1]-100, 30),
