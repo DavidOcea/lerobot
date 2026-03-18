@@ -1967,6 +1967,14 @@ class PrecisionPlaceController:
         try:
             JW_pinv = np.linalg.pinv(JW)
             delta_angles = JW_pinv @ (-error)
+
+            # 检查解是否合理（防止数值不稳定导致过大的解）
+            max_delta = np.max(np.abs(delta_angles))
+            if max_delta > 5.0:  # 单次调整超过5度说明数值不稳定
+                print(f"    伪逆解过大 (max={max_delta:.1f}°)，使用带权重的单关节方法")
+                delta_angles = self._compute_single_joint_with_weights(
+                    pixel_error_x, pixel_error_y, sensitivities, POSITION_WEIGHTS
+                )
         except np.linalg.LinAlgError:
             print("    伪逆求解失败，使用带权重的单关节方法")
             delta_angles = self._compute_single_joint_with_weights(
