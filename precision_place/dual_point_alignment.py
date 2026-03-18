@@ -708,6 +708,14 @@ class PrecisionPlaceController:
         self.use_prediction: bool = True  # 是否使用预测位置
         self._predicted_slot_center: Optional[Tuple[float, float]] = None
 
+        # 对齐视频显示
+        self.show_alignment_video: bool = True  # 是否显示对齐视频
+        self._alignment_window_name = "Alignment Monitor"
+
+        # 遮挡恢复参数
+        self.max_occlusion_frames = 5  # 连续遮挡多少帧才放弃
+        self.occlusion_recovery_gain = 0.4  # 遮挡时的控制增益（更保守）
+
         # 旋转调整增益
         self.rotation_gain = 0.3
         self.max_rotation_adjust = 2.0  # 单次最大旋转调整（度）
@@ -2155,10 +2163,15 @@ class PrecisionPlaceController:
 
         # 异常恢复参数
         consecutive_failures = 0
-        max_consecutive_failures = 3
+        max_consecutive_failures = self.max_occlusion_frames  # 使用配置的遮挡帧数
         recovery_attempts = 0
-        max_recovery_attempts = 2
+        max_recovery_attempts = 3  # 增加恢复尝试次数
         degraded_warnings = 0  # 退化模式警告计数
+
+        # 视频显示窗口
+        if self.show_alignment_video:
+            cv2.namedWindow(self._alignment_window_name, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(self._alignment_window_name, 800, 600)
 
         for i in range(self.max_iterations):
             print(f"\n[对齐 {i+1}/{self.max_iterations}]")
@@ -2187,30 +2200,50 @@ class PrecisionPlaceController:
 
             print(f"  工件: {wp}/3, 卡槽: {sl}/3")
 
+            # 视频显示（检测失败时也显示）
+            if self.show_alignment_video:
+                vis = self.visualize_alignment(image, state, None, 0.0, i, self.max_iterations)
+                cv2.imshow(self._alignment_window_name, vis)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    print("  用户中断对齐")
+                    cv2.destroyWindow(self._alignment_window_name)
+                    return False
+
             if not state.workpiece_detected or not state.slot_detected:
                 consecutive_failures += 1
                 print(f"  标记不完整 ({consecutive_failures}/{max_consecutive_failures})")
 
-                # P1: 尝试使用预测位置
-                if self.use_prediction and state.workpiece_detected and self._has_valid_prediction():
-                    print("  尝试使用预测位置...")
+                # 改进的遮挡恢复：只要有历史预测就尝试使用
+                if self.use_prediction and self._has_valid_prediction():
+                    print("  [遮挡恢复] 使用预测位置继续控制...")
                     predicted_state = self._create_predicted_state(state)
                     if predicted_state is not None:
                         state = predicted_state
-                        print(f"  ✓ 使用预测偏移: ({state.offset_x:.1f}, {state.offset_y:.1f})")
+                        print(f"  ✓ 预测偏移: ({state.offset_x:.1f}, {state.offset_y:.1f})")
+                        # 不continue，继续执行控制
                     else:
-                        # 异常恢复
-                        self._handle_detection_failure(state, consecutive_failures, max_consecutive_failures,
-                                                       recovery_attempts, max_recovery_attempts)
+                        # 预测失败，尝试物理恢复
+                        if consecutive_failures >= max_consecutive_failures:
+                            recovery_attempts = self._handle_detection_failure(
+                                state, consecutive_failures, max_consecutive_failures,
+                                recovery_attempts, max_recovery_attempts
+                            )
                         if consecutive_failures >= max_consecutive_failures * 2:
+                            print("  ✗ 遮挡时间过长，对齐失败")
+                            cv2.destroyWindow(self._alignment_window_name)
                             return False
                         continue
                 else:
-                    # 异常恢复
-                    recovery_attempts = self._handle_detection_failure(state, consecutive_failures,
-                                                                       max_consecutive_failures,
-                                                                       recovery_attempts, max_recovery_attempts)
+                    # 无预测数据，等待恢复
+                    if consecutive_failures >= max_consecutive_failures:
+                        recovery_attempts = self._handle_detection_failure(
+                            state, consecutive_failures, max_consecutive_failures,
+                            recovery_attempts, max_recovery_attempts
+                        )
                     if consecutive_failures >= max_consecutive_failures * 2:
+                        print("  ✗ 持续检测失败，对齐失败")
+                        cv2.destroyWindow(self._alignment_window_name)
                         return False
                     continue
 
@@ -2252,6 +2285,9 @@ class PrecisionPlaceController:
                 print(f"  旋转误差: {abs(state.rotation_error):.2f}deg < {actual_rot_tolerance:.2f}deg")
                 if state.degraded_mode:
                     print(f"  ⚠ 本次对齐在退化模式下完成，建议检查实际效果")
+                # 关闭视频窗口
+                if self.show_alignment_video:
+                    cv2.destroyWindow(self._alignment_window_name)
                 return True
 
             # 获取当前关节状态
@@ -2285,6 +2321,16 @@ class PrecisionPlaceController:
             if rotation_adjustments:
                 print(f"  旋转调整: {rotation_adjustments}")
 
+            # 视频显示（显示调整信息）
+            if self.show_alignment_video:
+                vis = self.visualize_alignment(image, state, adjustments, error_mm, i, self.max_iterations)
+                cv2.imshow(self._alignment_window_name, vis)
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    print("  用户中断对齐")
+                    cv2.destroyWindow(self._alignment_window_name)
+                    return False
+
             # 保存调整前的像素误差（用于验证）
             pre_offset_x = current_offset_x
             pre_offset_y = current_offset_y
@@ -2310,6 +2356,9 @@ class PrecisionPlaceController:
                         print(f"         建议: 在当前姿态下重新标定关节灵敏度")
 
         print("\n✗ 对齐未完成 (达到最大迭代次数)")
+        # 关闭视频窗口
+        if self.show_alignment_video:
+            cv2.destroyWindow(self._alignment_window_name)
         return False
 
     def _handle_detection_failure(self, state: DualMarkerState, consecutive_failures: int,
@@ -2389,6 +2438,102 @@ class PrecisionPlaceController:
         )
 
         return state
+
+    def visualize_alignment(self, image, state: DualMarkerState,
+                            adjustments: Dict[int, float] = None,
+                            error_mm: float = 0.0,
+                            iteration: int = 0,
+                            max_iterations: int = 15) -> np.ndarray:
+        """
+        可视化对齐过程
+
+        显示：
+        - 相机画面 + 标记检测
+        - 移动方向箭头
+        - 误差信息
+        - 关节调整量
+
+        Args:
+            image: 原始图像
+            state: 检测状态
+            adjustments: 关节调整量
+            error_mm: 位置误差（毫米）
+            iteration: 当前迭代次数
+            max_iterations: 最大迭代次数
+
+        Returns:
+            可视化图像
+        """
+        # 使用detector的基础可视化
+        vis = self.detector.visualize(image, state)
+
+        h, w = vis.shape[:2]
+
+        # 绘制移动方向箭头（如果检测到两个中心）
+        if state.workpiece_center and state.slot_center:
+            wp_center = state.workpiece_center
+            slot_center = state.slot_center
+
+            # 从工件中心指向卡槽中心的箭头（表示需要移动的方向）
+            # 但实际移动方向相反：需要把工件移到卡槽位置
+            # 所以箭头应该从工件中心指向卡槽中心
+            cv2.arrowedLine(vis,
+                           (int(wp_center[0]), int(wp_center[1])),
+                           (int(slot_center[0]), int(slot_center[1])),
+                           (0, 255, 255), 3, tipLength=0.3)
+
+            # 在工件中心标注 "W"
+            cv2.putText(vis, "W", (int(wp_center[0])-10, int(wp_center[1])-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            # 在卡槽中心标注 "S"
+            cv2.putText(vis, "S", (int(slot_center[0])-10, int(slot_center[1])-10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+        # 绘制信息面板
+        panel_height = 180
+        panel = np.zeros((panel_height, w, 3), dtype=np.uint8)
+
+        # 迭代信息
+        cv2.putText(panel, f"Iteration: {iteration+1}/{max_iterations}",
+                   (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+        # 标记检测信息
+        wp_count = state.workpiece_marker_count
+        sl_count = state.slot_marker_count
+        color = (0, 255, 0) if wp_count >= 3 and sl_count >= 3 else (0, 255, 255)
+        cv2.putText(panel, f"Markers: Workpiece {wp_count}/3, Slot {sl_count}/3",
+                   (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+        # 误差信息
+        mm_x = state.offset_x * self.pixel_to_mm_ratio
+        mm_y = state.offset_y * self.pixel_to_mm_ratio
+        cv2.putText(panel, f"Error: X={mm_x:.2f}mm, Y={mm_y:.2f}mm",
+                   (10, 75), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(panel, f"Total: {error_mm:.2f}mm",
+                   (10, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        cv2.putText(panel, f"Rotation: {state.rotation_error:.1f}deg",
+                   (10, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        # 关节调整信息
+        if adjustments:
+            y_pos = 150
+            adj_text = "Joints: " + ", ".join([f"J{k}:{v:.2f}" for k, v in adjustments.items() if abs(v) > 0.01])
+            cv2.putText(panel, adj_text[:60], (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 1)
+
+        # 退化模式提示
+        if state.degraded_mode:
+            cv2.putText(panel, "DEGRADED MODE", (w-180, 25),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 100, 255), 2)
+
+        # 预测模式提示
+        if "预测" in state.degraded_reason if state.degraded_reason else "":
+            cv2.putText(panel, "PREDICTION", (w-150, 50),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+        # 合并面板和图像
+        result = np.vstack([panel, vis])
+
+        return result
 
     # ==================== 兼容旧接口 ====================
 
