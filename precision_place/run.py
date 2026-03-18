@@ -905,12 +905,14 @@ class PrecisionPlaceSystem:
         print("Z轴关节灵敏度标定")
         print("="*60)
 
-        # Z轴控制关节
-        z_joints = [7, 8, 10, 12]  # joint_1, joint_2, joint_4, joint_6
+        # Z轴控制关节 - 所有6个手臂关节
+        z_joints = [7, 8, 9, 10, 11, 12]  # joint_1 到 joint_6
         joint_names = {
             7: 'right_arm_joint_1 (底座旋转)',
             8: 'right_arm_joint_2 (肩部俯仰)',
+            9: 'right_arm_joint_3 (肩部侧摆)',
             10: 'right_arm_joint_4 (前臂俯仰)',
+            11: 'right_arm_joint_5 (腕部俯仰)',
             12: 'right_arm_joint_6 (手腕旋转)'
         }
 
@@ -922,9 +924,11 @@ Z轴控制原理:
 
 标定关节:
   1. joint_1 (底座旋转) - 主要影响
-  2. joint_2 (肩部俯仰) - 次要影响
-  3. joint_4 (前臂俯仰) - 次要影响
-  4. joint_6 (手腕旋转) - 较小影响
+  2. joint_2 (肩部俯仰) - 主要影响
+  3. joint_3 (肩部侧摆) - 中等影响
+  4. joint_4 (前臂俯仰) - 次要影响
+  5. joint_5 (腕部俯仰) - 较小影响
+  6. joint_6 (手腕旋转) - 较小影响
 """)
 
         input("\n按 Enter 开始...")
@@ -1119,10 +1123,12 @@ Z轴控制原理:
   自动标定会自动移动每个Z轴关节并记录深度变化。
   不需要手动操作。
 
-Z轴控制关节:
+Z轴控制关节 (全部6个):
   - joint_1 (底座旋转): 主要影响
-  - joint_2 (肩部俯仰): 次要影响
+  - joint_2 (肩部俯仰): 主要影响
+  - joint_3 (肩部侧摆): 中等影响
   - joint_4 (前臂俯仰): 次要影响
+  - joint_5 (腕部俯仰): 较小影响
   - joint_6 (手腕旋转): 较小影响
 """)
 

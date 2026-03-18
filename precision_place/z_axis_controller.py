@@ -313,21 +313,27 @@ class ZAxisController:
     # 关节索引映射 (右臂)
     # 根据实际测试，影响末端Z轴的关节:
     # - joint_1 (底座旋转): 影响最大，改变整个手臂的工作范围
-    # - joint_2 (肩部俯仰): 次要影响，改变肩部角度
+    # - joint_2 (肩部俯仰): 主要影响，改变肩部角度
+    # - joint_3 (肩部侧摆): 中等影响，在特定角度影响高度
     # - joint_4 (前臂俯仰): 次要影响
+    # - joint_5 (腕部俯仰): 较小影响，但在特定角度有作用
     # - joint_6 (手腕旋转): 较小影响
     # 注意: 躯干(trunk)只做旋转不做弯腰，不影响末端Z轴
     JOINT_IDX_RIGHT = {
         'joint_1': 7,    # right_arm_joint_1 (底座旋转) - 主要
-        'joint_2': 8,    # right_arm_joint_2 (肩部俯仰) - 次要
+        'joint_2': 8,    # right_arm_joint_2 (肩部俯仰) - 主要
+        'joint_3': 9,    # right_arm_joint_3 (肩部侧摆) - 中等
         'joint_4': 10,   # right_arm_joint_4 (前臂俯仰) - 次要
+        'joint_5': 11,   # right_arm_joint_5 (腕部俯仰) - 较小
         'joint_6': 12,   # right_arm_joint_6 (手腕旋转) - 较小
     }
 
     JOINT_NAMES = {
         7: 'right_arm_joint_1',   # 底座旋转
         8: 'right_arm_joint_2',   # 肩部俯仰
+        9: 'right_arm_joint_3',   # 肩部侧摆
         10: 'right_arm_joint_4',  # 前臂俯仰
+        11: 'right_arm_joint_5',  # 腕部俯仰
         12: 'right_arm_joint_6',  # 手腕旋转
     }
 
@@ -335,7 +341,9 @@ class ZAxisController:
     JOINT_IDX_LEFT = {
         'joint_1': 0,    # left_arm_joint_1
         'joint_2': 1,    # left_arm_joint_2
+        'joint_3': 2,    # left_arm_joint_3
         'joint_4': 3,    # left_arm_joint_4
+        'joint_5': 4,    # left_arm_joint_5
         'joint_6': 5,    # left_arm_joint_6
     }
 
@@ -344,13 +352,17 @@ class ZAxisController:
     POSITION_WEIGHTS = {
         7: 1.0,   # joint_1 (底座旋转) - 主要影响高度
         8: 0.9,   # joint_2 (肩部俯仰) - 主要影响高度
-        10: 0.7,  # joint_4 (前臂俯仰) - 次要影响
-        12: 0.3,  # joint_6 (手腕旋转) - 较小影响
+        9: 0.7,   # joint_3 (肩部侧摆) - 中等影响
+        10: 0.6,  # joint_4 (前臂俯仰) - 次要影响
+        11: 0.3,  # joint_5 (腕部俯仰) - 较小影响
+        12: 0.2,  # joint_6 (手腕旋转) - 较小影响
         # 左臂
         0: 1.0,   # left_arm_joint_1
         1: 0.9,   # left_arm_joint_2
-        3: 0.7,   # left_arm_joint_4
-        5: 0.3,   # left_arm_joint_6
+        2: 0.7,   # left_arm_joint_3
+        3: 0.6,   # left_arm_joint_4
+        4: 0.3,   # left_arm_joint_5
+        5: 0.2,   # left_arm_joint_6
     }
 
     def __init__(self, marker_diameter_mm: float = 15.0):
@@ -363,11 +375,14 @@ class ZAxisController:
         self.max_z_adjust = 3.0
 
         # 多关节灵敏度 (mm/deg) - 需要标定
+        # 默认值为估计值，建议通过标定获取准确值
         self.joint_sensitivities: Dict[int, ZJointSensitivity] = {
-            7: ZJointSensitivity(7, 'right_arm_joint_1', 8.0),
-            8: ZJointSensitivity(8, 'right_arm_joint_2', 5.0),
-            10: ZJointSensitivity(10, 'right_arm_joint_4', 3.0),
-            12: ZJointSensitivity(12, 'right_arm_joint_6', 1.5),
+            7: ZJointSensitivity(7, 'right_arm_joint_1', 8.0),   # 底座旋转 - 主要
+            8: ZJointSensitivity(8, 'right_arm_joint_2', 5.0),   # 肩部俯仰 - 主要
+            9: ZJointSensitivity(9, 'right_arm_joint_3', 3.0),   # 肩部侧摆 - 中等
+            10: ZJointSensitivity(10, 'right_arm_joint_4', 3.0), # 前臂俯仰 - 次要
+            11: ZJointSensitivity(11, 'right_arm_joint_5', 1.5), # 腕部俯仰 - 较小
+            12: ZJointSensitivity(12, 'right_arm_joint_6', 1.5), # 手腕旋转 - 较小
         }
         self.primary_joint = 7  # 主控制关节
 
@@ -761,7 +776,7 @@ class ZAxisController:
         print("# Z轴多关节自动标定")
         print(f"{'#'*60}")
 
-        joints_to_calibrate = [7, 8, 10, 12]  # joint_1, joint_2, joint_4, joint_6
+        joints_to_calibrate = [7, 8, 9, 10, 11, 12]  # 所有关节: joint_1到joint_6
         success_count = 0
 
         for joint_idx in joints_to_calibrate:
