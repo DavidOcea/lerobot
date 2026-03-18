@@ -1860,7 +1860,7 @@ class PrecisionPlaceController:
 
     def _compute_adjustments_interpolation(self, pixel_error_x: float, pixel_error_y: float,
                                            current_joints: np.ndarray) -> Dict[int, float]:
-        """方案A: 使用插值灵敏度计算调整量"""
+        """方案A: 使用伪逆 + 位置权重计算多关节组合调整量"""
         sensitivities = self.get_interpolated_sensitivities(current_joints)
 
         if not sensitivities:
@@ -1875,61 +1875,71 @@ class PrecisionPlaceController:
         # 调试：打印计算过程
         print(f"    像素误差: X={pixel_error_x:.1f}px, Y={pixel_error_y:.1f}px")
 
-        # 分别处理X和Y方向，选择影响最大的关节
+        # ========== 位置贡献权重 ==========
+        # 手腕关节(joint_11, 12)主要控制姿态，对末端位置贡献小
+        # 其他手臂关节主要控制位置，贡献大
+        POSITION_WEIGHTS = {
+            7: 1.0,   # joint_1 (底座旋转) - 位置贡献大
+            8: 1.0,   # joint_2 (肩部俯仰) - 位置贡献大
+            9: 1.0,   # joint_3 (肩部侧摆) - 位置贡献大
+            10: 0.8,  # joint_4 (前臂俯仰) - 位置贡献中
+            11: 0.3,  # joint_5 (腕部俯仰) - 位置贡献小
+            12: 0.3,  # joint_6 (腕部旋转) - 位置贡献小
+            14: 0.6,  # trunk_1 (躯干旋转) - 位置贡献中
+        }
+
+        # ========== 构建雅可比矩阵 ==========
+        # J: 2 x N 矩阵
+        # J[0, i] = 关节i对像素X的影响 (pixel_dx_per_deg)
+        # J[1, i] = 关节i对像素Y的影响 (pixel_dy_per_deg)
+
+        joint_indices = [s.joint_idx for s in sensitivities]
+        n_joints = len(joint_indices)
+
+        J = np.zeros((2, n_joints))
+        W = np.zeros((n_joints, n_joints))  # 权重对角矩阵
+
+        for i, s in enumerate(sensitivities):
+            J[0, i] = s.pixel_dx_per_deg
+            J[1, i] = s.pixel_dy_per_deg
+            # 获取位置权重，默认0.5
+            W[i, i] = POSITION_WEIGHTS.get(s.joint_idx, 0.5)
+
+        # ========== 伪逆求解 ==========
+        # 目标：J @ delta = -error
+        # 加入权重：J @ W @ delta' = -error
+        # 解：delta' = (J @ W)^+ @ (-error)
+
+        JW = J @ W  # 加权雅可比矩阵
+
+        # 目标误差向量
+        error = np.array([pixel_error_x, pixel_error_y])
+
+        # 使用伪逆求解
+        try:
+            JW_pinv = np.linalg.pinv(JW)
+            delta_angles = JW_pinv @ (-error)
+        except np.linalg.LinAlgError:
+            print("    伪逆求解失败，使用默认方法")
+            delta_angles = np.zeros(n_joints)
+
+        # 应用增益和限幅
+        delta_angles = delta_angles * self.gain
+        delta_angles = np.clip(delta_angles, -2.0, 2.0)
+
+        # 转换为调整字典
         adjustments = {}
+        print(f"    多关节组合调整:")
+        for i, (joint_idx, delta) in enumerate(zip(joint_indices, delta_angles)):
+            if abs(delta) > 0.01:  # 忽略微小调整
+                adjustments[joint_idx] = delta
+                weight = W[i, i]
+                print(f"      joint_{joint_idx}: {delta:.2f}° (权重={weight})")
 
-        # 1. 找到对X方向影响最大的关节
-        max_x_sens = None
-        max_x_abs = 0
-        for s in sensitivities:
-            if abs(s.pixel_dx_per_deg) > max_x_abs:
-                max_x_abs = abs(s.pixel_dx_per_deg)
-                max_x_sens = s
-
-        # 2. 找到对Y方向影响最大的关节
-        max_y_sens = None
-        max_y_abs = 0
-        for s in sensitivities:
-            if abs(s.pixel_dy_per_deg) > max_y_abs:
-                max_y_abs = abs(s.pixel_dy_per_deg)
-                max_y_sens = s
-
-        # 3. 计算X方向调整
-        delta_x = 0.0
-        delta_y = 0.0
-        if max_x_sens and abs(max_x_sens.pixel_dx_per_deg) > 0.01:
-            delta_x = -pixel_error_x / max_x_sens.pixel_dx_per_deg
-            delta_x = np.clip(delta_x * self.gain, -2.0, 2.0)
-
-        # 4. 计算Y方向调整
-        if max_y_sens and abs(max_y_sens.pixel_dy_per_deg) > 0.01:
-            delta_y = -pixel_error_y / max_y_sens.pixel_dy_per_deg
-            delta_y = np.clip(delta_y * self.gain, -2.0, 2.0)
-
-        # 5. 合并调整（处理同一关节控制XY的情况）
-        if max_x_sens and max_y_sens:
-            if max_x_sens.joint_idx == max_y_sens.joint_idx:
-                # 同一个关节控制XY，合并调整量
-                delta = (delta_x + delta_y) / 2
-                delta = np.clip(delta, -2.0, 2.0)
-                adjustments[max_x_sens.joint_idx] = delta
-                print(f"    关节 {max_x_sens.joint_idx} (XY合一): X调整={delta_x:.2f}, Y调整={delta_y:.2f}, 合并={delta:.2f}")
-            else:
-                # 不同关节分别控制X和Y
-                adjustments[max_x_sens.joint_idx] = adjustments.get(max_x_sens.joint_idx, 0) + delta_x
-                adjustments[max_y_sens.joint_idx] = adjustments.get(max_y_sens.joint_idx, 0) + delta_y
-                print(f"    关节 {max_x_sens.joint_idx} (X主): sens={max_x_sens.pixel_dx_per_deg:.2f}, 调整={delta_x:.2f}")
-                print(f"    关节 {max_y_sens.joint_idx} (Y主): sens={max_y_sens.pixel_dy_per_deg:.2f}, 调整={delta_y:.2f}")
-
-                # DEBUG: 打印预期的像素变化
-                expected_dx = delta_x * max_x_sens.pixel_dx_per_deg
-                print(f"    [DEBUG] 预期X像素变化: {expected_dx:.1f}px (来自关节{max_x_sens.joint_idx})")
-        elif max_x_sens:
-            adjustments[max_x_sens.joint_idx] = adjustments.get(max_x_sens.joint_idx, 0) + delta_x
-            print(f"    关节 {max_x_sens.joint_idx} (X主): sens={max_x_sens.pixel_dx_per_deg:.2f}, 调整={delta_x:.2f}")
-        elif max_y_sens:
-            adjustments[max_y_sens.joint_idx] = adjustments.get(max_y_sens.joint_idx, 0) + delta_y
-            print(f"    关节 {max_y_sens.joint_idx} (Y主): sens={max_y_sens.pixel_dy_per_deg:.2f}, 调整={delta_y:.2f}")
+        # 验证预期效果
+        expected_dx = sum(J[0, i] * delta_angles[i] for i in range(n_joints))
+        expected_dy = sum(J[1, i] * delta_angles[i] for i in range(n_joints))
+        print(f"    预期像素变化: X={expected_dx:.1f}px, Y={expected_dy:.1f}px")
 
         return adjustments
 
