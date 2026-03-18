@@ -41,18 +41,50 @@ class CameraCalibration:
 
 @dataclass
 class StereoCalibration:
-    """双目标定数据"""
+    """双目标定数据
+
+    Attributes:
+        camera1: 第一个相机标定数据
+        camera2: 第二个相机标定数据
+        R: 旋转矩阵
+        T: 平移向量 [x, y, z]，表示camera2相对于camera1的位置
+        baseline: 基线距离 (mm)
+        arrangement: 相机排列方式
+            - 'horizontal': 水平排列（左右），视差由X坐标差计算
+            - 'vertical': 垂直排列（上下），视差由Y坐标差计算
+            - 'auto': 自动检测（根据T向量判断）
+
+    注意: 当前配置为垂直排列（上下），两个腕部相机安装方向相差180度
+    """
     camera1: CameraCalibration = None
     camera2: CameraCalibration = None
     R: np.ndarray = field(default_factory=lambda: np.eye(3))
-    T: np.ndarray = field(default_factory=lambda: np.array([80.0, 0.0, 0.0]))
+    # T向量: 垂直排列，camera2在camera1下方约80mm
+    T: np.ndarray = field(default_factory=lambda: np.array([0.0, 80.0, 0.0]))
     baseline: float = 80.0  # 基线距离 (mm)
+    # 垂直排列：上下安装，视差由Y坐标差计算
+    arrangement: str = 'vertical'  # 'horizontal', 'vertical', 'auto'
 
     def __post_init__(self):
         if self.camera1 is None:
             self.camera1 = CameraCalibration(name="right_wrist", index=6)
         if self.camera2 is None:
             self.camera2 = CameraCalibration(name="right_wrist2", index=8)
+
+    def get_arrangement(self) -> str:
+        """获取相机排列方式"""
+        if self.arrangement != 'auto':
+            return self.arrangement
+
+        # 根据平移向量判断排列方式
+        tx, ty, tz = abs(self.T[0]), abs(self.T[1]), abs(self.T[2])
+        if tx >= ty and tx >= tz:
+            return 'horizontal'
+        elif ty >= tx and ty >= tz:
+            return 'vertical'
+        else:
+            # 默认水平排列
+            return 'horizontal'
 
 
 @dataclass
@@ -196,14 +228,21 @@ class DepthEstimator:
 
         原理: z = f * baseline / disparity
 
-        注意: 此方法假设相机水平排列
-        如果相机有角度偏移，需要考虑角度校正
+        支持不同的相机排列方式:
+        - 水平排列: 视差 = |x1 - x2|
+        - 垂直排列: 视差 = |y1 - y2|
         """
         f = (self.stereo_calib.camera1.fx + self.stereo_calib.camera1.fy) / 2
         baseline = self.stereo_calib.baseline
 
-        # 视差计算 (假设水平排列)
-        disparity = abs(marker1.x - marker2.x)
+        # 根据相机排列方式计算视差
+        arrangement = self.stereo_calib.get_arrangement()
+        if arrangement == 'vertical':
+            # 垂直排列：使用Y坐标差
+            disparity = abs(marker1.y - marker2.y)
+        else:
+            # 水平排列（默认）：使用X坐标差
+            disparity = abs(marker1.x - marker2.x)
 
         if disparity < 1:
             return DepthEstimate(z=0, uncertainty=999, method="stereo", confidence=0)
@@ -613,7 +652,7 @@ class ZAxisController:
 
         Args:
             robot: 机器人对象
-            joint_idx: 关节索引
+            joint_idx: 关节索引（全局索引，如7=right_arm_joint_1）
             target_angle: 目标角度
             steps: 分多少步移动
 
@@ -624,8 +663,13 @@ class ZAxisController:
         if current_joints is None:
             return False
 
-        joint_names = list(current_joints.keys())
-        initial_angle = current_joints[joint_names[joint_idx]]
+        # 获取关节名称
+        joint_name = self.JOINT_NAMES.get(joint_idx)
+        if joint_name is None or joint_name not in current_joints:
+            print(f"✗ 关节索引 {joint_idx} 无效或不在当前关节数据中")
+            return False
+
+        initial_angle = current_joints[joint_name]
 
         for step in range(1, steps + 1):
             alpha = step / steps
@@ -635,7 +679,7 @@ class ZAxisController:
 
             # 构建action
             action = current_joints.copy()
-            action[joint_names[joint_idx]] = current_angle
+            action[joint_name] = current_angle
             robot.send_action(action)
             time.sleep(0.05)  # 每步50ms
 
@@ -672,11 +716,16 @@ class ZAxisController:
             # 记录初始点
             self.start_joint_calibration(joint_idx)
 
-            joint_names = list(current_joints.keys())
-            initial_angle = current_joints[joint_names[joint_idx]]
+            # 获取关节名称并检查有效性
+            joint_name = self.JOINT_NAMES.get(joint_idx)
+            if joint_name is None or joint_name not in current_joints:
+                print(f"✗ 关节索引 {joint_idx} 无效或不在当前关节数据中")
+                continue
+
+            initial_angle = current_joints[joint_name]
 
             if not self.record_calibration_point(
-                np.array([current_joints[name] for name in joint_names]), 'before'
+                np.array(list(current_joints.values())), 'before'
             ):
                 continue
 
@@ -689,7 +738,7 @@ class ZAxisController:
             # 记录终点
             current_joints = robot.get_current_position()
             if not self.record_calibration_point(
-                np.array([current_joints[name] for name in joint_names]), 'after'
+                np.array(list(current_joints.values())), 'after'
             ):
                 continue
 

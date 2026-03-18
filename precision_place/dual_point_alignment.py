@@ -1864,12 +1864,13 @@ class PrecisionPlaceController:
         sensitivities = self.get_interpolated_sensitivities(current_joints)
 
         if not sensitivities:
-            # 没有标定数据，使用默认值
-            print("警告: 无标定数据，使用默认关节")
-            return {
-                self.arm_config.primary_joints[0]: pixel_error_x * 0.1,
-                self.arm_config.primary_joints[1]: pixel_error_y * 0.1
-            }
+            # 没有标定数据，无法准确计算调整量
+            print("\n" + "!"*60)
+            print("! 严重警告: 无标定数据，无法准确计算关节调整量")
+            print("! 建议先运行标定: 主菜单 -> 4 (标定) -> 2 或 3 (关节灵敏度标定)")
+            print("! 当前返回空调整，对齐可能失败")
+            print("!"*60)
+            return {}
 
         # 调试：打印计算过程
         print(f"    像素误差: X={pixel_error_x:.1f}px, Y={pixel_error_y:.1f}px")
@@ -2197,6 +2198,13 @@ class PrecisionPlaceController:
                 current_offset_x, current_offset_y, current_joints
             )
 
+            # 检查是否有有效的调整量
+            if not adjustments and not state.degraded_mode:
+                print("  ✗ 无法计算调整量，请先完成标定")
+                print("  提示: 主菜单 -> 4 (标定) -> 2 或 3 (关节灵敏度标定)")
+                # 继续尝试，可能退化模式能工作
+                continue
+
             # 计算旋转调整量 (退化模式下跳过旋转校正)
             rotation_adjustments = {}
             if not state.degraded_mode and sl >= 2:
@@ -2204,7 +2212,8 @@ class PrecisionPlaceController:
                     state.rotation_error, current_joints
                 )
 
-            print(f"  位置调整: {adjustments}")
+            if adjustments:
+                print(f"  位置调整: {adjustments}")
             if rotation_adjustments:
                 print(f"  旋转调整: {rotation_adjustments}")
 
@@ -2212,15 +2221,15 @@ class PrecisionPlaceController:
             pre_offset_x = current_offset_x
             pre_offset_y = current_offset_y
 
-            # 应用调整
+            # 应用调整 (只有当有调整量时才执行)
             min_quality = 0.2 if state.degraded_mode else 0.3  # 退化模式下降低质量阈值
-            if state.alignment_quality > min_quality:
+            if adjustments and state.alignment_quality > min_quality:
                 self.apply_joint_adjustments(adjustments, rotation_adjustments)
 
             time.sleep(self.settle_time)
 
             # DEBUG: 验证调整效果 - 获取新的像素误差并与预期比较
-            if self.alignment_quality > min_quality:
+            if adjustments and state.alignment_quality > min_quality:
                 new_image = self.camera.read()
                 new_state = self.detector.detect_dual_marker_state(new_image)
                 if new_state.workpiece_detected and new_state.slot_detected:
