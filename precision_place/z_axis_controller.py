@@ -339,6 +339,20 @@ class ZAxisController:
         'joint_6': 5,    # left_arm_joint_6
     }
 
+    # Z轴关节位置贡献权重
+    # 底座和肩部关节对末端高度贡献大，手腕关节贡献小
+    POSITION_WEIGHTS = {
+        7: 1.0,   # joint_1 (底座旋转) - 主要影响高度
+        8: 0.9,   # joint_2 (肩部俯仰) - 主要影响高度
+        10: 0.7,  # joint_4 (前臂俯仰) - 次要影响
+        12: 0.3,  # joint_6 (手腕旋转) - 较小影响
+        # 左臂
+        0: 1.0,   # left_arm_joint_1
+        1: 0.9,   # left_arm_joint_2
+        3: 0.7,   # left_arm_joint_4
+        5: 0.3,   # left_arm_joint_6
+    }
+
     def __init__(self, marker_diameter_mm: float = 15.0):
         self.depth_estimator = DepthEstimator(marker_diameter_mm)
 
@@ -349,17 +363,13 @@ class ZAxisController:
         self.max_z_adjust = 3.0
 
         # 多关节灵敏度 (mm/deg) - 需要标定
-        # joint_1 (底座旋转): 影响最大，需要实际标定
-        # joint_2 (肩部俯仰): 次要影响
-        # joint_4 (前臂俯仰): 次要影响
-        # joint_6 (手腕旋转): 较小影响
         self.joint_sensitivities: Dict[int, ZJointSensitivity] = {
-            7: ZJointSensitivity(7, 'right_arm_joint_1', 8.0),   # 底座旋转 - 主要
-            8: ZJointSensitivity(8, 'right_arm_joint_2', 5.0),   # 肩部俯仰 - 次要
-            10: ZJointSensitivity(10, 'right_arm_joint_4', 3.0), # 前臂俯仰 - 次要
-            12: ZJointSensitivity(12, 'right_arm_joint_6', 1.5), # 手腕旋转 - 较小
+            7: ZJointSensitivity(7, 'right_arm_joint_1', 8.0),
+            8: ZJointSensitivity(8, 'right_arm_joint_2', 5.0),
+            10: ZJointSensitivity(10, 'right_arm_joint_4', 3.0),
+            12: ZJointSensitivity(12, 'right_arm_joint_6', 1.5),
         }
-        self.primary_joint = 7  # 主控制关节: joint_1 (底座旋转)
+        self.primary_joint = 7  # 主控制关节
 
         # 状态
         self.current_z: float = 0.0
@@ -485,12 +495,15 @@ class ZAxisController:
 
     def compute_z_adjustment(self, z_error: float = None) -> Dict[int, float]:
         """
-        计算Z轴多关节调整量
+        计算Z轴多关节调整量（伪逆 + 位置权重）
 
-        根据误差大小选择不同策略:
-        - 小误差: 仅主关节
-        - 中误差: 主关节为主
-        - 大误差: 多关节协调
+        使用伪逆求解多关节组合控制：
+        - 目标：J @ delta = -z_error
+        - 加入权重：J @ W @ delta' = -z_error
+        - 解：delta' = (J @ W)^+ @ (-z_error)
+
+        Args:
+            z_error: Z轴误差（mm），正数表示太高
 
         Returns:
             {joint_idx: adjustment_deg}
@@ -498,41 +511,88 @@ class ZAxisController:
         if z_error is None:
             z_error = self.z_error
 
-        adjustments = {}
-        abs_error = abs(z_error)
+        if not self.joint_sensitivities:
+            print("  ✗ 无Z轴关节灵敏度数据，请先标定")
+            return {}
 
-        # 计算需要的Z变化量 (负号: 误差正=太远=需要下降)
+        # 计算需要的Z变化量 (负号: 误差正=太高=需要下降)
         z_delta = -z_error * self.z_gain
         z_delta = np.clip(z_delta, -self.max_z_adjust, self.max_z_adjust)
 
-        if abs_error < 3.0:
-            # 小误差: 仅用主关节
-            joint_idx = self.primary_joint
-            sens = self.joint_sensitivities[joint_idx].mm_per_deg
-            if abs(sens) > 0.01:
-                adjustments[joint_idx] = z_delta / sens
+        print(f"    Z误差: {z_error:.1f}mm, 目标变化: {z_delta:.1f}mm")
 
-        elif abs_error < 10.0:
-            # 中误差: 主关节为主
-            joint_idx = self.primary_joint
-            sens = self.joint_sensitivities[joint_idx].mm_per_deg
-            if abs(sens) > 0.01:
-                adjustments[joint_idx] = z_delta / sens
+        # 构建雅可比向量 (1 x N)
+        joint_indices = list(self.joint_sensitivities.keys())
+        n_joints = len(joint_indices)
 
-        else:
-            # 大误差: 多关节协调 (主关节80%, 辅助20%)
-            main_joint = self.primary_joint
-            main_sens = self.joint_sensitivities[main_joint].mm_per_deg
+        J = np.zeros((1, n_joints))  # 雅可比向量
+        W = np.zeros((n_joints, n_joints))  # 权重对角矩阵
 
-            if abs(main_sens) > 0.01:
-                adjustments[main_joint] = (z_delta * 0.8) / main_sens
+        for i, jidx in enumerate(joint_indices):
+            sens = self.joint_sensitivities[jidx].mm_per_deg
+            J[0, i] = sens
+            W[i, i] = self.POSITION_WEIGHTS.get(jidx, 0.5)
 
-            # 辅助关节
-            for jidx, sens_data in self.joint_sensitivities.items():
-                if jidx != main_joint and abs(sens_data.mm_per_deg) > 0.01:
-                    adjustments[jidx] = (z_delta * 0.2) / sens_data.mm_per_deg
+        # 使用伪逆求解: delta = (J @ W)^+ @ (-z_error)
+        JW = J @ W  # 加权雅可比 (1 x N)
+
+        try:
+            # 对于行向量，伪逆是: J^+ = J^T / ||J||^2
+            JW_pinv = JW.T / (JW @ JW.T)
+            delta_angles = JW_pinv @ np.array([z_delta])
+
+            # 检查解是否合理
+            max_delta = np.max(np.abs(delta_angles))
+            if max_delta > 5.0:  # 单次调整超过5度
+                print(f"    伪逆解过大 (max={max_delta:.1f}°)，使用带权重的单关节方法")
+                delta_angles = self._compute_single_joint_z(z_delta, joint_indices, J[0])
+
+        except np.linalg.LinAlgError:
+            print("    伪逆求解失败，使用带权重的单关节方法")
+            delta_angles = self._compute_single_joint_z(z_delta, joint_indices, J[0])
+
+        # 应用限幅
+        delta_angles = np.clip(delta_angles, -2.0, 2.0)
+
+        # 转换为调整字典
+        adjustments = {}
+        print(f"    Z轴多关节组合调整:")
+        for i, (jidx, delta) in enumerate(zip(joint_indices, delta_angles)):
+            if abs(delta) > 0.01:
+                adjustments[jidx] = delta
+                weight = W[i, i]
+                print(f"      joint_{jidx}: {delta:.2f}° (权重={weight:.1f})")
+
+        # 验证预期效果
+        expected_z = sum(J[0, i] * delta_angles[i] for i in range(n_joints))
+        print(f"    预期高度变化: {expected_z:.1f}mm")
 
         return adjustments
+
+    def _compute_single_joint_z(self, z_delta: float, joint_indices: List[int],
+                                  sensitivities: np.ndarray) -> np.ndarray:
+        """
+        带权重的单关节方法（伪逆失败时的fallback）
+        选择 灵敏度×权重 最大的关节来控制
+        """
+        n_joints = len(joint_indices)
+        delta_angles = np.zeros(n_joints)
+
+        # 找灵敏度×权重最大的关节
+        best_idx = 0
+        best_effective = 0
+        for i, jidx in enumerate(joint_indices):
+            weight = self.POSITION_WEIGHTS.get(jidx, 0.5)
+            effective = abs(sensitivities[i]) * weight
+            if effective > best_effective:
+                best_effective = effective
+                best_idx = i
+
+        if abs(sensitivities[best_idx]) > 0.01:
+            delta_angles[best_idx] = z_delta / sensitivities[best_idx]
+            print(f"      单关节控制: joint_{joint_indices[best_idx]} (等效灵敏度={best_effective:.2f})")
+
+        return delta_angles
 
     def is_z_aligned(self, tolerance: float = None) -> bool:
         if tolerance is None:
