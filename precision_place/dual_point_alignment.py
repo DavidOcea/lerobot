@@ -1858,6 +1858,54 @@ class PrecisionPlaceController:
         # 使用方案A (多点标定插值)
         return self._compute_adjustments_interpolation(pixel_error_x, pixel_error_y, current_joints)
 
+    def _compute_single_joint_with_weights(self, pixel_error_x: float, pixel_error_y: float,
+                                            sensitivities: list, position_weights: dict) -> np.ndarray:
+        """
+        带权重的单关节方法（伪逆失败时的fallback）
+
+        选择 灵敏度×权重 最大的关节来控制每个方向
+        """
+        # 计算等效灵敏度（灵敏度 × 位置权重）
+        joint_indices = [s.joint_idx for s in sensitivities]
+
+        # 找X方向最优关节
+        best_x_idx = 0
+        best_x_effective = 0
+        for i, s in enumerate(sensitivities):
+            weight = position_weights.get(s.joint_idx, 0.5)
+            effective_sens = abs(s.pixel_dx_per_deg) * weight
+            if effective_sens > best_x_effective:
+                best_x_effective = effective_sens
+                best_x_idx = i
+
+        # 找Y方向最优关节
+        best_y_idx = 0
+        best_y_effective = 0
+        for i, s in enumerate(sensitivities):
+            weight = position_weights.get(s.joint_idx, 0.5)
+            effective_sens = abs(s.pixel_dy_per_deg) * weight
+            if effective_sens > best_y_effective:
+                best_y_effective = effective_sens
+                best_y_idx = i
+
+        # 计算调整量
+        n_joints = len(sensitivities)
+        delta_angles = np.zeros(n_joints)
+
+        if best_x_effective > 0.01:
+            s = sensitivities[best_x_idx]
+            delta_x = -pixel_error_x / s.pixel_dx_per_deg
+            delta_angles[best_x_idx] += delta_x
+            print(f"      X控制: joint_{s.joint_idx} (等效灵敏度={best_x_effective:.2f})")
+
+        if best_y_effective > 0.01:
+            s = sensitivities[best_y_idx]
+            delta_y = -pixel_error_y / s.pixel_dy_per_deg
+            delta_angles[best_y_idx] += delta_y
+            print(f"      Y控制: joint_{s.joint_idx} (等效灵敏度={best_y_effective:.2f})")
+
+        return delta_angles
+
     def _compute_adjustments_interpolation(self, pixel_error_x: float, pixel_error_y: float,
                                            current_joints: np.ndarray) -> Dict[int, float]:
         """方案A: 使用伪逆 + 位置权重计算多关节组合调整量"""
@@ -1920,8 +1968,10 @@ class PrecisionPlaceController:
             JW_pinv = np.linalg.pinv(JW)
             delta_angles = JW_pinv @ (-error)
         except np.linalg.LinAlgError:
-            print("    伪逆求解失败，使用默认方法")
-            delta_angles = np.zeros(n_joints)
+            print("    伪逆求解失败，使用带权重的单关节方法")
+            delta_angles = self._compute_single_joint_with_weights(
+                pixel_error_x, pixel_error_y, sensitivities, POSITION_WEIGHTS
+            )
 
         # 应用增益和限幅
         delta_angles = delta_angles * self.gain
