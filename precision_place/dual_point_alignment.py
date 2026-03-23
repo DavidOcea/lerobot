@@ -1644,15 +1644,60 @@ class PrecisionPlaceController:
 
         return flipped
 
-    def verify_sensitivity_direction(self, joint_idx: int = 7, move_deg: float = 2.0) -> bool:
+    def _get_stable_pixel_offset(self, num_samples: int = 5, min_quality: float = 0.3) -> Optional[Tuple[float, float, float]]:
+        """
+        获取稳定的像素偏移（多帧平均）
+
+        Args:
+            num_samples: 采样帧数
+            min_quality: 最小检测质量阈值
+
+        Returns:
+            (offset_x, offset_y, quality) 或 None（如果检测失败）
+        """
+        offsets_x = []
+        offsets_y = []
+        qualities = []
+
+        for i in range(num_samples):
+            img = self.camera.read()
+            if img is None:
+                continue
+
+            state = self.detector.detect_dual_marker_state(img)
+            if state.workpiece_detected and state.slot_detected:
+                # 检查检测质量
+                if hasattr(state, 'alignment_quality') and state.alignment_quality < min_quality:
+                    print(f"  [!] 帧{i+1}: 检测质量低 ({state.alignment_quality:.2f}), 跳过")
+                    continue
+
+                offsets_x.append(state.offset_x)
+                offsets_y.append(state.offset_y)
+                qualities.append(state.alignment_quality if hasattr(state, 'alignment_quality') else 1.0)
+
+            time.sleep(0.05)
+
+        if len(offsets_x) < 3:
+            return None
+
+        # 使用中值滤波去除异常值
+        offset_x = np.median(offsets_x)
+        offset_y = np.median(offsets_y)
+        quality = np.mean(qualities)
+
+        return offset_x, offset_y, quality
+
+    def verify_sensitivity_direction(self, joint_idx: int = 7, move_deg: float = 2.0, num_samples: int = 5) -> bool:
         """
         验证灵敏度方向是否正确
 
         通过移动关节并观察像素变化方向来验证灵敏度符号是否正确。
+        使用多帧平均提高检测稳定性。
 
         Args:
             joint_idx: 要测试的关节索引（默认joint_7 = right_arm_joint_1）
             move_deg: 移动角度（默认2度）
+            num_samples: 每次测量的采样帧数（用于平均）
 
         Returns:
             是否正确（True=方向正确，False=需要翻转）
@@ -1666,6 +1711,7 @@ class PrecisionPlaceController:
         print("="*60)
         print(f"\n测试关节: {self.joint_names.get(joint_idx, f'joint_{joint_idx}')} (索引{joint_idx})")
         print(f"移动角度: {move_deg}度")
+        print(f"采样帧数: {num_samples} (用于多帧平均)")
 
         # 获取当前灵敏度
         current_joints = self.get_joint_states()
@@ -1686,22 +1732,15 @@ class PrecisionPlaceController:
 
         print(f"\n当前灵敏度: X={test_sens.pixel_dx_per_deg:.2f}, Y={test_sens.pixel_dy_per_deg:.2f} px/deg")
 
-        # 采集初始图像
-        print("\n[1] 采集初始图像...")
-        img1 = self.camera.read()
-        if img1 is None:
-            print("✗ 无法读取图像")
+        # 采集初始图像（多帧平均）
+        print("\n[1] 采集初始图像（多帧平均）...")
+        result1 = self._get_stable_pixel_offset(num_samples)
+        if result1 is None:
+            print("✗ 初始检测不稳定，请确保标记清晰可见")
             return False
 
-        # 获取初始像素偏移
-        state1 = self.detector.detect_dual_marker_state(img1)
-        if not state1.workpiece_detected or not state1.slot_detected:
-            print("✗ 标记检测失败，请确保标记在视野内")
-            return False
-
-        initial_offset_x = state1.offset_x
-        initial_offset_y = state1.offset_y
-        print(f"  初始像素偏移: X={initial_offset_x:.1f}, Y={initial_offset_y:.1f}")
+        initial_offset_x, initial_offset_y, quality1 = result1
+        print(f"  初始像素偏移: X={initial_offset_x:.1f}, Y={initial_offset_y:.1f} (质量={quality1:.2f})")
 
         # 移动关节
         print(f"\n[2] 移动关节 {move_deg}度...")
@@ -1716,24 +1755,17 @@ class PrecisionPlaceController:
 
         time.sleep(0.5)
 
-        # 采集移动后图像
-        print("\n[3] 采集移动后图像...")
-        img2 = self.camera.read()
-        if img2 is None:
-            print("✗ 无法读取图像")
+        # 采集移动后图像（多帧平均）
+        print("\n[3] 采集移动后图像（多帧平均）...")
+        result2 = self._get_stable_pixel_offset(num_samples)
+        if result2 is None:
+            print("✗ 移动后检测不稳定")
             # 移回原位
             self._smooth_move_single_joint_for_test(joint_idx, current_angle)
             return False
 
-        state2 = self.detector.detect_dual_marker_state(img2)
-        if not state2.workpiece_detected or not state2.slot_detected:
-            print("✗ 标记检测失败")
-            # 移回原位
-            self._smooth_move_single_joint_for_test(joint_idx, current_angle)
-            return False
-
-        final_offset_x = state2.offset_x
-        final_offset_y = state2.offset_y
+        final_offset_x, final_offset_y, quality2 = result2
+        print(f"  移动后像素偏移: X={final_offset_x:.1f}, Y={final_offset_y:.1f} (质量={quality2:.2f})")
 
         # 计算实际像素变化
         actual_dx = final_offset_x - initial_offset_x
@@ -1746,6 +1778,19 @@ class PrecisionPlaceController:
         print(f"\n结果分析:")
         print(f"  实际像素变化: X={actual_dx:.1f}, Y={actual_dy:.1f}")
         print(f"  预期像素变化: X={expected_dx:.1f}, Y={expected_dy:.1f}")
+
+        # 计算变化幅度比例（用于判断检测是否合理）
+        expected_mag = np.sqrt(expected_dx**2 + expected_dy**2)
+        actual_mag = np.sqrt(actual_dx**2 + actual_dy**2)
+
+        if expected_mag > 5:  # 只有预期变化足够大时才检查比例
+            ratio = actual_mag / expected_mag
+            print(f"  变化幅度比例: {ratio:.2f} (实际/预期)")
+
+            if ratio < 0.2:
+                print("  [!] 警告: 实际变化过小，可能检测不稳定")
+            elif ratio > 3.0:
+                print("  [!] 警告: 实际变化过大，可能检测到错误标记")
 
         # 判断方向是否正确
         x_correct = (actual_dx * expected_dx) > 0  # 同号表示方向正确
