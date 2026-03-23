@@ -2171,7 +2171,23 @@ class PrecisionPlaceController:
         # 视频显示窗口
         if self.show_alignment_video:
             cv2.namedWindow(self._alignment_window_name, cv2.WINDOW_NORMAL)
-            cv2.resizeWindow(self._alignment_window_name, 800, 600)
+            cv2.resizeWindow(self._alignment_window_name, 640, 480)  # 减小窗口尺寸加速显示
+
+        # 检查标定数据是否适用于当前姿态
+        if self.calibration_points:
+            current_joints = self.get_joint_states()
+            if current_joints is not None:
+                sensitivities = self.get_interpolated_sensitivities(current_joints)
+                if sensitivities:
+                    # 检查插值权重，如果都很低说明姿态差异大
+                    weights = [s.confidence for s in sensitivities if hasattr(s, 'confidence') and s.confidence]
+                    if len(sensitivities) > 0:
+                        # 简单检查：如果没有高置信度的灵敏度，给出警告
+                        print(f"  检测到 {len(sensitivities)} 个关节灵敏度数据")
+                        avg_weight = sum(getattr(s, 'interpolation_weight', 1.0) for s in sensitivities) / len(sensitivities) if sensitivities else 0
+                        if avg_weight < 0.3:
+                            print("  ⚠ 警告: 当前姿态与标定姿态差异较大，建议在当前姿态下重新标定")
+                            print("  提示: 主菜单 -> 4 (标定) -> 3 (关节灵敏度标定-自动)")
 
         for i in range(self.max_iterations):
             print(f"\n[对齐 {i+1}/{self.max_iterations}]")
@@ -2350,10 +2366,23 @@ class PrecisionPlaceController:
                     actual_dx = new_state.offset_x - pre_offset_x
                     actual_dy = new_state.offset_y - pre_offset_y
                     print(f"  [验证] 实际像素变化: X={actual_dx:.1f}px, Y={actual_dy:.1f}px")
-                    print(f"         预期减少: X约-16px (如果灵敏度为8)")
-                    if abs(actual_dx) < 5 and abs(pre_offset_x) > 50:
-                        print(f"  ⚠ 警告: X像素变化很小，灵敏度可能不正确！")
-                        print(f"         建议: 在当前姿态下重新标定关节灵敏度")
+
+                    # 检测灵敏度方向是否正确
+                    # 如果误差很大但移动方向与预期相反，说明灵敏度方向错误
+                    if abs(pre_offset_x) > 30 or abs(pre_offset_y) > 30:
+                        # 预期应该向误差减小的方向移动
+                        # 如果实际移动方向与预期相反，警告
+                        if (abs(pre_offset_x) > abs(new_state.offset_x - self.target_offset_x) and
+                            np.sign(actual_dx) == np.sign(pre_offset_x)):
+                            print(f"  ⚠ 严重警告: X方向移动与预期相反！灵敏度方向可能错误！")
+                            print(f"         建议: 运行 '验证灵敏度方向' 功能 (标定菜单 -> 9)")
+                        elif (abs(pre_offset_y) > abs(new_state.offset_y - self.target_offset_y) and
+                              np.sign(actual_dy) == np.sign(pre_offset_y)):
+                            print(f"  ⚠ 严重警告: Y方向移动与预期相反！灵敏度方向可能错误！")
+                            print(f"         建议: 运行 '验证灵敏度方向' 功能 (标定菜单 -> 9)")
+                        elif abs(actual_dx) < 2 and abs(actual_dy) < 2 and (abs(pre_offset_x) > 30 or abs(pre_offset_y) > 30):
+                            print(f"  ⚠ 警告: 移动效果很小，建议在当前姿态重新标定")
+                            print(f"         提示: 主菜单 -> 4 (标定) -> 3 (关节灵敏度标定-自动)")
 
         print("\n✗ 对齐未完成 (达到最大迭代次数)")
         # 关闭视频窗口
