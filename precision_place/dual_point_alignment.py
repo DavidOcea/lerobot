@@ -2469,11 +2469,28 @@ class PrecisionPlaceController:
 
         h, w = vis.shape[:2]
 
-        # 绘制移动方向箭头（如果检测到两个中心）
-        if state.workpiece_center and state.slot_center:
-            wp_center = state.workpiece_center
-            slot_center = state.slot_center
+        # 计算工件和卡槽中心点（基于已检测到的标记）
+        wp_center = None
+        slot_center = None
 
+        # 计算工件中心
+        wp_markers = [m for m in state.workpiece_markers if m is not None]
+        if wp_markers:
+            wp_center = (
+                sum(m.x for m in wp_markers) / len(wp_markers),
+                sum(m.y for m in wp_markers) / len(wp_markers)
+            )
+
+        # 计算卡槽中心
+        sl_markers = [m for m in state.slot_markers if m is not None]
+        if sl_markers:
+            slot_center = (
+                sum(m.x for m in sl_markers) / len(sl_markers),
+                sum(m.y for m in sl_markers) / len(sl_markers)
+            )
+
+        # 绘制移动方向箭头（如果检测到两个中心）
+        if wp_center and slot_center:
             # 从工件中心指向卡槽中心的箭头（表示需要移动的方向）
             # 但实际移动方向相反：需要把工件移到卡槽位置
             # 所以箭头应该从工件中心指向卡槽中心
