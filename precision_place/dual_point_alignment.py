@@ -2430,9 +2430,9 @@ class PrecisionPlaceController:
                     cv2.destroyWindow(self._alignment_window_name)
                     return False
 
-            # 保存调整前的像素误差（用于验证）
-            pre_offset_x = current_offset_x
-            pre_offset_y = current_offset_y
+            # 保存调整前的原始偏移（用于验证）
+            pre_state_offset_x = state.offset_x
+            pre_state_offset_y = state.offset_y
 
             # 应用调整 (只有当有调整量时才执行)
             min_quality = 0.2 if state.degraded_mode else 0.3  # 退化模式下降低质量阈值
@@ -2446,24 +2446,29 @@ class PrecisionPlaceController:
                 new_image = self.camera.read()
                 new_state = self.detector.detect_dual_marker_state(new_image)
                 if new_state.workpiece_detected and new_state.slot_detected:
-                    actual_dx = new_state.offset_x - pre_offset_x
-                    actual_dy = new_state.offset_y - pre_offset_y
+                    # 用原始偏移计算实际变化
+                    actual_dx = new_state.offset_x - pre_state_offset_x
+                    actual_dy = new_state.offset_y - pre_state_offset_y
                     print(f"  [验证] 实际像素变化: X={actual_dx:.1f}px, Y={actual_dy:.1f}px")
 
                     # 检测灵敏度方向是否正确
                     # 如果误差很大但移动方向与预期相反，说明灵敏度方向错误
-                    if abs(pre_offset_x) > 30 or abs(pre_offset_y) > 30:
+                    if abs(current_offset_x) > 30 or abs(current_offset_y) > 30:
+                        # 计算新的误差
+                        new_error_x = new_state.offset_x - self.target_offset_x
+                        new_error_y = new_state.offset_y - self.target_offset_y
+
                         # 预期应该向误差减小的方向移动
                         # 如果实际移动方向与预期相反，警告
-                        if (abs(pre_offset_x) > abs(new_state.offset_x - self.target_offset_x) and
-                            np.sign(actual_dx) == np.sign(pre_offset_x)):
+                        if (abs(current_offset_x) > abs(new_error_x) and
+                            np.sign(actual_dx) == np.sign(current_offset_x)):
                             print(f"  ⚠ 严重警告: X方向移动与预期相反！灵敏度方向可能错误！")
                             print(f"         建议: 运行 '验证灵敏度方向' 功能 (标定菜单 -> 9)")
-                        elif (abs(pre_offset_y) > abs(new_state.offset_y - self.target_offset_y) and
-                              np.sign(actual_dy) == np.sign(pre_offset_y)):
+                        elif (abs(current_offset_y) > abs(new_error_y) and
+                              np.sign(actual_dy) == np.sign(current_offset_y)):
                             print(f"  ⚠ 严重警告: Y方向移动与预期相反！灵敏度方向可能错误！")
                             print(f"         建议: 运行 '验证灵敏度方向' 功能 (标定菜单 -> 9)")
-                        elif abs(actual_dx) < 2 and abs(actual_dy) < 2 and (abs(pre_offset_x) > 30 or abs(pre_offset_y) > 30):
+                        elif abs(actual_dx) < 2 and abs(actual_dy) < 2 and (abs(current_offset_x) > 30 or abs(current_offset_y) > 30):
                             print(f"  ⚠ 警告: 移动效果很小，建议在当前姿态重新标定")
                             print(f"         提示: 主菜单 -> 4 (标定) -> 3 (关节灵敏度标定-自动)")
 
