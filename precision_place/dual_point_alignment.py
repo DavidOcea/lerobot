@@ -699,6 +699,10 @@ class PrecisionPlaceController:
         self.target_offset_x = 0.0
         self.target_offset_y = 0.0
 
+        # 设置偏移量时的关节状态（用于对齐时恢复高度）
+        self._calibration_joint_states: Optional[np.ndarray] = None
+        self._calibration_joint_dict: Optional[Dict[str, float]] = None
+
         # P1: 历史偏移记录（用于预测）
         self._historical_offset_x: List[float] = []
         self._historical_offset_y: List[float] = []
@@ -1812,6 +1816,7 @@ class PrecisionPlaceController:
         设置对齐目标偏移（像素）
 
         当工件正确放置时，工件标点中心相对于卡槽标点中心的偏移量。
+        同时记录当前的关节状态，以便对齐时恢复到相同的高度/姿态。
 
         Args:
             offset_x: X方向目标偏移（像素）
@@ -1824,7 +1829,23 @@ class PrecisionPlaceController:
         """
         self.target_offset_x = offset_x
         self.target_offset_y = offset_y
-        print(f"✓ 对齐目标偏移已设置: ({offset_x:.1f}, {offset_y:.1f}) 像素")
+
+        # 记录当前关节状态（用于对齐时恢复姿态）
+        current_joints = self.get_joint_states()
+        if current_joints is not None:
+            self._calibration_joint_states = current_joints.copy()
+            # 同时保存字典格式
+            if hasattr(self.robot, 'observation_joint_names'):
+                self._calibration_joint_dict = {
+                    name: float(current_joints[i])
+                    for i, name in enumerate(self.robot.observation_joint_names)
+                    if i < len(current_joints)
+                }
+            print(f"✓ 对齐目标偏移已设置: ({offset_x:.1f}, {offset_y:.1f}) 像素")
+            print(f"✓ 已记录当前关节状态（对齐时将恢复到此姿态）")
+        else:
+            print(f"✓ 对齐目标偏移已设置: ({offset_x:.1f}, {offset_y:.1f}) 像素")
+            print(f"⚠ 警告: 无法获取关节状态，未记录姿态信息")
 
     def get_current_offset(self) -> Tuple[float, float]:
         """
@@ -3173,6 +3194,79 @@ class PrecisionPlaceController:
 
         print("\n✓ 自动放置完成")
 
+    def move_to_calibration_pose(self) -> bool:
+        """
+        移动到设置偏移量时的关节状态
+
+        这确保对齐时的姿态与设置偏移量时一致，
+        从而保证透视效应相同，提高对齐精度。
+
+        Returns:
+            是否成功移动
+        """
+        if self._calibration_joint_states is None:
+            print("  未记录设置偏移量时的关节状态，跳过姿态恢复")
+            return True
+
+        print("\n恢复到设置偏移量时的姿态...")
+
+        current_joints = self.get_joint_states()
+        if current_joints is None:
+            print("  ✗ 无法获取当前关节状态")
+            return False
+
+        # 计算差异
+        diff = np.abs(current_joints - self._calibration_joint_states)
+        max_diff = np.max(diff)
+
+        if max_diff < 1.0:  # 差异小于1度，认为姿态一致
+            print(f"  当前姿态与设置时一致 (最大差异 {max_diff:.2f}°)")
+            return True
+
+        print(f"  当前姿态与设置时差异: 最大 {max_diff:.2f}°")
+        print("  移动到设置偏移量时的姿态...")
+
+        # 平滑移动到目标姿态
+        if self._smooth_move_to_joints(self._calibration_joint_states):
+            print("  ✓ 已恢复到设置偏移量时的姿态")
+            time.sleep(0.5)  # 等待稳定
+            return True
+        else:
+            print("  ✗ 移动失败")
+            return False
+
+    def _smooth_move_to_joints(self, target_joints: np.ndarray, steps: int = 20) -> bool:
+        """
+        平滑移动到目标关节状态
+
+        Args:
+            target_joints: 目标关节角度数组
+            steps: 移动步数
+
+        Returns:
+            是否成功
+        """
+        current_joints = self.get_joint_states()
+        if current_joints is None:
+            return False
+
+        delta = (target_joints - current_joints) / steps
+
+        for step in range(steps):
+            alpha = (step + 1) / steps
+            # 使用平滑插值
+            smooth_alpha = alpha * alpha * (3 - 2 * alpha)  # smoothstep
+            intermediate = current_joints + (target_joints - current_joints) * smooth_alpha
+
+            action = {f"{name}.pos": float(intermediate[i])
+                      for i, name in enumerate(self.robot.observation_joint_names)
+                      if i < len(intermediate)}
+
+            self.robot.send_action(action)
+            time.sleep(self.smooth_delay)
+
+        return True
+
     # ==================== 完整流程 ====================
 
     def run_full_sequence(self, tolerance_mm: float = 2.0, auto_place: bool = False) -> bool:
@@ -3180,6 +3274,13 @@ class PrecisionPlaceController:
         print("\n" + "="*50)
         print("开始精准对齐")
         print("="*50)
+
+        # 步骤0: 恢复到设置偏移量时的姿态
+        print("\n[步骤0] 恢复对齐姿态")
+        pose_ok = self.move_to_calibration_pose()
+
+        if not pose_ok:
+            print("  ⚠ 姿态恢复失败，将在当前姿态对齐（可能影响精度）")
 
         print("\n[步骤1] 自动高度调整")
         height_ok = self.auto_adjust_height()
