@@ -812,11 +812,11 @@ class PrecisionPlaceSystem:
 
         try:
             joint_idx = int(input("测试关节索引 (默认8=right_arm_joint_2 肩部俯仰): ").strip() or "8")
-            move_deg = float(input("移动角度 (默认1.0): ").strip() or "1.0")
+            move_deg = float(input("移动角度 (默认2.0): ").strip() or "2.0")
             num_samples = int(input("采样帧数 (默认5): ").strip() or "5")
         except:
             joint_idx = 8
-            move_deg = 1.0
+            move_deg = 2.0
             num_samples = 5
 
         self.controller.verify_sensitivity_direction(joint_idx, move_deg, num_samples)

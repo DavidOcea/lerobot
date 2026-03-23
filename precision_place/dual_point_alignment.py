@@ -1687,7 +1687,7 @@ class PrecisionPlaceController:
 
         return offset_x, offset_y, quality
 
-    def verify_sensitivity_direction(self, joint_idx: int = 8, move_deg: float = 1.0, num_samples: int = 5) -> bool:
+    def verify_sensitivity_direction(self, joint_idx: int = 8, move_deg: float = 2.0, num_samples: int = 5) -> bool:
         """
         验证灵敏度方向是否正确
 
