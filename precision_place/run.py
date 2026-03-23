@@ -1362,7 +1362,79 @@ Z轴控制关节 (全部6个):
                 print("输入无效")
         else:
             print("已取消")
-    
+
+    def configure_alignment_settings(self):
+        """配置对齐参数"""
+        print("\n" + "="*50)
+        print("对齐参数设置")
+        print("="*50)
+
+        while True:
+            # 显示当前设置
+            show_video = getattr(self.controller, 'show_alignment_video', True) if self.controller else True
+            gain = getattr(self.controller, 'gain', 0.6) if self.controller else 0.6
+            max_iter = getattr(self.controller, 'max_iterations', 15) if self.controller else 15
+            tolerance = getattr(self.controller, 'tolerance_mm', 2.0) if self.controller else 2.0
+
+            print(f"\n当前设置:")
+            print(f"  1. 视频显示: {'开启' if show_video else '关闭'}")
+            print(f"  2. 控制增益: {gain}")
+            print(f"  3. 最大迭代次数: {max_iter}")
+            print(f"  4. 对齐精度: {tolerance}mm")
+            print("  0. 返回")
+
+            choice = input("\n选项: ").strip()
+
+            if choice == "1":
+                if self.controller:
+                    self.controller.show_alignment_video = not self.controller.show_alignment_video
+                    print(f"视频显示已{'开启' if self.controller.show_alignment_video else '关闭'}")
+                else:
+                    print("请先连接设备")
+            elif choice == "2":
+                if self.controller:
+                    try:
+                        new_gain = float(input(f"输入增益 (当前{gain}, 建议0.3-0.8): ").strip())
+                        if 0.1 <= new_gain <= 1.0:
+                            self.controller.gain = new_gain
+                            print(f"增益已设置为 {new_gain}")
+                        else:
+                            print("增益应在 0.1-1.0 范围内")
+                    except:
+                        print("输入无效")
+                else:
+                    print("请先连接设备")
+            elif choice == "3":
+                if self.controller:
+                    try:
+                        new_iter = int(input(f"输入最大迭代次数 (当前{max_iter}): ").strip())
+                        if 5 <= new_iter <= 50:
+                            self.controller.max_iterations = new_iter
+                            print(f"最大迭代次数已设置为 {new_iter}")
+                        else:
+                            print("迭代次数应在 5-50 范围内")
+                    except:
+                        print("输入无效")
+                else:
+                    print("请先连接设备")
+            elif choice == "4":
+                if self.controller:
+                    try:
+                        new_tol = float(input(f"输入对齐精度mm (当前{tolerance}mm): ").strip())
+                        if 0.5 <= new_tol <= 10.0:
+                            self.controller.tolerance_mm = new_tol
+                            print(f"对齐精度已设置为 {new_tol}mm")
+                        else:
+                            print("精度应在 0.5-10.0mm 范围内")
+                    except:
+                        print("输入无效")
+                else:
+                    print("请先连接设备")
+            elif choice == "0":
+                break
+            else:
+                print("无效选项")
+
     # ----------------- 对齐 -----------------
     
     def run_alignment(self, auto_place: bool = False):
@@ -1478,6 +1550,7 @@ def main():
             print("9. 完整流程")
             print("10. 连续运行 (10次)")
             print("11. 设置标记面积范围")
+            print("12. 设置对齐参数 (视频显示等)")
             print("0. 退出")
 
             choice = input("\n选项: ").strip()
@@ -1641,6 +1714,9 @@ def main():
                 if not system.controller:
                     system.connect()
                 system.set_marker_area_range()
+
+            elif choice == "12":
+                system.configure_alignment_settings()
 
             elif choice == "0":
                 break
