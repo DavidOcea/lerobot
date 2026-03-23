@@ -2844,9 +2844,42 @@ class PrecisionPlaceController:
         time.sleep(self.settle_time)
         return True
 
-    def auto_adjust_height(self, max_attempts: int = 10) -> bool:
-        """自动调整高度"""
+    def auto_adjust_height(self, max_attempts: int = 10, skip_if_pose_recorded: bool = True) -> bool:
+        """自动调整高度
+
+        Args:
+            max_attempts: 最大尝试次数
+            skip_if_pose_recorded: 如果已记录设置偏移量时的姿态，是否跳过高度调整
+
+        Returns:
+            是否高度合适
+        """
         print("\n自动调整高度...")
+
+        # 如果已经恢复了设置偏移量时的姿态，跳过高度调整
+        if skip_if_pose_recorded and self._calibration_joint_states is not None:
+            print("  已恢复到设置偏移量时的姿态，跳过自动高度调整")
+
+            # 只检查检测情况，不调整高度
+            time.sleep(0.2)
+            image = self.camera.read()
+            state = self.detector.detect_dual_marker_state(image)
+
+            wp = sum(1 for m in state.workpiece_markers if m)
+            sl = sum(1 for m in state.slot_markers if m)
+
+            print(f"  工件: {wp}/3, 卡槽: {sl}/3")
+
+            if wp >= 2 and sl >= 2:
+                print("  ✓ 检测正常")
+                return True
+            else:
+                print("  ⚠ 检测不完整，可能原因:")
+                print("    1. 标记被遮挡")
+                print("    2. 相机角度问题")
+                print("    3. 设置偏移量时的姿态与当前环境不匹配")
+                print("  建议: 保持当前姿态继续对齐，或重新设置偏移量")
+                return True  # 仍然返回True，允许继续对齐
 
         for i in range(max_attempts):
             print(f"\n[高度 {i+1}/{max_attempts}]")
