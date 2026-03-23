@@ -1687,7 +1687,7 @@ class PrecisionPlaceController:
 
         return offset_x, offset_y, quality
 
-    def verify_sensitivity_direction(self, joint_idx: int = 7, move_deg: float = 2.0, num_samples: int = 5) -> bool:
+    def verify_sensitivity_direction(self, joint_idx: int = 8, move_deg: float = 1.0, num_samples: int = 5) -> bool:
         """
         验证灵敏度方向是否正确
 
@@ -1695,8 +1695,8 @@ class PrecisionPlaceController:
         使用多帧平均提高检测稳定性。
 
         Args:
-            joint_idx: 要测试的关节索引（默认joint_7 = right_arm_joint_1）
-            move_deg: 移动角度（默认2度）
+            joint_idx: 要测试的关节索引（默认joint_8 = right_arm_joint_2 肩部俯仰）
+            move_deg: 移动角度（默认1度，减少Z方向影响）
             num_samples: 每次测量的采样帧数（用于平均）
 
         Returns:

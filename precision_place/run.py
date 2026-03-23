@@ -808,14 +808,15 @@ class PrecisionPlaceSystem:
         print("\n此功能将移动关节并观察像素变化来验证灵敏度方向")
         print("如果方向不正确，对齐时会向错误方向移动")
         print("使用多帧平均提高检测稳定性")
+        print("建议: 站立姿态下joint_8(肩部俯仰)Z变化最小，检测最稳定")
 
         try:
-            joint_idx = int(input("测试关节索引 (默认7=right_arm_joint_1): ").strip() or "7")
-            move_deg = float(input("移动角度 (默认2.0): ").strip() or "2.0")
+            joint_idx = int(input("测试关节索引 (默认8=right_arm_joint_2 肩部俯仰): ").strip() or "8")
+            move_deg = float(input("移动角度 (默认1.0): ").strip() or "1.0")
             num_samples = int(input("采样帧数 (默认5): ").strip() or "5")
         except:
-            joint_idx = 7
-            move_deg = 2.0
+            joint_idx = 8
+            move_deg = 1.0
             num_samples = 5
 
         self.controller.verify_sensitivity_direction(joint_idx, move_deg, num_samples)
