@@ -703,6 +703,9 @@ class PrecisionPlaceController:
         self._calibration_joint_states: Optional[np.ndarray] = None
         self._calibration_joint_dict: Optional[Dict[str, float]] = None
 
+        # 设置偏移量时的目标深度（用于Z轴闭环控制）
+        self._calibration_target_z: Optional[float] = None
+
         # P1: 历史偏移记录（用于预测）
         self._historical_offset_x: List[float] = []
         self._historical_offset_y: List[float] = []
@@ -1816,7 +1819,7 @@ class PrecisionPlaceController:
         设置对齐目标偏移（像素）
 
         当工件正确放置时，工件标点中心相对于卡槽标点中心的偏移量。
-        同时记录当前的关节状态，以便对齐时恢复到相同的高度/姿态。
+        同时记录当前的关节状态和深度，以便对齐时恢复到相同的高度/姿态。
 
         Args:
             offset_x: X方向目标偏移（像素）
@@ -1846,6 +1849,20 @@ class PrecisionPlaceController:
         else:
             print(f"✓ 对齐目标偏移已设置: ({offset_x:.1f}, {offset_y:.1f}) 像素")
             print(f"⚠ 警告: 无法获取关节状态，未记录姿态信息")
+
+        # 记录当前深度（用于Z轴闭环控制）
+        if self.z_controller is not None and self.camera2 is not None:
+            image1 = self.camera.read()
+            image2 = self.camera2.read()
+            if image1 is not None and image2 is not None:
+                estimate = self.z_controller.estimate_z(image1, image2, self.detector.workpiece_color)
+                if estimate.confidence > 0.3:
+                    self._calibration_target_z = estimate.z
+                    self.target_z = estimate.z
+                    self.z_controller.set_target_z(estimate.z)
+                    print(f"✓ 已记录目标深度: {estimate.z:.1f}mm（Z轴闭环控制）")
+                else:
+                    print(f"⚠ 深度估计不可靠 (置信度: {estimate.confidence:.2f})，Z轴控制未启用")
 
     def get_current_offset(self) -> Tuple[float, float]:
         """
@@ -3315,20 +3332,33 @@ class PrecisionPlaceController:
         if not pose_ok:
             print("  ⚠ 姿态恢复失败，将在当前姿态对齐（可能影响精度）")
 
-        print("\n[步骤1] 自动高度调整")
+        print("\n[步骤1] 检查检测")
         height_ok = self.auto_adjust_height()
 
         if not height_ok:
             print("请手动调整高度")
 
-        print("\n[步骤2] XY对齐")
+        # 如果有记录的目标深度，执行Z轴对齐
+        z_ok = True
+        if self._calibration_target_z is not None and self.z_controller is not None:
+            print("\n[步骤2] Z轴对齐（闭环控制）")
+            z_ok = self.align_z(tolerance_mm=1.0)
+            if not z_ok:
+                print("  ⚠ Z轴对齐未完成，继续XY对齐")
+        else:
+            print("\n[步骤2] Z轴对齐 - 跳过（未记录目标深度或Z轴控制未启用）")
+
+        print("\n[步骤3] XY对齐")
         align_ok = self.align_xy(tolerance_mm)
 
-        if auto_place and align_ok:
-            print("\n[步骤3] 自动放置")
+        # 最终结果
+        final_ok = align_ok and z_ok
+
+        if auto_place and final_ok:
+            print("\n[步骤4] 自动放置")
             self.auto_place()
 
-        return align_ok
+        return final_ok
 
     def test_detection(self):
         """测试检测（支持所有关节控制）"""
