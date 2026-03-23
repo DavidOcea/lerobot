@@ -3250,44 +3250,278 @@ class PrecisionPlaceController:
 
     # ==================== 自动放置 ====================
 
-    def _smooth_move_height(self, delta: float, steps: int = 5) -> bool:
+    def compute_xyz_coordinated_descent(self, z_delta_mm: float) -> Dict[int, float]:
+        """
+        计算XYZ协调下降的关节调整量
+
+        在下降时保持XY位置不变，使用伪逆求解多关节协调。
+
+        Args:
+            z_delta_mm: Z轴变化量(mm)，正值下降
+
+        Returns:
+            {joint_idx: angle_delta_deg}
+        """
+        # 获取当前关节状态
+        current_joints = self.get_joint_states()
+        if current_joints is None:
+            return {}
+
+        # 获取XY灵敏度数据
+        xy_sensitivities = self.get_interpolated_sensitivities(current_joints)
+        if not xy_sensitivities:
+            print("  ✗ 无XY灵敏度数据，使用单关节下降")
+            return {self.height_joint_idx: z_delta_mm / 10.0}  # 假设约10mm/度
+
+        # 获取Z灵敏度数据
+        z_sensitivities = {}
+        if self.z_controller is not None and hasattr(self.z_controller, 'joint_sensitivities'):
+            z_sensitivities = self.z_controller.joint_sensitivities
+
+        # 构建关节索引列表（使用XY灵敏度中有的关节）
+        joint_indices = [s.joint_idx for s in xy_sensitivities]
+        n_joints = len(joint_indices)
+
+        if n_joints < 2:
+            print("  ✗ 关节数不足，使用单关节下降")
+            return {self.height_joint_idx: z_delta_mm / 10.0}
+
+        # 构建雅可比矩阵 (3 x N)
+        # 行1: Z灵敏度 (mm/deg)
+        # 行2: X灵敏度 (pixel/deg)
+        # 行3: Y灵敏度 (pixel/deg)
+        J = np.zeros((3, n_joints))
+        W = np.zeros((n_joints, n_joints))  # 位置权重
+
+        # Z控制权重（影响位置能力的权重）
+        Z_WEIGHTS = {
+            7: 1.0,   # joint_1 (底座旋转)
+            8: 0.9,   # joint_2 (肩部俯仰) - 主要影响高度
+            9: 0.7,   # joint_3 (肩部侧摆)
+            10: 0.6,  # joint_4 (前臂俯仰)
+            11: 0.3,  # joint_5 (腕部俯仰)
+            12: 0.2,  # joint_6 (手腕旋转)
+        }
+
+        for i, jidx in enumerate(joint_indices):
+            # Z灵敏度
+            if jidx in z_sensitivities:
+                J[0, i] = z_sensitivities[jidx].mm_per_deg
+            else:
+                J[0, i] = 0.0  # 无Z数据时假设为0
+
+            # XY灵敏度
+            xy_sens = next((s for s in xy_sensitivities if s.joint_idx == jidx), None)
+            if xy_sens:
+                J[1, i] = xy_sens.pixel_dx_per_deg
+                J[2, i] = xy_sens.pixel_dy_per_deg
+
+            # 权重
+            W[i, i] = Z_WEIGHTS.get(jidx, 0.5)
+
+        # 目标向量：Z变化z_delta_mm，XY变化为0
+        target = np.array([z_delta_mm, 0.0, 0.0])
+
+        # 使用加权伪逆求解: delta = W @ J^T @ (J @ W @ J^T)^-1 @ target
+        # 或简化的最小范数解: delta = J^+ @ target
+        try:
+            # 计算伪逆
+            JW = J @ W  # 加权雅可比 (3 x N)
+            JJT = JW @ JW.T  # (3 x 3)
+
+            # 检查是否可逆
+            if np.linalg.det(JJT) < 1e-10:
+                raise np.linalg.LinAlgError("奇异矩阵")
+
+            # 伪逆: J^+ = J^T @ (J @ J^T)^-1
+            JW_pinv = JW.T @ np.linalg.inv(JJT)
+
+            # 计算角度调整
+            delta_angles = JW_pinv @ target
+
+            # 检查解是否合理
+            max_delta = np.max(np.abs(delta_angles))
+            if max_delta > 5.0:  # 单次调整超过5度
+                print(f"    协调下降解过大 (max={max_delta:.1f}°)，限制幅度")
+                delta_angles = delta_angles * 5.0 / max_delta
+
+        except np.linalg.LinAlgError:
+            print("    伪逆求解失败，使用简化方法")
+            # 简化方法：只用主要关节下降
+            delta_angles = np.zeros(n_joints)
+            for i, jidx in enumerate(joint_indices):
+                if jidx == self.height_joint_idx and jidx in z_sensitivities:
+                    delta_angles[i] = z_delta_mm / z_sensitivities[jidx].mm_per_deg
+
+        # 应用限幅
+        delta_angles = np.clip(delta_angles, -2.0, 2.0)
+
+        # 转换为调整字典
+        adjustments = {}
+        print(f"    XYZ协调下降 (Z={z_delta_mm:.1f}mm, XY保持):")
+        for i, (jidx, delta) in enumerate(zip(joint_indices, delta_angles)):
+            if abs(delta) > 0.01:
+                adjustments[jidx] = delta
+                print(f"      joint_{jidx}: {delta:.2f}°")
+
+        # 验证预期效果
+        expected_z = sum(J[0, i] * delta_angles[i] for i in range(n_joints))
+        expected_x = sum(J[1, i] * delta_angles[i] for i in range(n_joints))
+        expected_y = sum(J[2, i] * delta_angles[i] for i in range(n_joints))
+        print(f"    预期变化: Z={expected_z:.1f}mm, X={expected_x:.1f}px, Y={expected_y:.1f}px")
+
+        return adjustments
+
+    def _smooth_move_height(self, delta: float, steps: int = 5, use_xyz_coordination: bool = True) -> bool:
         """平滑调整高度
 
         Args:
             delta: 高度变化量 (正值下降，负值上升)
             steps: 插值步数
+            use_xyz_coordination: 是否使用XYZ协调（下降时保持XY）
         """
         joints = self.get_joint_states()
         if joints is None or len(joints) < 16:
             return False
 
+        if use_xyz_coordination and delta > 0:
+            # 使用XYZ协调下降（保持XY不变）
+            adjustments = self.compute_xyz_coordinated_descent(delta)
+            if adjustments:
+                # 分步执行
+                target = joints.copy()
+                for jidx, angle_delta in adjustments.items():
+                    if jidx < len(target):
+                        target[jidx] += angle_delta
+                return self._smooth_move_all_joints(target, steps)
+
+        # 回退到单关节下降
         target = joints.copy()
         target[self.height_joint_idx] += delta
 
         return self._smooth_move_all_joints(target, steps)
 
-    def auto_place(self, lower_steps: int = 5, lower_step_size: float = 2.0):
-        """自动放置流程 (平滑移动)"""
+    def auto_place(self, lower_steps: int = 5, lower_step_size: float = 2.0,
+                   xy_correction: bool = True, max_xy_correction: int = 3):
+        """自动放置流程 (平滑移动 + 闭环XY校正)
+
+        Args:
+            lower_steps: 下降步数
+            lower_step_size: 每步下降量(mm)
+            xy_correction: 是否在下降过程中校正XY偏移
+            max_xy_correction: 最大XY校正次数
+        """
         print("\n自动放置...")
 
-        print("\n[1/3] 平滑下降到放置高度")
+        print("\n[1/3] 平滑下降到放置高度 (XYZ协调)")
         total_delta = lower_step_size * lower_steps
-        if self._smooth_move_height(total_delta, steps=lower_steps):
-            print("  ✓ 下降完成")
+
+        if xy_correction:
+            # 分步下降 + 每步校正XY
+            remaining_delta = total_delta
+            for step in range(lower_steps):
+                # 计算本步下降量
+                step_delta = min(lower_step_size, remaining_delta)
+
+                # XYZ协调下降
+                adjustments = self.compute_xyz_coordinated_descent(step_delta)
+                if adjustments:
+                    joints = self.get_joint_states()
+                    if joints is not None:
+                        target = joints.copy()
+                        for jidx, angle_delta in adjustments.items():
+                            if jidx < len(target):
+                                target[jidx] += angle_delta
+                        self._smooth_move_all_joints(target, 2)
+                else:
+                    # 回退到单关节
+                    self._smooth_move_height(step_delta, steps=2, use_xyz_coordination=False)
+
+                remaining_delta -= step_delta
+                time.sleep(0.3)
+
+                # 检测并校正XY偏移（每步后）
+                if step < lower_steps - 1:  # 最后一步不需要校正
+                    state = self.detector.detect_dual_marker_state(self.camera.read())
+                    if state.workpiece_detected and state.slot_detected:
+                        xy_error = np.sqrt(state.offset_x**2 + state.offset_y**2)
+                        if xy_error > 3.0:  # 像素偏移超过3px时校正
+                            print(f"    步骤{step+1}: XY偏移 {xy_error:.1f}px，校正...")
+                            self.align_xy_single_step(gain=0.5)
         else:
-            print("  ✗ 下降失败")
-            return False
+            # 原来的方式：一次性下降
+            if self._smooth_move_height(total_delta, steps=lower_steps):
+                print("  ✓ 下降完成")
+            else:
+                print("  ✗ 下降失败")
+                return False
+
+        print("  ✓ 下降完成")
 
         print("\n[2/3] 松开夹爪")
         self.open_gripper()
 
         print("\n[3/3] 平滑抬起")
-        if self._smooth_move_height(-lower_step_size * 2, steps=3):
+        if self._smooth_move_height(-lower_step_size * 2, steps=3, use_xyz_coordination=False):
             print("  ✓ 抬起完成")
         else:
             print("  ✗ 抬起失败")
 
         print("\n✓ 自动放置完成")
+
+    def align_xy_single_step(self, gain: float = None) -> bool:
+        """单步XY校正（用于下降过程中的位置保持）
+
+        Args:
+            gain: 控制增益（默认使用 self.alignment_gain）
+
+        Returns:
+            是否执行了校正
+        """
+        if gain is None:
+            gain = self.alignment_gain
+
+        # 获取当前图像
+        image = self.camera.read()
+        if image is None:
+            return False
+
+        # 检测偏移
+        state = self.detector.detect_dual_marker_state(image)
+        if not state.workpiece_detected or not state.slot_detected:
+            return False
+
+        # 计算误差
+        current_offset_x = state.offset_x - self.target_offset_x
+        current_offset_y = state.offset_y - self.target_offset_y
+
+        # 只有偏移足够大才校正
+        xy_error = np.sqrt(current_offset_x**2 + current_offset_y**2)
+        if xy_error < 2.0:  # 小于2像素不校正
+            return False
+
+        # 获取关节状态
+        current_joints = self.get_joint_states()
+        if current_joints is None:
+            return False
+
+        # 计算调整量
+        adjustments = self.compute_joint_adjustments(
+            current_offset_x, current_offset_y, current_joints
+        )
+
+        if not adjustments:
+            return False
+
+        # 应用增益
+        adjusted = {k: v * gain for k, v in adjustments.items()}
+
+        # 应用调整
+        self.apply_joint_adjustments(adjusted, {})
+
+        print(f"    XY校正: 偏移{xy_error:.1f}px -> 调整{adjusted}")
+
+        return True
 
     def move_to_calibration_pose(self) -> bool:
         """
