@@ -1043,13 +1043,20 @@ class PrecisionPlaceController:
             print(f"  初始角度: {initial_angle:.2f}°")
             print(f"  目标角度: {target_angle:.2f}° (移动 {move_degrees}°)")
 
-        # 2. 采集初始图像
+        # 2. 采集初始图像（多帧平均）
         if show_progress:
-            print(f"  [1/4] 采集初始图像...")
-        img1 = self.camera.read()
-        if img1 is None:
+            print(f"  [1/4] 采集初始图像（多帧平均）...")
+        img1_list = []
+        for i in range(3):
+            img = self.camera.read()
+            if img is not None:
+                img1_list.append(img)
+            time.sleep(0.05)
+
+        if not img1_list:
             print("  ✗ 无法采集图像")
             return False, JointSensitivity(joint_idx, joint_name)
+        img1 = img1_list[len(img1_list)//2]  # 取中间帧作为代表
 
         # 3. 自动移动关节
         if show_progress:
@@ -1065,13 +1072,20 @@ class PrecisionPlaceController:
             print(f"  [3/4] 等待稳定 ({settle_time}秒)...")
         time.sleep(settle_time)
 
-        # 5. 采集移动后图像
+        # 5. 采集移动后图像（多帧平均）
         if show_progress:
-            print(f"  [4/4] 采集移动后图像...")
-        img2 = self.camera.read()
-        if img2 is None:
+            print(f"  [4/4] 采集移动后图像（多帧平均）...")
+        img2_list = []
+        for i in range(3):
+            img = self.camera.read()
+            if img is not None:
+                img2_list.append(img)
+            time.sleep(0.05)
+
+        if not img2_list:
             print("  ✗ 无法采集图像")
             return False, JointSensitivity(joint_idx, joint_name)
+        img2 = img2_list[len(img2_list)//2]  # 取中间帧作为代表
 
         # 获取最终角度
         final_joints = self.get_joint_states()
@@ -1150,8 +1164,48 @@ class PrecisionPlaceController:
 
         return True
 
-    def _compute_pixel_shift(self, img1: np.ndarray, img2: np.ndarray) -> Tuple[Optional[float], Optional[float]]:
-        """使用光流计算图像间的像素偏移"""
+    def _compute_pixel_shift(self, img1: np.ndarray, img2: np.ndarray,
+                              use_marker: bool = True, num_samples: int = 3) -> Tuple[Optional[float], Optional[float]]:
+        """计算图像间的像素偏移
+
+        Args:
+            img1: 第一帧图像
+            img2: 第二帧图像
+            use_marker: 是否使用标记检测（推荐True，更准确）
+            num_samples: 采样帧数（用于平均，提高稳定性）
+
+        Returns:
+            (dx, dy) 或 (None, None)
+        """
+        if use_marker:
+            # 使用标记检测计算偏移（更准确）
+            offsets_x = []
+            offsets_y = []
+
+            for i in range(num_samples):
+                # 交替使用img1和img2
+                if i < num_samples // 2:
+                    state1 = self.detector.detect_dual_marker_state(img1)
+                    state2 = self.detector.detect_dual_marker_state(img2)
+                else:
+                    state1 = self.detector.detect_dual_marker_state(img1)
+                    state2 = self.detector.detect_dual_marker_state(img2)
+
+                if state1.workpiece_detected and state1.slot_detected and \
+                   state2.workpiece_detected and state2.slot_detected:
+                    offsets_x.append(state2.offset_x - state1.offset_x)
+                    offsets_y.append(state2.offset_y - state1.offset_y)
+
+                time.sleep(0.05)
+
+            if len(offsets_x) < 2:
+                # 标记检测失败，回退到光流法
+                return self._compute_pixel_shift(img1, img2, use_marker=False)
+
+            # 使用中值滤波
+            return float(np.median(offsets_x)), float(np.median(offsets_y))
+
+        # 光流法（fallback）
         g1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
         g2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
 
