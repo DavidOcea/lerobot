@@ -2131,6 +2131,11 @@ class PrecisionPlaceController:
         print(f"    像素误差: X={pixel_error_x:.1f}px, Y={pixel_error_y:.1f}px")
         print(f"    相机翻转状态: X={self._camera_flip_x}, Y={self._camera_flip_y}")
 
+        # 打印每个关节的灵敏度
+        print(f"    关节灵敏度数据:")
+        for s in sensitivities:
+            print(f"      joint_{s.joint_idx}: dx={s.pixel_dx_per_deg:.2f}, dy={s.pixel_dy_per_deg:.2f} px/deg")
+
         # ========== 位置贡献权重 ==========
         # 手腕关节(joint_11, 12)主要控制姿态，对末端位置贡献小
         # 其他手臂关节主要控制位置，贡献大
@@ -2568,13 +2573,23 @@ class PrecisionPlaceController:
                     actual_dy = new_state.offset_y - pre_state_offset_y
                     print(f"  [验证] 实际像素变化: X={actual_dx:.1f}px, Y={actual_dy:.1f}px")
 
+                    # 计算新的误差
+                    new_error_x = new_state.offset_x - self.target_offset_x
+                    new_error_y = new_state.offset_y - self.target_offset_y
+                    new_error_mag = np.sqrt(new_error_x**2 + new_error_y**2)
+                    old_error_mag = np.sqrt(current_offset_x**2 + current_offset_y**2)
+
+                    print(f"  [验证] 误差变化: {old_error_mag:.1f}px -> {new_error_mag:.1f}px")
+
+                    # 关键检查：误差是否变大？
+                    if new_error_mag > old_error_mag + 5:  # 误差增加超过5px
+                        print(f"  ⚠⚠⚠ 严重警告: 误差增大！移动方向与预期相反！")
+                        print(f"         灵敏度方向可能需要翻转")
+                        print(f"         建议: 标定菜单 -> 0 -> 选择翻转选项")
+
                     # 检测灵敏度方向是否正确
                     # 如果误差很大但移动方向与预期相反，说明灵敏度方向错误
                     if abs(current_offset_x) > 30 or abs(current_offset_y) > 30:
-                        # 计算新的误差
-                        new_error_x = new_state.offset_x - self.target_offset_x
-                        new_error_y = new_state.offset_y - self.target_offset_y
-
                         # 预期应该向误差减小的方向移动
                         # 如果实际移动方向与预期相反，警告
                         if (abs(current_offset_x) > abs(new_error_x) and
