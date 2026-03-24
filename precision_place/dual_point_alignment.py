@@ -2129,6 +2129,7 @@ class PrecisionPlaceController:
 
         # 调试：打印计算过程
         print(f"    像素误差: X={pixel_error_x:.1f}px, Y={pixel_error_y:.1f}px")
+        print(f"    相机翻转状态: X={self._camera_flip_x}, Y={self._camera_flip_y}")
 
         # ========== 位置贡献权重 ==========
         # 手腕关节(joint_11, 12)主要控制姿态，对末端位置贡献小
