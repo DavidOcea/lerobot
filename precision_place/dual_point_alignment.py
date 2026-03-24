@@ -475,15 +475,19 @@ class DualPointDetector:
 
         return state
 
-    def detect_with_secondary_camera(self, image1: np.ndarray, image2: np.ndarray = None) -> DualMarkerState:
+    def detect_with_secondary_camera(self, image1: np.ndarray, image2: np.ndarray = None,
+                                      flip_secondary: bool = True) -> DualMarkerState:
         """
         使用双相机检测标记（融合结果）
 
         当主相机卡槽标记不足时，尝试使用副相机补充
 
+        重要：如果副相机旋转180度安装，其XY方向与主相机相反，需要翻转！
+
         Args:
             image1: 主相机图像
             image2: 副相机图像
+            flip_secondary: 是否翻转副相机的XY坐标（副相机旋转180度时需要）
 
         Returns:
             融合后的检测状态
@@ -505,9 +509,32 @@ class DualPointDetector:
         if state2.slot_marker_count > state1.slot_marker_count:
             # 副相机卡槽标记更多，使用副相机的卡槽数据
             # 但工件标记仍使用主相机（工件在夹爪上，主相机更稳定）
-            state1.slot_1 = state2.slot_1
-            state1.slot_2 = state2.slot_2
-            state1.slot_3 = state2.slot_3
+
+            if flip_secondary:
+                # 副相机旋转180度安装，需要翻转XY坐标
+                # 获取图像尺寸用于翻转
+                h, w = image2.shape[:2]
+                center_x, center_y = w / 2, h / 2
+
+                # 翻转标记坐标（绕中心点对称）
+                def flip_marker(m):
+                    if m is None:
+                        return None
+                    return Marker(
+                        x=2 * center_x - m.x,  # X翻转
+                        y=2 * center_y - m.y,  # Y翻转
+                        color=m.color,
+                        confidence=m.confidence
+                    )
+
+                state1.slot_1 = flip_marker(state2.slot_1)
+                state1.slot_2 = flip_marker(state2.slot_2)
+                state1.slot_3 = flip_marker(state2.slot_3)
+            else:
+                state1.slot_1 = state2.slot_1
+                state1.slot_2 = state2.slot_2
+                state1.slot_3 = state2.slot_3
+
             state1.slot_detected = state2.slot_detected
 
             # 重新计算对齐
@@ -516,6 +543,8 @@ class DualPointDetector:
                 state1.degraded_mode = state1.slot_marker_count < 2
                 if state1.degraded_mode:
                     state1.degraded_reason = f"融合后卡槽标记仍不足({state1.slot_marker_count}/2)"
+                else:
+                    state1.degraded_reason = f"使用副相机补充卡槽标记(已翻转坐标)"
 
         return state1
 
@@ -1043,11 +1072,17 @@ class PrecisionPlaceController:
             print(f"  初始角度: {initial_angle:.2f}°")
             print(f"  目标角度: {target_angle:.2f}° (移动 {move_degrees}°)")
 
-        # 2. 采集初始图像（多帧平均）
+        # 2. 采集初始图像（预热+多帧平均）
         if show_progress:
-            print(f"  [1/4] 采集初始图像（多帧平均）...")
-        img1_list = []
+            print(f"  [1/4] 采集初始图像（预热+多帧平均）...")
+
+        # 预热：丢弃前几帧
         for i in range(3):
+            _ = self.camera.read()
+            time.sleep(0.03)
+
+        img1_list = []
+        for i in range(5):
             img = self.camera.read()
             if img is not None:
                 img1_list.append(img)
@@ -1072,11 +1107,17 @@ class PrecisionPlaceController:
             print(f"  [3/4] 等待稳定 ({settle_time}秒)...")
         time.sleep(settle_time)
 
-        # 5. 采集移动后图像（多帧平均）
+        # 5. 采集移动后图像（预热+多帧平均）
         if show_progress:
-            print(f"  [4/4] 采集移动后图像（多帧平均）...")
-        img2_list = []
+            print(f"  [4/4] 采集移动后图像（预热+多帧平均）...")
+
+        # 预热：丢弃前几帧
         for i in range(3):
+            _ = self.camera.read()
+            time.sleep(0.03)
+
+        img2_list = []
+        for i in range(5):
             img = self.camera.read()
             if img is not None:
                 img2_list.append(img)
@@ -1712,17 +1753,24 @@ class PrecisionPlaceController:
 
         return flipped
 
-    def _get_stable_pixel_offset(self, num_samples: int = 5, min_quality: float = 0.3) -> Optional[Tuple[float, float, float]]:
+    def _get_stable_pixel_offset(self, num_samples: int = 5, min_quality: float = 0.3,
+                                   warmup_frames: int = 3) -> Optional[Tuple[float, float, float]]:
         """
         获取稳定的像素偏移（多帧平均）
 
         Args:
             num_samples: 采样帧数
             min_quality: 最小检测质量阈值
+            warmup_frames: 预热帧数（丢弃前几帧，让相机稳定）
 
         Returns:
             (offset_x, offset_y, quality) 或 None（如果检测失败）
         """
+        # 预热：丢弃前几帧
+        for i in range(warmup_frames):
+            _ = self.camera.read()
+            time.sleep(0.03)
+
         offsets_x = []
         offsets_y = []
         qualities = []
