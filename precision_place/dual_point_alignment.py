@@ -1105,7 +1105,7 @@ class PrecisionPlaceController:
         # 7. 计算像素变化
         if show_progress:
             print(f"  计算像素变化...")
-        pixel_dx, pixel_dy = self._compute_pixel_shift(img1, img2)
+        pixel_dx, pixel_dy = self._compute_pixel_shift(img1, img2, num_samples=5)
 
         if pixel_dx is None:
             print("  ✗ 特征点匹配失败")
@@ -1130,11 +1130,28 @@ class PrecisionPlaceController:
             sensitivity.mm_dx_per_deg = sensitivity.pixel_dx_per_deg * self.pixel_to_mm_ratio
             sensitivity.mm_dy_per_deg = sensitivity.pixel_dy_per_deg * self.pixel_to_mm_ratio
 
+        # 10. 有效性检查
+        magnitude = np.sqrt(sensitivity.pixel_dx_per_deg**2 + sensitivity.pixel_dy_per_deg**2)
+
         if show_progress:
-            print(f"\n  ✓ 标定结果:")
+            print(f"\n  标定结果:")
             print(f"    实际移动: {actual_move:.2f}°")
             print(f"    像素变化: ({pixel_dx:.1f}, {pixel_dy:.1f}) pixels")
             print(f"    灵敏度: X={sensitivity.pixel_dx_per_deg:.2f} px/deg, Y={sensitivity.pixel_dy_per_deg:.2f} px/deg")
+            print(f"    灵敏度幅值: {magnitude:.2f} px/deg")
+
+        if magnitude < 0.5:
+            print("\n  ⚠⚠⚠ 警告: 灵敏度异常小，可能检测失败！")
+            print("        可能原因:")
+            print("        1. 标记不在视野内或被遮挡")
+            print("        2. 光线变化大")
+            print("        3. 关节移动方向与相机视角垂直（几乎没有像素变化）")
+            print("        建议: 检查标记是否可见，然后重新标定此关节")
+            # 仍然返回结果，但标记为可能无效
+        elif magnitude < 2.0:
+            print(f"\n  ⚠ 注意: 灵敏度较小 ({magnitude:.2f} px/deg)，请确认是否正确")
+        else:
+            print(f"  ✓ 标定成功")
 
         return True, sensitivity
 
@@ -1165,7 +1182,7 @@ class PrecisionPlaceController:
         return True
 
     def _compute_pixel_shift(self, img1: np.ndarray, img2: np.ndarray,
-                              use_marker: bool = True, num_samples: int = 3) -> Tuple[Optional[float], Optional[float]]:
+                              use_marker: bool = True, num_samples: int = 5) -> Tuple[Optional[float], Optional[float]]:
         """计算图像间的像素偏移
 
         Args:
@@ -1183,25 +1200,22 @@ class PrecisionPlaceController:
             offsets_y = []
 
             for i in range(num_samples):
-                # 交替使用img1和img2
-                if i < num_samples // 2:
-                    state1 = self.detector.detect_dual_marker_state(img1)
-                    state2 = self.detector.detect_dual_marker_state(img2)
-                else:
-                    state1 = self.detector.detect_dual_marker_state(img1)
-                    state2 = self.detector.detect_dual_marker_state(img2)
+                state1 = self.detector.detect_dual_marker_state(img1)
+                state2 = self.detector.detect_dual_marker_state(img2)
 
                 if state1.workpiece_detected and state1.slot_detected and \
                    state2.workpiece_detected and state2.slot_detected:
                     offsets_x.append(state2.offset_x - state1.offset_x)
                     offsets_y.append(state2.offset_y - state1.offset_y)
 
-                time.sleep(0.05)
+                time.sleep(0.03)
 
             if len(offsets_x) < 2:
                 # 标记检测失败，回退到光流法
+                print(f"    [!] 标记检测失败 ({len(offsets_x)}/{num_samples})，使用光流法")
                 return self._compute_pixel_shift(img1, img2, use_marker=False)
 
+            print(f"    标记检测成功: {len(offsets_x)}/{num_samples} 次")
             # 使用中值滤波
             return float(np.median(offsets_x)), float(np.median(offsets_y))
 
