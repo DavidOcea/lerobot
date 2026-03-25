@@ -1614,10 +1614,13 @@ def main():
                 print("  6. Z轴关节灵敏度标定 (手动)")
                 print("  7. Z轴关节灵敏度标定 (自动)")
                 print("  8. 双相机基线标定")
-                print("  9. 验证灵敏度方向 (测试相机翻转)")
+                print("  ---")
+                print("  V. 标定验证 (XY灵敏度方向)")
+                print("  Z. Z轴标定验证 (深度估计稳定性)")
+                print("  C. 标定完整性检查")
                 print("  0. 修复灵敏度方向 (翻转X/Y)")
 
-                calib_choice = input("选项: ").strip()
+                calib_choice = input("选项: ").strip().upper()
 
                 if calib_choice == "1":
                     if not system.controller:
@@ -1657,10 +1660,32 @@ def main():
                     if not system.controller:
                         system.connect()
                     system.calibrate_stereo_baseline()
-                elif calib_choice == "9":
+                elif calib_choice == "V":
+                    # XY标定验证
                     if not system.controller:
                         system.connect()
-                    system.verify_sensitivity_direction()
+                    print("\nXY标定验证选项:")
+                    print("  1. 验证所有已标定关节")
+                    print("  2. 验证单个关节")
+                    v_choice = input("选项: ").strip()
+                    if v_choice == "2":
+                        try:
+                            joint_idx = int(input("输入关节索引: ").strip())
+                            system.controller.verify_xy_calibration(joint_idx=joint_idx)
+                        except:
+                            print("输入无效")
+                    else:
+                        system.controller.verify_xy_calibration()
+                elif calib_choice == "Z":
+                    # Z轴标定验证
+                    if not system.controller:
+                        system.connect()
+                    system.controller.verify_z_calibration()
+                elif calib_choice == "C":
+                    # 标定完整性检查
+                    if not system.controller:
+                        system.connect()
+                    system.controller.verify_calibration_completeness()
                 elif calib_choice == "0":
                     if not system.controller:
                         system.connect()
