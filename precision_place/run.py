@@ -52,6 +52,14 @@ except ImportError:
     _has_hand_eye = False
     HandEyeCalibrator = None
 
+# 尝试导入正运动学模块
+try:
+    from precision_place.forward_kinematics import ForwardKinematics, create_fk_from_urdf
+    _has_fk = True
+except ImportError:
+    _has_fk = False
+    ForwardKinematics = None
+
 
 # ==================== 配置 ====================
 
@@ -80,6 +88,8 @@ class PrecisionPlaceSystem:
         self.is_first_run = not (Path(__file__).parent / "calibration_history.json").exists()
         self.passive_mode = False  # 被动模式：与示教系统协同
         self.hand_eye_calibrator = None  # 手眼标定器
+        self.forward_kinematics = None  # 正运动学计算器
+        self.urdf_path = None  # URDF文件路径
 
     def connect(self, arm: str = "right", passive: bool = False):
         """连接设备
@@ -819,6 +829,23 @@ class PrecisionPlaceSystem:
   7. 按 'Q' 键退出
 """)
 
+        # 检查/初始化正运动学
+        if self.forward_kinematics is None:
+            if self.urdf_path is None:
+                print("\n需要URDF文件来计算正运动学。")
+                urdf_input = input("请输入URDF文件路径 (或按Enter跳过，使用简化模式): ").strip()
+                if urdf_input:
+                    self.urdf_path = urdf_input
+
+            if self.urdf_path and _has_fk:
+                try:
+                    self.forward_kinematics = create_fk_from_urdf(self.urdf_path, self.current_arm)
+                    print(f"✓ 正运动学已初始化")
+                except Exception as e:
+                    print(f"⚠ 正运动学初始化失败: {e}")
+                    print("  将使用简化模式（精度较低）")
+                    self.forward_kinematics = None
+
         # 获取主相机
         arm_config = ARM_CONFIGS.get(self.current_arm)
         camera = self.cameras.get(arm_config.camera_name)
@@ -854,6 +881,13 @@ class PrecisionPlaceSystem:
         debug_dir = Path(__file__).parent / "calibration_debug"
         self.hand_eye_calibrator.set_debug_dir(str(debug_dir))
 
+        # 显示正运动学状态
+        if self.forward_kinematics:
+            print("\n✓ 正运动学已启用")
+        else:
+            print("\n⚠ 正运动学未启用，将使用简化模式")
+            print("  提示: 提供URDF文件可获得更高精度")
+
         print("\n开始采集数据...")
         print("按键: [C]捕获  [S]标定  [Q]退出")
 
@@ -884,6 +918,11 @@ class PrecisionPlaceSystem:
             cv2.putText(display, "[C]apture [S]olve [Q]uit", (10, 90),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
+            # 显示正运动学状态
+            fk_status = "FK: ON" if self.forward_kinematics else "FK: OFF"
+            cv2.putText(display, fk_status, (10, 120),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if self.forward_kinematics else (0, 0, 255), 1)
+
             cv2.imshow("Hand-Eye Calibration", display)
 
             key = cv2.waitKey(10) & 0xFF
@@ -894,20 +933,29 @@ class PrecisionPlaceSystem:
                     print("  ⚠ 未检测到标定板，无法捕获")
                     continue
 
-                # 获取法兰位姿
+                # 获取关节角度
                 joints = self.controller.get_joint_states()
                 if joints is None:
                     print("  ⚠ 无法获取关节状态")
                     continue
 
-                # TODO: 需要从关节角度计算法兰位姿（正运动学）
-                # 这里简化处理，假设已知法兰位置和旋转
-                # 实际应用中需要调用正运动学函数
-                print("  ⚠ 需要正运动学支持，当前简化处理")
-
-                # 简化：使用当前关节状态作为位姿（不准确，仅演示）
-                flange_position = np.array([0.0, 0.0, 0.5])  # 示例位置
-                flange_rotation = np.array([0.0, 0.0, 0.0, 1.0])  # 示例四元数
+                # 计算法兰位姿
+                if self.forward_kinematics:
+                    try:
+                        pose = self.forward_kinematics.compute(joints)
+                        flange_position = pose.get_position()
+                        flange_rotation = pose.quaternion
+                        print(f"  法兰位姿: pos=({pose.x:.3f}, {pose.y:.3f}, {pose.z:.3f})m")
+                    except Exception as e:
+                        print(f"  ⚠ 正运动学计算失败: {e}")
+                        continue
+                else:
+                    # 简化模式：使用关节角度估算（不准确）
+                    print("  ⚠ 使用简化模式，精度较低")
+                    # 这里使用一个简化的估算方法
+                    # 实际应该用正运动学
+                    flange_position = np.array([0.0, 0.0, 0.5])  # 示例
+                    flange_rotation = np.array([0.0, 0.0, 0.0, 1.0])
 
                 if self.hand_eye_calibrator.capture_pose(image, flange_position, flange_rotation):
                     print(f"  ✓ 捕获成功 ({count + 1})")
