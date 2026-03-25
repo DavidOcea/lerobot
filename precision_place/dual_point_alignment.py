@@ -2397,6 +2397,13 @@ class PrecisionPlaceController:
                             print("  ⚠ 警告: 当前姿态与标定姿态差异较大，建议在当前姿态下重新标定")
                             print("  提示: 主菜单 -> 4 (标定) -> 3 (关节灵敏度标定-自动)")
 
+        # 记录初始高度（用于XY对齐时保持高度稳定）
+        initial_height = self.get_current_height()
+        if initial_height is not None:
+            print(f"  初始高度: {initial_height:.1f}mm (将在XY对齐时保持)")
+        height_correction_interval = 3  # 每3次调整后检查高度
+        height_tolerance_mm = 3.0  # 高度变化容忍阈值
+
         for i in range(self.max_iterations):
             print(f"\n[对齐 {i+1}/{self.max_iterations}]")
 
@@ -2565,6 +2572,30 @@ class PrecisionPlaceController:
                 self.apply_joint_adjustments(adjustments, rotation_adjustments)
 
             time.sleep(self.settle_time)
+
+            # 高度检查：定期检查高度变化并补偿
+            if initial_height is not None and (i + 1) % height_correction_interval == 0:
+                current_height = self.get_current_height()
+                if current_height is not None:
+                    height_change = initial_height - current_height  # 正值表示下降了
+                    if abs(height_change) > height_tolerance_mm:
+                        print(f"  [高度监控] 检测到高度变化: {height_change:.1f}mm")
+                        # 使用XYZ协调控制恢复高度
+                        # 注意：z_delta正值表示下降，所以这里用负值表示上升
+                        height_correction = -height_change  # 恢复到初始高度
+                        correction_adjustments = self.compute_height_correction(height_correction)
+                        if correction_adjustments:
+                            print(f"  [高度补偿] 执行高度恢复: {abs(height_change):.1f}mm")
+                            joints = self.get_joint_states()
+                            if joints is not None:
+                                target = joints.copy()
+                                for jidx, angle_delta in correction_adjustments.items():
+                                    if jidx < len(target):
+                                        target[jidx] += angle_delta
+                                self.move_to_joint_positions(target)
+                                time.sleep(self.settle_time)
+                    else:
+                        print(f"  [高度监控] 高度稳定 (变化: {height_change:.1f}mm < {height_tolerance_mm}mm)")
 
             # DEBUG: 验证调整效果 - 获取新的像素误差并与预期比较
             if adjustments and state.alignment_quality > min_quality:
@@ -3511,6 +3542,44 @@ class PrecisionPlaceController:
         print(f"    预期变化: Z={expected_z:.1f}mm, X={expected_x:.1f}px, Y={expected_y:.1f}px")
 
         return adjustments
+
+    def compute_height_correction(self, z_delta_mm: float) -> Dict[int, float]:
+        """
+        计算高度补偿的关节调整量（在XY调整后保持高度）
+
+        这是 compute_xyz_coordinated_descent 的反向操作：
+        - 在XY调整后，高度可能发生变化
+        - 使用伪逆求解关节调整量，恢复高度同时保持XY不变
+
+        Args:
+            z_delta_mm: Z轴需要补偿的量(mm)，正值表示需要上升，负值表示需要下降
+
+        Returns:
+            {joint_idx: angle_delta_deg}
+        """
+        return self.compute_xyz_coordinated_descent(z_delta_mm)
+
+    def get_current_height(self) -> Optional[float]:
+        """
+        获取当前高度估计（通过双目相机）
+
+        Returns:
+            高度(mm) 或 None（如果估计失败）
+        """
+        if self.z_controller is None or self.camera2 is None:
+            return None
+
+        image1 = self.camera.read()
+        image2 = self.camera2.read()
+
+        if image1 is None or image2 is None:
+            return None
+
+        estimate = self.z_controller.estimate_z(image1, image2, self.detector.workpiece_color)
+
+        if estimate.confidence > 0.3:
+            return estimate.z
+        return None
 
     def _smooth_move_height(self, delta: float, steps: int = 5, use_xyz_coordination: bool = True) -> bool:
         """平滑调整高度
