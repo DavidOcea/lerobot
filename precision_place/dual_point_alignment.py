@@ -2011,7 +2011,10 @@ class PrecisionPlaceController:
             print(f"✓ 对齐目标偏移已设置: ({offset_x:.1f}, {offset_y:.1f}) 像素")
             print(f"⚠ 警告: 无法获取关节状态，未记录姿态信息")
 
-        # 记录当前深度（用于Z轴闭环控制）
+        # 记录当前深度（用于放置阶段的Z轴参考，而不是对齐阶段）
+        # 注意：设置偏移量时工件已在正确位置（卡槽内），深度较低
+        # 对齐时不应该用这个深度作为目标，否则会持续下降
+        # 因此这里只记录但不设置为目标，让Z轴对齐跳过
         if self.z_controller is not None and self.camera2 is not None:
             image1 = self.camera.read()
             image2 = self.camera2.read()
@@ -2019,11 +2022,11 @@ class PrecisionPlaceController:
                 estimate = self.z_controller.estimate_z(image1, image2, self.detector.workpiece_color)
                 if estimate.confidence > 0.3:
                     self._calibration_target_z = estimate.z
-                    self.target_z = estimate.z
-                    self.z_controller.set_target_z(estimate.z)
-                    print(f"✓ 已记录目标深度: {estimate.z:.1f}mm（Z轴闭环控制）")
+                    # 不设置 target_z，避免对齐阶段使用错误的深度目标
+                    print(f"✓ 已记录放置参考深度: {estimate.z:.1f}mm（放置阶段将使用）")
+                    print(f"  注意: Z轴对齐已禁用，避免对齐时下降到卡槽底部")
                 else:
-                    print(f"⚠ 深度估计不可靠 (置信度: {estimate.confidence:.2f})，Z轴控制未启用")
+                    print(f"⚠ 深度估计不可靠 (置信度: {estimate.confidence:.2f})")
 
     def get_current_offset(self) -> Tuple[float, float]:
         """
@@ -3754,15 +3757,18 @@ class PrecisionPlaceController:
         if not height_ok:
             print("请手动调整高度")
 
-        # 如果有记录的目标深度，执行Z轴对齐
+        # 如果有设置的目标深度，执行Z轴对齐
+        # 注意：默认情况下不会设置target_z，Z轴对齐被禁用
+        # 原因：设置偏移量时的深度是卡槽内深度，不适合作为对齐目标
         z_ok = True
-        if self._calibration_target_z is not None and self.z_controller is not None:
+        if self.target_z is not None and self.z_controller is not None:
             print("\n[步骤2] Z轴对齐（闭环控制）")
             z_ok = self.align_z(tolerance_mm=1.0)
             if not z_ok:
                 print("  ⚠ Z轴对齐未完成，继续XY对齐")
         else:
-            print("\n[步骤2] Z轴对齐 - 跳过（未记录目标深度或Z轴控制未启用）")
+            print("\n[步骤2] Z轴对齐 - 跳过（对齐阶段禁用Z轴控制）")
+            print("  提示: Z轴控制仅在放置阶段启用，避免对齐时下降到卡槽底部")
 
         print("\n[步骤3] XY对齐")
         align_ok = self.align_xy(tolerance_mm)
