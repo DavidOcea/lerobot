@@ -735,6 +735,10 @@ class PrecisionPlaceController:
         # 设置偏移量时的目标深度（用于Z轴闭环控制）
         self._calibration_target_z: Optional[float] = None
 
+        # 透视效应补偿参数
+        self._reference_height: Optional[float] = None  # 设置偏移量时的高度
+        self._reference_pixel_to_mm: float = 0.5  # 设置偏移量时的像素比例
+
         # P1: 历史偏移记录（用于预测）
         self._historical_offset_x: List[float] = []
         self._historical_offset_y: List[float] = []
@@ -1980,7 +1984,10 @@ class PrecisionPlaceController:
         设置对齐目标偏移（像素）
 
         当工件正确放置时，工件标点中心相对于卡槽标点中心的偏移量。
-        同时记录当前的关节状态和深度，以便对齐时恢复到相同的高度/姿态。
+        记录当前深度用于放置阶段。
+
+        注意：不记录关节状态，因为设置时工件在卡槽内（低位置），
+        对齐时工件应该在卡槽上方（高位置），姿态不同。
 
         Args:
             offset_x: X方向目标偏移（像素）
@@ -1990,31 +1997,25 @@ class PrecisionPlaceController:
             1. 手动将工件放置到正确位置
             2. 运行检测获取当前偏移
             3. 调用此方法设置目标偏移
+
+        重要提示：
+            设置偏移量后，对齐时应该：
+            - 工件在卡槽上方（能检测到标记）
+            - 不要恢复到设置时的姿态（会进入卡槽）
         """
         self.target_offset_x = offset_x
         self.target_offset_y = offset_y
 
-        # 记录当前关节状态（用于对齐时恢复姿态）
-        current_joints = self.get_joint_states()
-        if current_joints is not None:
-            self._calibration_joint_states = current_joints.copy()
-            # 同时保存字典格式
-            if hasattr(self.robot, 'observation_joint_names'):
-                self._calibration_joint_dict = {
-                    name: float(current_joints[i])
-                    for i, name in enumerate(self.robot.observation_joint_names)
-                    if i < len(current_joints)
-                }
-            print(f"✓ 对齐目标偏移已设置: ({offset_x:.1f}, {offset_y:.1f}) 像素")
-            print(f"✓ 已记录当前关节状态（对齐时将恢复到此姿态）")
-        else:
-            print(f"✓ 对齐目标偏移已设置: ({offset_x:.1f}, {offset_y:.1f}) 像素")
-            print(f"⚠ 警告: 无法获取关节状态，未记录姿态信息")
+        print(f"✓ 对齐目标偏移已设置: ({offset_x:.1f}, {offset_y:.1f}) 像素")
 
-        # 记录当前深度（用于放置阶段的Z轴参考，而不是对齐阶段）
-        # 注意：设置偏移量时工件已在正确位置（卡槽内），深度较低
-        # 对齐时不应该用这个深度作为目标，否则会持续下降
-        # 因此这里只记录但不设置为目标，让Z轴对齐跳过
+        # 不再记录关节状态，因为对齐时应该在卡槽上方，而不是卡槽内
+        # 清除之前可能记录的状态
+        self._calibration_joint_states = None
+        self._calibration_joint_dict = None
+        print("  注意: 对齐时请保持工件在卡槽上方，不要恢复到设置时的姿态")
+
+        # 记录当前深度（用于放置阶段的Z轴参考）
+        # 同时记录参考高度下的像素-毫米比例（用于透视效应补偿）
         if self.z_controller is not None and self.camera2 is not None:
             image1 = self.camera.read()
             image2 = self.camera2.read()
@@ -2022,9 +2023,12 @@ class PrecisionPlaceController:
                 estimate = self.z_controller.estimate_z(image1, image2, self.detector.workpiece_color)
                 if estimate.confidence > 0.3:
                     self._calibration_target_z = estimate.z
-                    # 不设置 target_z，避免对齐阶段使用错误的深度目标
+                    # 记录参考高度和像素比例（用于透视效应补偿）
+                    self._reference_height = estimate.z
+                    self._reference_pixel_to_mm = self.pixel_to_mm_ratio
                     print(f"✓ 已记录放置参考深度: {estimate.z:.1f}mm（放置阶段将使用）")
-                    print(f"  注意: Z轴对齐已禁用，避免对齐时下降到卡槽底部")
+                    print(f"✓ 已记录参考像素比例: {self.pixel_to_mm_ratio:.3f} mm/px（高度 {estimate.z:.1f}mm）")
+                    print(f"  对齐时会根据高度自动调整像素比例（透视效应补偿）")
                 else:
                     print(f"⚠ 深度估计不可靠 (置信度: {estimate.confidence:.2f})")
 
@@ -2977,6 +2981,339 @@ class PrecisionPlaceController:
             print(f"    手臂: {cal['arm']}")
             print(f"    比例: {cal['ratio']:.4f} mm/pixel")
 
+    # ==================== 标定验证 ====================
+
+    def verify_xy_calibration(self, joint_idx: int = None, test_delta: float = 1.0) -> Dict:
+        """
+        验证XY标定的灵敏度方向是否正确
+
+        原理：移动关节后，检测像素变化方向是否与预期一致
+
+        Args:
+            joint_idx: 要测试的关节索引，None表示测试所有已标定关节
+            test_delta: 测试移动角度（度）
+
+        Returns:
+            验证结果字典
+        """
+        print("\n" + "="*50)
+        print("XY标定验证 - 灵敏度方向检查")
+        print("="*50)
+
+        results = {
+            'passed': [],
+            'failed': [],
+            'warnings': []
+        }
+
+        # 获取当前关节状态
+        current_joints = self.get_joint_states()
+        if current_joints is None:
+            print("✗ 无法获取关节状态")
+            return results
+
+        # 获取当前灵敏度
+        sensitivities = self.get_interpolated_sensitivities(current_joints)
+        if not sensitivities:
+            print("✗ 无标定数据")
+            return results
+
+        # 如果指定了关节，只测试该关节
+        if joint_idx is not None:
+            sensitivities = [s for s in sensitivities if s.joint_idx == joint_idx]
+            if not sensitivities:
+                print(f"✗ 关节 {joint_idx} 无标定数据")
+                return results
+
+        # 获取初始像素偏移
+        print("\n正在获取初始位置...")
+        initial_state = self._get_stable_pixel_offset(num_samples=3)
+        if initial_state is None:
+            print("✗ 无法获取初始检测")
+            return results
+
+        initial_offset_x, initial_offset_y, initial_quality = initial_state
+        print(f"  初始偏移: ({initial_offset_x:.1f}, {initial_offset_y:.1f}) px, 质量: {initial_quality:.2f}")
+
+        for s in sensitivities:
+            jidx = s.joint_idx
+            print(f"\n--- 测试关节 {jidx} ---")
+            print(f"  标定灵敏度: X={s.pixel_dx_per_deg:.1f}, Y={s.pixel_dy_per_deg:.1f} px/deg")
+
+            # 正向移动
+            print(f"\n  正向移动 {test_delta}°...")
+            self._move_single_joint(jidx, test_delta)
+            time.sleep(0.5)
+
+            new_state_pos = self._get_stable_pixel_offset(num_samples=3)
+            if new_state_pos is None:
+                print("  ✗ 移动后检测失败")
+                self._move_single_joint(jidx, -test_delta)  # 恢复
+                results['warnings'].append(f"关节 {jidx}: 检测失败")
+                continue
+
+            pos_offset_x, pos_offset_y, _ = new_state_pos
+            actual_dx_pos = pos_offset_x - initial_offset_x
+            actual_dy_pos = pos_offset_y - initial_offset_y
+            print(f"  实际变化: X={actual_dx_pos:.1f}, Y={actual_dy_pos:.1f} px")
+
+            # 恢复原位
+            print(f"  恢复原位...")
+            self._move_single_joint(jidx, -test_delta)
+            time.sleep(0.5)
+
+            # 反向移动验证
+            print(f"\n  反向移动 {test_delta}°...")
+            self._move_single_joint(jidx, -test_delta)
+            time.sleep(0.5)
+
+            new_state_neg = self._get_stable_pixel_offset(num_samples=3)
+            if new_state_neg is None:
+                print("  ✗ 反向移动后检测失败")
+                self._move_single_joint(jidx, test_delta)  # 恢复
+                results['warnings'].append(f"关节 {jidx}: 反向检测失败")
+                continue
+
+            neg_offset_x, neg_offset_y, _ = new_state_neg
+            actual_dx_neg = neg_offset_x - initial_offset_x
+            actual_dy_neg = neg_offset_y - initial_offset_y
+            print(f"  实际变化: X={actual_dx_neg:.1f}, Y={actual_dy_neg:.1f} px")
+
+            # 恢复原位
+            self._move_single_joint(jidx, test_delta)
+            time.sleep(0.3)
+
+            # 验证方向
+            # 正向移动应该产生与标定灵敏度相同方向的变化
+            # 反向移动应该产生相反方向的变化
+
+            expected_dx = s.pixel_dx_per_deg * test_delta
+            expected_dy = s.pixel_dy_per_deg * test_delta
+
+            # 检查方向是否一致
+            pos_x_correct = np.sign(actual_dx_pos) == np.sign(expected_dx) if abs(expected_dx) > 5 else True
+            pos_y_correct = np.sign(actual_dy_pos) == np.sign(expected_dy) if abs(expected_dy) > 5 else True
+            neg_x_correct = np.sign(actual_dx_neg) == -np.sign(expected_dx) if abs(expected_dx) > 5 else True
+            neg_y_correct = np.sign(actual_dy_neg) == -np.sign(expected_dy) if abs(expected_dy) > 5 else True
+
+            # 检查反向是否相反
+            reverse_x_correct = np.sign(actual_dx_pos) == -np.sign(actual_dx_neg) if (abs(actual_dx_pos) > 3 and abs(actual_dx_neg) > 3) else True
+            reverse_y_correct = np.sign(actual_dy_pos) == -np.sign(actual_dy_neg) if (abs(actual_dy_pos) > 3 and abs(actual_dy_neg) > 3) else True
+
+            all_correct = pos_x_correct and pos_y_correct and neg_x_correct and neg_y_correct and reverse_x_correct and reverse_y_correct
+
+            if all_correct:
+                print(f"\n  ✓ 关节 {jidx} 灵敏度方向正确")
+                results['passed'].append({
+                    'joint': jidx,
+                    'expected_dx': expected_dx,
+                    'expected_dy': expected_dy,
+                    'actual_dx_pos': actual_dx_pos,
+                    'actual_dy_pos': actual_dy_pos
+                })
+            else:
+                print(f"\n  ✗ 关节 {jidx} 灵敏度方向错误！")
+                if not pos_x_correct:
+                    print(f"    X正向方向错误: 预期 {expected_dx:.1f}, 实际 {actual_dx_pos:.1f}")
+                if not pos_y_correct:
+                    print(f"    Y正向方向错误: 预期 {expected_dy:.1f}, 实际 {actual_dy_pos:.1f}")
+                if not reverse_x_correct:
+                    print(f"    X正反方向不一致")
+                if not reverse_y_correct:
+                    print(f"    Y正反方向不一致")
+
+                results['failed'].append({
+                    'joint': jidx,
+                    'expected_dx': expected_dx,
+                    'expected_dy': expected_dy,
+                    'actual_dx_pos': actual_dx_pos,
+                    'actual_dy_pos': actual_dy_pos,
+                    'suggestion': '需要翻转灵敏度方向或重新标定'
+                })
+
+        # 总结
+        print("\n" + "="*50)
+        print("验证结果")
+        print("="*50)
+        print(f"通过: {len(results['passed'])} 个关节")
+        print(f"失败: {len(results['failed'])} 个关节")
+        if results['warnings']:
+            print(f"警告: {len(results['warnings'])} 个")
+
+        if results['failed']:
+            print("\n建议操作:")
+            print("  1. 在标定菜单中选择 '翻转灵敏度方向'")
+            print("  2. 或者在当前姿态重新标定")
+
+        return results
+
+    def verify_z_calibration(self) -> Dict:
+        """
+        验证Z轴标定是否正确
+
+        通过比较双目深度估计和已知的物理参考来判断
+
+        Returns:
+            验证结果字典
+        """
+        print("\n" + "="*50)
+        print("Z轴标定验证")
+        print("="*50)
+
+        results = {
+            'passed': False,
+            'depth_estimate': None,
+            'confidence': 0,
+            'message': ''
+        }
+
+        if self.z_controller is None or self.camera2 is None:
+            print("✗ Z轴控制器或副相机未配置")
+            results['message'] = 'Z轴控制器或副相机未配置'
+            return results
+
+        # 获取多帧深度估计
+        print("\n正在获取深度估计...")
+        estimates = []
+        for i in range(5):
+            image1 = self.camera.read()
+            image2 = self.camera2.read()
+            if image1 is not None and image2 is not None:
+                estimate = self.z_controller.estimate_z(image1, image2, self.detector.workpiece_color)
+                if estimate.confidence > 0.3:
+                    estimates.append((estimate.z, estimate.confidence))
+                    print(f"  帧 {i+1}: 深度={estimate.z:.1f}mm, 置信度={estimate.confidence:.2f}")
+            time.sleep(0.1)
+
+        if len(estimates) < 3:
+            print("✗ 深度估计不稳定")
+            results['message'] = '深度估计不稳定'
+            return results
+
+        # 计算平均和标准差
+        depths = [e[0] for e in estimates]
+        confidences = [e[1] for e in estimates]
+        mean_depth = np.mean(depths)
+        std_depth = np.std(depths)
+        mean_confidence = np.mean(confidences)
+
+        print(f"\n统计结果:")
+        print(f"  平均深度: {mean_depth:.1f}mm")
+        print(f"  标准差: {std_depth:.1f}mm")
+        print(f"  平均置信度: {mean_confidence:.2f}")
+
+        # 判断稳定性
+        if std_depth < 5.0:
+            print("  ✓ 深度估计稳定 (标准差 < 5mm)")
+            results['passed'] = True
+            results['depth_estimate'] = mean_depth
+            results['confidence'] = mean_confidence
+            results['message'] = f'深度估计稳定: {mean_depth:.1f}mm ± {std_depth:.1f}mm'
+        else:
+            print(f"  ⚠ 深度估计不稳定 (标准差 = {std_depth:.1f}mm)")
+            print("  建议:")
+            print("    1. 检查双相机标定是否准确")
+            print("    2. 检查光照条件")
+            print("    3. 确保工件颜色设置正确")
+            results['message'] = f'深度估计不稳定: 标准差 {std_depth:.1f}mm'
+
+        return results
+
+    def verify_calibration_completeness(self) -> Dict:
+        """
+        检查标定完整性
+
+        Returns:
+            完整性检查结果
+        """
+        print("\n" + "="*50)
+        print("标定完整性检查")
+        print("="*50)
+
+        results = {
+            'xy_calibration': False,
+            'z_calibration': False,
+            'target_offset': False,
+            'pixel_ratio': False,
+            'issues': []
+        }
+
+        # 检查XY标定
+        print("\n[1] XY标定检查")
+        if self.calibration_points:
+            print(f"  ✓ 有 {len(self.calibration_points)} 个标定点")
+            total_sensitivities = sum(len(cp.sensitivities) for cp in self.calibration_points)
+            print(f"  ✓ 共 {total_sensitivities} 条灵敏度记录")
+
+            # 检查每个关节是否有标定
+            joints_with_calibration = set()
+            for cp in self.calibration_points:
+                for s in cp.sensitivities:
+                    joints_with_calibration.add(s.joint_idx)
+
+            print(f"  已标定关节: {sorted(joints_with_calibration)}")
+
+            if len(joints_with_calibration) >= 2:
+                results['xy_calibration'] = True
+            else:
+                results['issues'].append("标定关节数不足 (需要至少2个)")
+        else:
+            print("  ✗ 无XY标定数据")
+            results['issues'].append("无XY标定数据")
+
+        # 检查Z标定
+        print("\n[2] Z轴标定检查")
+        if self.z_controller is not None:
+            if hasattr(self.z_controller, 'joint_sensitivities') and self.z_controller.joint_sensitivities:
+                print(f"  ✓ 有 {len(self.z_controller.joint_sensitivities)} 个Z轴灵敏度")
+                results['z_calibration'] = True
+            else:
+                print("  ⚠ Z轴控制器存在但无灵敏度数据")
+        else:
+            print("  - Z轴控制器未配置")
+
+        # 检查目标偏移
+        print("\n[3] 目标偏移检查")
+        if self.target_offset_x != 0 or self.target_offset_y != 0:
+            print(f"  ✓ 目标偏移已设置: ({self.target_offset_x:.1f}, {self.target_offset_y:.1f}) px")
+            results['target_offset'] = True
+        else:
+            print("  ✗ 目标偏移未设置")
+            results['issues'].append("目标偏移未设置")
+
+        # 检查像素比例
+        print("\n[4] 像素-毫米比例检查")
+        if self.pixel_to_mm_ratio > 0:
+            print(f"  ✓ 像素比例: {self.pixel_to_mm_ratio:.3f} mm/px")
+            results['pixel_ratio'] = True
+        else:
+            print("  ✗ 像素比例未设置")
+            results['issues'].append("像素比例未设置")
+
+        # 总结
+        print("\n" + "="*50)
+        all_ok = results['xy_calibration'] and results['target_offset'] and results['pixel_ratio']
+        if all_ok:
+            print("✓ 标定完整，可以进行对齐")
+        else:
+            print("✗ 标定不完整，请补充以下内容:")
+            for issue in results['issues']:
+                print(f"  - {issue}")
+
+        return results
+
+    def _move_single_joint(self, joint_idx: int, delta: float):
+        """移动单个关节"""
+        joints = self.get_joint_states()
+        if joints is None:
+            return False
+
+        target = joints.copy()
+        if joint_idx < len(target):
+            target[joint_idx] += delta
+            return self.move_to_joint_positions(target)
+        return False
+
     # ==================== 预设位置 ====================
 
     def save_preset(self, name: str):
@@ -3559,6 +3896,32 @@ class PrecisionPlaceController:
         """
         return self.compute_xyz_coordinated_descent(z_delta_mm)
 
+    def compute_perspective_correction(self, current_height: float) -> float:
+        """
+        计算透视效应补偿后的像素-毫米比例
+
+        透视效应：近大远小。相机光心到目标的距离越远，同样的物理尺寸在图像上越小。
+        即：高度越高，1像素对应的物理尺寸越大。
+
+        简化模型：假设像素尺寸与距离成正比
+        ratio(H) = ratio(H_ref) * H / H_ref
+
+        Args:
+            current_height: 当前高度(mm)
+
+        Returns:
+            补偿后的 pixel_to_mm 比例
+        """
+        if self._reference_height is None or self._reference_height <= 0:
+            return self.pixel_to_mm_ratio
+
+        # 计算补偿比例
+        # 高度越高，每像素对应的物理距离越大
+        correction_factor = current_height / self._reference_height
+        corrected_ratio = self._reference_pixel_to_mm * correction_factor
+
+        return corrected_ratio
+
     def get_current_height(self) -> Optional[float]:
         """
         获取当前高度估计（通过双目相机）
@@ -3813,15 +4176,25 @@ class PrecisionPlaceController:
         print("开始精准对齐")
         print("="*50)
 
-        # 步骤0: 恢复到设置偏移量时的姿态
-        print("\n[步骤0] 恢复对齐姿态")
-        pose_ok = self.move_to_calibration_pose()
-
-        if not pose_ok:
-            print("  ⚠ 姿态恢复失败，将在当前姿态对齐（可能影响精度）")
+        # 步骤0: 检查并应用透视效应补偿
+        print("\n[步骤0] 检查高度和透视效应补偿")
+        if self._reference_height is not None:
+            current_height = self.get_current_height()
+            if current_height is not None:
+                # 计算透视效应补偿
+                corrected_ratio = self.compute_perspective_correction(current_height)
+                old_ratio = self.pixel_to_mm_ratio
+                self.pixel_to_mm_ratio = corrected_ratio
+                print(f"  当前高度: {current_height:.1f}mm, 参考高度: {self._reference_height:.1f}mm")
+                print(f"  透视效应补偿: 像素比例 {old_ratio:.3f} -> {corrected_ratio:.3f} mm/px")
+            else:
+                print("  ⚠ 无法获取当前高度，跳过透视效应补偿")
+        else:
+            print("  未设置参考高度，跳过透视效应补偿")
 
         print("\n[步骤1] 检查检测")
-        height_ok = self.auto_adjust_height()
+        # 由于不再恢复姿态，跳过姿态检查
+        height_ok = self.auto_adjust_height(skip_if_pose_recorded=False)
 
         if not height_ok:
             print("请手动调整高度")
