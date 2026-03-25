@@ -1624,6 +1624,7 @@ def main():
                 print("  V. 标定验证 (XY灵敏度方向)")
                 print("  Z. Z轴标定验证 (深度估计稳定性)")
                 print("  C. 标定完整性检查")
+                print("  P. 透视方向校准 (相机倾斜方向)")
                 print("  0. 修复灵敏度方向 (翻转X/Y)")
 
                 calib_choice = input("选项: ").strip().upper()
@@ -1692,6 +1693,11 @@ def main():
                     if not system.controller:
                         system.connect()
                     system.controller.verify_calibration_completeness()
+                elif calib_choice == "P":
+                    # 透视方向校准
+                    if not system.controller:
+                        system.connect()
+                    system.controller.calibrate_perspective_direction()
                 elif calib_choice == "0":
                     if not system.controller:
                         system.connect()

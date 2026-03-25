@@ -740,6 +740,23 @@ class PrecisionPlaceController:
         self._reference_height: Optional[float] = None  # 设置偏移量时的高度（兼容）
         self._reference_pixel_to_mm: float = 0.5  # 设置偏移量时的像素比例
 
+        # 相机透视方向配置
+        # 相机倾斜方向决定了高度变化时卡槽在图像中的偏移方向
+        # 格式: (x_direction, y_direction) 表示高度增加时卡槽在图像中的偏移方向
+        # 例如: (1, 0) 表示高度增加时卡槽向X正方向偏移
+        #      (-1, 0) 表示高度增加时卡槽向X负方向偏移
+        #      (0, 1) 表示高度增加时卡槽向Y正方向偏移
+        #
+        # 如何确定：
+        # 1. 设置偏移量（低位置）
+        # 2. 抬高夹爪（高位置）
+        # 3. 观察卡槽中心相对于工件中心的变化：
+        #    - 如果卡槽向图像右边移动 → x_direction = 1
+        #    - 如果卡槽向图像左边移动 → x_direction = -1
+        #    - 如果卡槽向图像下方移动 → y_direction = 1
+        #    - 如果卡槽向图像上方移动 → y_direction = -1
+        self._camera_tilt_direction: Tuple[float, float] = (1.0, 0.0)  # 默认：X正方向
+
         # P1: 历史偏移记录（用于预测）
         self._historical_offset_x: List[float] = []
         self._historical_offset_y: List[float] = []
@@ -2048,25 +2065,115 @@ class PrecisionPlaceController:
         Returns:
             (offset_x_px, offset_y_px) 需要补偿的像素偏移
         """
-        # 相机倾斜方向（根据安装方向确定）
-        # 假设相机向X方向倾斜（向卡槽方向看）
-        # 实际需要根据相机安装方向调整
-
         camera_angle_rad = np.deg2rad(camera_angle_deg)
         tan_angle = np.tan(camera_angle_rad)
 
-        # 物理偏移量
+        # 物理偏移量（沿相机倾斜方向的物理距离变化）
         physical_offset_mm = height_diff_mm * tan_angle
 
         # 转换为像素偏移
         pixel_offset = physical_offset_mm / self.pixel_to_mm_ratio
 
-        # 根据相机安装方向确定偏移方向
-        # 这里假设相机向X正方向倾斜，需要根据实际情况调整
-        offset_x = pixel_offset
-        offset_y = 0.0
+        # 根据相机倾斜方向确定偏移方向
+        # 使用配置的方向
+        x_dir, y_dir = self._camera_tilt_direction
+
+        offset_x = pixel_offset * x_dir
+        offset_y = pixel_offset * y_dir
 
         return offset_x, offset_y
+
+    def calibrate_perspective_direction(self) -> Tuple[float, float]:
+        """
+        校准透视效应方向
+
+        通过在两个不同高度检测偏移量来确定透视偏移方向。
+
+        流程：
+        1. 在低位置检测并记录偏移量
+        2. 抬高到高位置
+        3. 再次检测偏移量
+        4. 计算偏移方向
+
+        Returns:
+            (x_direction, y_direction) 透视偏移方向
+        """
+        print("\n" + "="*50)
+        print("透视效应方向校准")
+        print("="*50)
+        print("""
+此功能将帮助确定相机倾斜导致的透视偏移方向。
+
+操作步骤：
+  1. 在低位置检测当前偏移量
+  2. 抬高夹爪约100-150mm
+  3. 再次检测偏移量
+  4. 系统自动计算透视偏移方向
+""")
+
+        input("准备好后按 Enter 开始...")
+
+        # 低位置检测
+        print("\n[步骤1] 低位置检测")
+        print("请保持夹爪在低位置（设置偏移量的高度）")
+        input("准备好后按 Enter...")
+
+        state_low = self._get_stable_pixel_offset(num_samples=5)
+        if state_low is None:
+            print("✗ 低位置检测失败")
+            return self._camera_tilt_direction
+
+        low_offset_x, low_offset_y, _ = state_low
+        print(f"  低位置偏移: ({low_offset_x:.1f}, {low_offset_y:.1f}) px")
+
+        # 记录低位置高度
+        low_height = self.get_current_height()
+        print(f"  低位置高度: {low_height:.1f}mm" if low_height else "  低位置高度: 无法获取")
+
+        # 高位置检测
+        print("\n[步骤2] 高位置检测")
+        print("请抬高夹爪约100-150mm")
+        input("抬高后按 Enter...")
+
+        state_high = self._get_stable_pixel_offset(num_samples=5)
+        if state_high is None:
+            print("✗ 高位置检测失败")
+            return self._camera_tilt_direction
+
+        high_offset_x, high_offset_y, _ = state_high
+        print(f"  高位置偏移: ({high_offset_x:.1f}, {high_offset_y:.1f}) px")
+
+        high_height = self.get_current_height()
+        print(f"  高位置高度: {high_height:.1f}mm" if high_height else "  高位置高度: 无法获取")
+
+        # 计算偏移变化
+        delta_x = high_offset_x - low_offset_x
+        delta_y = high_offset_y - low_offset_y
+
+        height_diff = (high_height - low_height) if (high_height and low_height) else 150.0
+
+        print(f"\n[分析结果]")
+        print(f"  高度变化: {height_diff:.1f}mm")
+        print(f"  X偏移变化: {delta_x:.1f}px")
+        print(f"  Y偏移变化: {delta_y:.1f}px")
+
+        # 确定方向
+        if abs(delta_x) > abs(delta_y):
+            x_dir = 1.0 if delta_x > 0 else -1.0
+            y_dir = 0.0
+            print(f"  主要偏移方向: X{'正' if x_dir > 0 else '负'}方向")
+        else:
+            x_dir = 0.0
+            y_dir = 1.0 if delta_y > 0 else -1.0
+            print(f"  主要偏移方向: Y{'正' if y_dir > 0 else '负'}方向")
+
+        # 更新配置
+        self._camera_tilt_direction = (x_dir, y_dir)
+
+        print(f"\n✓ 透视偏移方向已设置: ({x_dir:.1f}, {y_dir:.1f})")
+        print("  注意: 此设置仅在当前会话有效")
+
+        return self._camera_tilt_direction
 
     def get_perspective_compensated_offset(self, current_height: float = None) -> Tuple[float, float]:
         """
