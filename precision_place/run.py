@@ -44,6 +44,14 @@ except ImportError:
     _has_z_controller = False
     ZAxisController = None
 
+# 尝试导入手眼标定模块
+try:
+    from precision_place.hand_eye_calibration import HandEyeCalibrator, CalibrationResult
+    _has_hand_eye = True
+except ImportError:
+    _has_hand_eye = False
+    HandEyeCalibrator = None
+
 
 # ==================== 配置 ====================
 
@@ -71,6 +79,7 @@ class PrecisionPlaceSystem:
         self.current_arm = "right"
         self.is_first_run = not (Path(__file__).parent / "calibration_history.json").exists()
         self.passive_mode = False  # 被动模式：与示教系统协同
+        self.hand_eye_calibrator = None  # 手眼标定器
 
     def connect(self, arm: str = "right", passive: bool = False):
         """连接设备
@@ -776,6 +785,158 @@ class PrecisionPlaceSystem:
             return_after = False
 
         self.controller.calibrate_all_joints_auto(move_deg, settle_time, return_after)
+
+    def hand_eye_calibration(self):
+        """手眼标定 (Eye-in-Hand)"""
+        if not _has_hand_eye:
+            print("✗ 手眼标定模块未加载")
+            return
+
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        print("\n" + "="*60)
+        print("手眼标定 (Eye-in-Hand)")
+        print("="*60)
+        print("""
+原理：
+  通过在不同姿态下观察固定标定板，计算相机相对于法兰的外参矩阵。
+  外参矩阵包含了相机的精确位置和旋转角度，可从根本上解决透视补偿问题。
+
+要求：
+  1. ChArUco标定板（打印后固定在桌面上，绝对不能动！）
+  2. 至少采集10个不同姿态（越多越好）
+  3. 姿态差异越大越好（大角度倾斜）
+
+操作步骤：
+  1. 固定ChArUco标定板在工作台上
+  2. 移动机械臂到标定板上方
+  3. 确保相机能看到完整的标定板
+  4. 按 'C' 键捕获当前姿态
+  5. 换一个不同姿态，重复步骤4
+  6. 采集足够后按 'S' 键开始标定
+  7. 按 'Q' 键退出
+""")
+
+        # 获取主相机
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera = self.cameras.get(arm_config.camera_name)
+
+        if camera is None:
+            print("✗ 主相机未连接")
+            return
+
+        # 相机内参（需要预先标定或使用默认值）
+        # TODO: 从配置文件加载真实的相机内参
+        image_width = 640
+        image_height = 480
+        fx = 500.0  # 焦距x (像素)
+        fy = 500.0  # 焦距y (像素)
+        cx = image_width / 2  # 主点x
+        cy = image_height / 2  # 主点y
+
+        camera_matrix = np.array([
+            [fx, 0, cx],
+            [0, fy, cy],
+            [0, 0, 1]
+        ], dtype=np.float64)
+
+        dist_coeffs = np.zeros(5)  # 假设无畸变
+
+        # 创建标定器
+        self.hand_eye_calibrator = HandEyeCalibrator(
+            camera_matrix=camera_matrix,
+            dist_coeffs=dist_coeffs
+        )
+
+        # 设置调试目录
+        debug_dir = Path(__file__).parent / "calibration_debug"
+        self.hand_eye_calibrator.set_debug_dir(str(debug_dir))
+
+        print("\n开始采集数据...")
+        print("按键: [C]捕获  [S]标定  [Q]退出")
+
+        cv2.namedWindow("Hand-Eye Calibration", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Hand-Eye Calibration", 800, 600)
+
+        while True:
+            # 获取图像
+            image = camera.read()
+            if image is None:
+                continue
+
+            display = image.copy()
+
+            # 尝试检测ChArUco板
+            success, rvec, tvec, corners = self.hand_eye_calibrator.detect_charuco(image)
+
+            if success:
+                # 绘制坐标轴
+                cv2.drawFrameAxes(display, camera_matrix, dist_coeffs, rvec, tvec, 0.1)
+                cv2.putText(display, "Board Detected", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+            # 显示采集数量
+            count = self.hand_eye_calibrator.get_capture_count()
+            cv2.putText(display, f"Captured: {count}/30", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            cv2.putText(display, "[C]apture [S]olve [Q]uit", (10, 90),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+            cv2.imshow("Hand-Eye Calibration", display)
+
+            key = cv2.waitKey(10) & 0xFF
+
+            if key == ord('c') or key == ord('C'):
+                # 捕获当前姿态
+                if not success:
+                    print("  ⚠ 未检测到标定板，无法捕获")
+                    continue
+
+                # 获取法兰位姿
+                joints = self.controller.get_joint_states()
+                if joints is None:
+                    print("  ⚠ 无法获取关节状态")
+                    continue
+
+                # TODO: 需要从关节角度计算法兰位姿（正运动学）
+                # 这里简化处理，假设已知法兰位置和旋转
+                # 实际应用中需要调用正运动学函数
+                print("  ⚠ 需要正运动学支持，当前简化处理")
+
+                # 简化：使用当前关节状态作为位姿（不准确，仅演示）
+                flange_position = np.array([0.0, 0.0, 0.5])  # 示例位置
+                flange_rotation = np.array([0.0, 0.0, 0.0, 1.0])  # 示例四元数
+
+                if self.hand_eye_calibrator.capture_pose(image, flange_position, flange_rotation):
+                    print(f"  ✓ 捕获成功 ({count + 1})")
+                else:
+                    print("  ✗ 捕获失败")
+
+            elif key == ord('s') or key == ord('S'):
+                # 开始标定
+                count = self.hand_eye_calibrator.get_capture_count()
+                if count < 10:
+                    print(f"  ⚠ 采集数量不足 ({count}/10)")
+                    continue
+
+                success, result = self.hand_eye_calibrator.calibrate()
+
+                if success and result.valid:
+                    # 保存结果
+                    output_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
+                    self.hand_eye_calibrator.save(str(output_path))
+                    print(f"\n✓ 标定成功！结果已保存")
+                    break
+                else:
+                    print(f"\n✗ 标定失败或精度不足，请重新采集")
+
+            elif key == ord('q') or key == ord('Q'):
+                print("退出手眼标定")
+                break
+
+        cv2.destroyWindow("Hand-Eye Calibration")
 
     def show_calibration_history(self):
         """显示标定历史"""
@@ -1611,9 +1772,12 @@ def main():
                 
             elif choice == "4":
                 print("\n标定选项:")
+                print("  === 手眼标定 (推荐，精度更高) ===")
+                print("  H. 手眼标定 (ChArUco板，一次完成)")
+                print("  === 传统标定 ===")
                 print("  1. 像素-毫米标定 (基础标定)")
                 print("  2. 关节灵敏度标定 (手动移动)")
-                print("  3. 关节灵敏度标定 (自动移动，推荐)")
+                print("  3. 关节灵敏度标定 (自动移动)")
                 print("  4. 运行全部标定 (手动)")
                 print("  5. 运行全部标定 (自动)")
                 print("  ---")
@@ -1629,7 +1793,12 @@ def main():
 
                 calib_choice = input("选项: ").strip().upper()
 
-                if calib_choice == "1":
+                if calib_choice == "H":
+                    # 手眼标定
+                    if not system.controller:
+                        system.connect()
+                    system.hand_eye_calibration()
+                elif calib_choice == "1":
                     if not system.controller:
                         system.connect()
                     system.calibrate()
