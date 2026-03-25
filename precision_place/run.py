@@ -60,6 +60,14 @@ except ImportError:
     _has_fk = False
     ForwardKinematics = None
 
+# 尝试导入坐标变换模块
+try:
+    from precision_place.coordinate_transformer import CoordinateTransformer, AlignmentController
+    _has_coord_transform = True
+except ImportError:
+    _has_coord_transform = False
+    CoordinateTransformer = None
+
 
 # ==================== 配置 ====================
 
@@ -89,6 +97,7 @@ class PrecisionPlaceSystem:
         self.passive_mode = False  # 被动模式：与示教系统协同
         self.hand_eye_calibrator = None  # 手眼标定器
         self.forward_kinematics = None  # 正运动学计算器
+        self.coordinate_transformer = None  # 坐标变换器（基于手眼标定）
         self.urdf_path = None  # URDF文件路径
 
     def connect(self, arm: str = "right", passive: bool = False):
@@ -1172,6 +1181,235 @@ class PrecisionPlaceSystem:
                 else:
                     print("  ⚠ 位置波动较大，可能需要重新标定")
 
+    def load_coordinate_transformer(self) -> bool:
+        """加载坐标变换器（基于手眼标定结果）"""
+        if not _has_coord_transform:
+            print("✗ 坐标变换模块未加载")
+            return False
+
+        extrinsic_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
+        if not extrinsic_path.exists():
+            print(f"✗ 未找到手眼标定结果: {extrinsic_path}")
+            print("  请先运行手眼标定 (选项 H)")
+            return False
+
+        try:
+            self.coordinate_transformer = CoordinateTransformer.from_calibration_file(
+                str(extrinsic_path)
+            )
+            return True
+        except Exception as e:
+            print(f"✗ 加载坐标变换器失败: {e}")
+            return False
+
+    def align_with_hand_eye(self):
+        """使用手眼标定进行精确对齐"""
+        print("\n" + "="*60)
+        print("手眼标定对齐模式")
+        print("="*60)
+
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        # 加载坐标变换器
+        if self.coordinate_transformer is None:
+            if not self.load_coordinate_transformer():
+                return
+
+        # 检查正运动学
+        if self.forward_kinematics is None:
+            print("\n需要正运动学来获取TCP位姿。")
+            urdf_input = input("请输入URDF文件路径 (或按Enter退出): ").strip()
+            if not urdf_input:
+                return
+            self.urdf_path = urdf_input
+
+            if _has_fk:
+                try:
+                    self.forward_kinematics = create_fk_from_urdf(self.urdf_path, self.current_arm)
+                    print("✓ 正运动学已初始化")
+                except Exception as e:
+                    print(f"✗ 正运动学初始化失败: {e}")
+                    return
+
+        # 获取相机
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera = self.cameras.get(arm_config.camera_name)
+        if camera is None:
+            print("✗ 主相机未连接")
+            return
+
+        print("""
+对齐流程：
+  1. 系统检测工件和卡槽位置
+  2. 计算像素偏移
+  3. 使用外参矩阵计算精确的世界坐标偏移
+  4. 移动TCP进行对齐
+  5. 重复直到对齐完成
+
+按 'A' 开始自动对齐
+按 'M' 单步对齐（手动确认每一步）
+按 'Q' 退出
+""")
+
+        # 颜色配置
+        workpiece_color = WORKPIECE_COLOR
+        slot_color = SLOT_COLOR
+
+        cv2.namedWindow("Hand-Eye Alignment", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Hand-Eye Alignment", 1000, 800)
+
+        auto_mode = False
+        alignment_active = False
+        last_alignment_time = 0
+
+        while True:
+            image = camera.read()
+            if image is None:
+                continue
+
+            display = image.copy()
+
+            # 检测标记
+            state = self.controller.detector.detect(image, workpiece_color, slot_color)
+
+            # 绘制检测结果
+            if state.workpiece_detected:
+                for m in state.workpiece_markers:
+                    if m:
+                        cv2.circle(display, (int(m.x), int(m.y)), 5, (0, 255, 0), -1)
+                wp_center = state.workpiece_center
+                cv2.circle(display, (int(wp_center[0]), int(wp_center[1])), 8, (0, 255, 0), 2)
+
+            if state.slot_detected:
+                for m in state.slot_markers:
+                    if m:
+                        cv2.circle(display, (int(m.x), int(m.y)), 5, (0, 0, 255), -1)
+                slot_center = state.slot_center
+                cv2.circle(display, (int(slot_center[0]), int(slot_center[1])), 8, (0, 0, 255), 2)
+
+            # 计算偏移
+            if state.workpiece_detected and state.slot_detected:
+                offset_x = state.offset_x
+                offset_y = state.offset_y
+                pixel_error = np.sqrt(offset_x**2 + offset_y**2)
+
+                # 显示偏移信息
+                cv2.putText(display, f"Offset: ({offset_x:.1f}, {offset_y:.1f}) px", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                cv2.putText(display, f"Error: {pixel_error:.1f} px", (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+                # 绘制偏移向量
+                cv2.arrowedLine(display,
+                               (int(wp_center[0]), int(wp_center[1])),
+                               (int(slot_center[0]), int(slot_center[1])),
+                               (255, 255, 0), 2)
+
+                # 自动对齐
+                if auto_mode and alignment_active:
+                    current_time = time.time()
+                    if current_time - last_alignment_time > 0.5:  # 每0.5秒执行一次
+                        if pixel_error > 5:  # 大于5像素才调整
+                            success = self._execute_hand_eye_alignment(offset_x, offset_y, state)
+                            if success:
+                                last_alignment_time = current_time
+                            else:
+                                alignment_active = False
+                                auto_mode = False
+                        else:
+                            cv2.putText(display, "ALIGNED!", (10, 120),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
+                            alignment_active = False
+
+            # 显示状态
+            status = "AUTO" if auto_mode else "MANUAL" if alignment_active else "IDLE"
+            color = (0, 255, 0) if auto_mode else (0, 255, 255) if alignment_active else (128, 128, 128)
+            cv2.putText(display, f"Mode: {status}", (10, 90),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            cv2.putText(display, "[A]uto [M]anual [Q]uit", (10, display.shape[0] - 20),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+            cv2.imshow("Hand-Eye Alignment", display)
+            key = cv2.waitKey(10) & 0xFF
+
+            if key == ord('a') or key == ord('A'):
+                auto_mode = True
+                alignment_active = True
+                print("开始自动对齐...")
+            elif key == ord('m') or key == ord('M'):
+                auto_mode = False
+                alignment_active = True
+                if state.workpiece_detected and state.slot_detected:
+                    self._execute_hand_eye_alignment(state.offset_x, state.offset_y, state)
+            elif key == ord('q') or key == ord('Q'):
+                break
+
+        cv2.destroyWindow("Hand-Eye Alignment")
+
+    def _execute_hand_eye_alignment(self, offset_x: float, offset_y: float, state) -> bool:
+        """执行一次手眼标定对齐"""
+        # 获取当前关节状态
+        joints = self.controller.get_joint_states()
+        if joints is None:
+            print("  ✗ 无法获取关节状态")
+            return False
+
+        # 计算TCP位姿
+        if self.forward_kinematics:
+            try:
+                pose = self.forward_kinematics.compute(joints)
+                tcp_pos = pose.get_position()
+                tcp_rot = pose.quaternion
+            except Exception as e:
+                print(f"  ✗ 正运动学计算失败: {e}")
+                return False
+        else:
+            print("  ✗ 正运动学未初始化")
+            return False
+
+        # 更新坐标变换器
+        self.coordinate_transformer.set_tcp_pose(tcp_pos, tcp_rot, "quaternion")
+
+        # 估计深度（从Z坐标或双目视觉）
+        depth = tcp_pos[2] - 0.1  # 简化：假设工件在TCP下方10cm
+        if hasattr(self.controller, 'z_controller') and self.controller.z_controller:
+            # 使用双目深度估计
+            depth_estimate = self.controller.z_controller.get_depth_estimate()
+            if depth_estimate and depth_estimate.valid:
+                depth = depth_estimate.depth_m
+
+        # 计算调整量
+        pixel_offset = (offset_x, offset_y)
+        tcp_adjustment, info = self.coordinate_transformer.compute_alignment_adjustment(
+            pixel_offset, depth
+        )
+
+        # 显示调整信息
+        world_offset = info['world_offset_m']
+        print(f"  像素偏移: ({offset_x:.1f}, {offset_y:.1f}) @ 深度 {depth:.3f}m")
+        print(f"  世界偏移: ({world_offset[0]*1000:.2f}, {world_offset[1]*1000:.2f}, {world_offset[2]*1000:.2f}) mm")
+
+        # 缩放调整量（避免过冲）
+        tcp_adjustment = tcp_adjustment * 0.8
+
+        # 执行移动
+        new_tcp_pos = tcp_pos + tcp_adjustment
+        success = self.controller.move_to_position(
+            new_tcp_pos[0], new_tcp_pos[1], new_tcp_pos[2],
+            tcp_rot[0], tcp_rot[1], tcp_rot[2], tcp_rot[3]
+        )
+
+        if success:
+            print(f"  ✓ 移动成功")
+            time.sleep(0.3)  # 等待稳定
+        else:
+            print(f"  ✗ 移动失败")
+
+        return success
+
     def show_calibration_history(self):
         """显示标定历史"""
         if not self.controller:
@@ -1951,7 +2189,8 @@ def main():
             print("5. 标定历史")
             print("6. 预设位置")
             print("7. 设置对齐目标偏移")
-            print("8. 运行对齐")
+            print("8. 运行对齐 (传统灵敏度方法)")
+            print("8.5 手眼标定对齐 (推荐，精度更高)")
             print("9. 完整流程")
             print("10. 连续运行 (10次)")
             print("11. 设置标记面积范围")
@@ -2147,6 +2386,12 @@ def main():
                 if not system.controller:
                     system.connect()
                 system.run_alignment()
+
+            elif choice == "8.5":
+                # 手眼标定对齐
+                if not system.controller:
+                    system.connect()
+                system.align_with_hand_eye()
 
             elif choice == "9":
                 if not system.controller:
