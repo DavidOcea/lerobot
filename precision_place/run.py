@@ -103,6 +103,9 @@ class PrecisionPlaceSystem:
         self.forward_kinematics = None  # 正运动学计算器
         self.coordinate_transformer = None  # 坐标变换器（基于手眼标定）
         self.urdf_path = None  # URDF文件路径
+        # 目标偏移量（用于标记点有固定偏移的情况）
+        self.target_offset_x = 0.0  # 像素
+        self.target_offset_y = 0.0  # 像素
 
     def connect(self, arm: str = "right", passive: bool = False):
         """连接设备
@@ -1247,15 +1250,20 @@ class PrecisionPlaceSystem:
         print("""
 对齐流程：
   1. 系统检测工件和卡槽位置
-  2. 计算像素偏移
+  2. 计算像素偏移（考虑目标偏移量）
   3. 使用外参矩阵计算精确的世界坐标偏移
   4. 移动TCP进行对齐
   5. 重复直到对齐完成
 
-按 'A' 开始自动对齐
-按 'M' 单步对齐（手动确认每一步）
-按 'Q' 退出
-""")
+按键说明：
+  A - 开始自动对齐
+  M - 单步对齐（手动确认每一步）
+  T - 设置目标偏移量（当前偏移作为目标）
+  C - 清除目标偏移量
+  Q - 退出
+
+当前目标偏移: ({:.1f}, {:.1f}) 像素
+""").format(self.target_offset_x, self.target_offset_y)
 
         # 颜色配置
         workpiece_color = WORKPIECE_COLOR
@@ -1293,16 +1301,25 @@ class PrecisionPlaceSystem:
                 slot_center = state.slot_center
                 cv2.circle(display, (int(slot_center[0]), int(slot_center[1])), 8, (0, 0, 255), 2)
 
-            # 计算偏移
+            # 计算偏移（考虑目标偏移量）
             if state.workpiece_detected and state.slot_detected:
-                offset_x = state.offset_x
-                offset_y = state.offset_y
+                # 原始偏移
+                raw_offset_x = state.offset_x
+                raw_offset_y = state.offset_y
+
+                # 实际需要修正的偏移 = 当前偏移 - 目标偏移
+                offset_x = raw_offset_x - self.target_offset_x
+                offset_y = raw_offset_y - self.target_offset_y
                 pixel_error = np.sqrt(offset_x**2 + offset_y**2)
 
                 # 显示偏移信息
-                cv2.putText(display, f"Offset: ({offset_x:.1f}, {offset_y:.1f}) px", (10, 30),
+                cv2.putText(display, f"Raw: ({raw_offset_x:.1f}, {raw_offset_y:.1f}) px", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+                cv2.putText(display, f"Target: ({self.target_offset_x:.1f}, {self.target_offset_y:.1f}) px", (10, 55),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 100, 255), 2)
+                cv2.putText(display, f"Error: ({offset_x:.1f}, {offset_y:.1f}) px", (10, 80),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                cv2.putText(display, f"Error: {pixel_error:.1f} px", (10, 60),
+                cv2.putText(display, f"Dist: {pixel_error:.1f} px", (10, 105),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
                 # 绘制偏移向量
@@ -1323,17 +1340,17 @@ class PrecisionPlaceSystem:
                                 alignment_active = False
                                 auto_mode = False
                         else:
-                            cv2.putText(display, "ALIGNED!", (10, 120),
+                            cv2.putText(display, "ALIGNED!", (10, 130),
                                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2)
                             alignment_active = False
 
             # 显示状态
             status = "AUTO" if auto_mode else "MANUAL" if alignment_active else "IDLE"
             color = (0, 255, 0) if auto_mode else (0, 255, 255) if alignment_active else (128, 128, 128)
-            cv2.putText(display, f"Mode: {status}", (10, 90),
+            cv2.putText(display, f"Mode: {status}", (10, display.shape[0] - 50),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-            cv2.putText(display, "[A]uto [M]anual [Q]uit", (10, display.shape[0] - 20),
+            cv2.putText(display, "[A]uto [M]anual [T]arget [C]lear [Q]uit", (10, display.shape[0] - 20),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
             cv2.imshow("Hand-Eye Alignment", display)
@@ -1347,7 +1364,22 @@ class PrecisionPlaceSystem:
                 auto_mode = False
                 alignment_active = True
                 if state.workpiece_detected and state.slot_detected:
-                    self._execute_hand_eye_alignment(state.offset_x, state.offset_y, state)
+                    # 使用修正后的偏移
+                    offset_x = state.offset_x - self.target_offset_x
+                    offset_y = state.offset_y - self.target_offset_y
+                    self._execute_hand_eye_alignment(offset_x, offset_y, state)
+            elif key == ord('t') or key == ord('T'):
+                # 设置目标偏移量（当前偏移作为目标）
+                if state.workpiece_detected and state.slot_detected:
+                    self.target_offset_x = state.offset_x
+                    self.target_offset_y = state.offset_y
+                    print(f"✓ 目标偏移量已设置: ({self.target_offset_x:.1f}, {self.target_offset_y:.1f}) 像素")
+                    print("  对齐时将向此目标偏移量靠近")
+            elif key == ord('c') or key == ord('C'):
+                # 清除目标偏移量
+                self.target_offset_x = 0.0
+                self.target_offset_y = 0.0
+                print("✓ 目标偏移量已清除")
             elif key == ord('q') or key == ord('Q'):
                 break
 
