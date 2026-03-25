@@ -736,7 +736,8 @@ class PrecisionPlaceController:
         self._calibration_target_z: Optional[float] = None
 
         # 透视效应补偿参数
-        self._reference_height: Optional[float] = None  # 设置偏移量时的高度
+        self._setup_height: Optional[float] = None  # 设置偏移量时的高度
+        self._reference_height: Optional[float] = None  # 设置偏移量时的高度（兼容）
         self._reference_pixel_to_mm: float = 0.5  # 设置偏移量时的像素比例
 
         # P1: 历史偏移记录（用于预测）
@@ -1985,15 +1986,8 @@ class PrecisionPlaceController:
 
         当工件正确放置时，工件标点中心相对于卡槽标点中心的偏移量。
 
-        重要：由于腕部相机45度倾斜，高度变化会产生透视效应。
-        设置偏移量和对齐必须在相同高度进行！
-
-        正确流程：
-            1. 工件被夹爪夹住
-            2. 手动将工件放入卡槽正确位置
-            3. 抬起到对齐高度（如200mm，与对齐时相同）
-            4. 此时设置偏移量
-            5. 对齐时保持相同高度
+        由于腕部相机45度倾斜，高度变化会产生透视效应。
+        系统会记录当前高度，对齐时自动进行透视补偿。
 
         Args:
             offset_x: X方向目标偏移（像素）
@@ -2004,42 +1998,117 @@ class PrecisionPlaceController:
 
         print(f"✓ 对齐目标偏移已设置: ({offset_x:.1f}, {offset_y:.1f}) 像素")
 
-        # 记录当前关节状态（对齐时需要恢复到此姿态以消除透视效应）
-        current_joints = self.get_joint_states()
-        if current_joints is not None:
-            self._calibration_joint_states = current_joints.copy()
-            # 同时保存字典格式
-            if hasattr(self.robot, 'observation_joint_names'):
-                self._calibration_joint_dict = {
-                    name: float(current_joints[i])
-                    for i, name in enumerate(self.robot.observation_joint_names)
-                    if i < len(current_joints)
-                }
-            print(f"✓ 已记录当前关节状态（对齐时将恢复到此姿态以消除透视效应）")
-
-        # 记录当前高度
+        # 记录当前高度（用于透视补偿）
+        setup_height = None
         if self.z_controller is not None and self.camera2 is not None:
             image1 = self.camera.read()
             image2 = self.camera2.read()
             if image1 is not None and image2 is not None:
                 estimate = self.z_controller.estimate_z(image1, image2, self.detector.workpiece_color)
                 if estimate.confidence > 0.3:
-                    self._calibration_target_z = estimate.z
-                    self._reference_height = estimate.z
-                    self._reference_pixel_to_mm = self.pixel_to_mm_ratio
-                    print(f"✓ 已记录参考高度: {estimate.z:.1f}mm")
-                    print(f"✓ 已记录像素比例: {self.pixel_to_mm_ratio:.3f} mm/px")
-                else:
-                    print(f"⚠ 深度估计不可靠 (置信度: {estimate.confidence:.2f})")
+                    setup_height = estimate.z
+                    self._setup_height = estimate.z  # 设置偏移量时的高度
+                    print(f"✓ 已记录设置高度: {estimate.z:.1f}mm（用于透视补偿）")
 
-        # 显示透视效应警告
-        print("\n" + "="*50)
-        print("⚠ 透视效应警告")
-        print("="*50)
-        print("腕部相机约45度倾斜，高度变化会导致透视偏移。")
-        print("对齐时将自动恢复到当前姿态，确保透视效应一致。")
-        print("如果手动改变高度，需要重新设置偏移量！")
-        print("="*50)
+        # 记录当前关节状态
+        current_joints = self.get_joint_states()
+        if current_joints is not None:
+            self._calibration_joint_states = current_joints.copy()
+            if hasattr(self.robot, 'observation_joint_names'):
+                self._calibration_joint_dict = {
+                    name: float(current_joints[i])
+                    for i, name in enumerate(self.robot.observation_joint_names)
+                    if i < len(current_joints)
+                }
+            print(f"✓ 已记录当前关节状态")
+
+        # 显示透视效应信息
+        print("\n" + "-"*40)
+        print("透视效应说明：")
+        print(f"  相机角度: 约45度倾斜")
+        print(f"  设置高度: {setup_height:.1f}mm" if setup_height else "  设置高度: 未知")
+        print("  对齐时会根据高度差自动补偿透视效应")
+        print("-"*40)
+
+    def compute_perspective_offset(self, height_diff_mm: float, camera_angle_deg: float = 45.0) -> Tuple[float, float]:
+        """
+        计算透视效应导致的偏移量
+
+        当相机有倾斜角度时，高度变化会导致卡槽在图像中的位置偏移。
+
+        原理：
+        - 相机45度向下看
+        - 高度增加时，卡槽在图像中会向相机倾斜方向偏移
+        - 偏移量 = 高度差 × tan(相机角度) × 像素比例
+
+        Args:
+            height_diff_mm: 高度差(mm)，正值表示对齐时比设置时高
+            camera_angle_deg: 相机倾斜角度(度)，默认45度
+
+        Returns:
+            (offset_x_px, offset_y_px) 需要补偿的像素偏移
+        """
+        # 相机倾斜方向（根据安装方向确定）
+        # 假设相机向X方向倾斜（向卡槽方向看）
+        # 实际需要根据相机安装方向调整
+
+        camera_angle_rad = np.deg2rad(camera_angle_deg)
+        tan_angle = np.tan(camera_angle_rad)
+
+        # 物理偏移量
+        physical_offset_mm = height_diff_mm * tan_angle
+
+        # 转换为像素偏移
+        pixel_offset = physical_offset_mm / self.pixel_to_mm_ratio
+
+        # 根据相机安装方向确定偏移方向
+        # 这里假设相机向X正方向倾斜，需要根据实际情况调整
+        offset_x = pixel_offset
+        offset_y = 0.0
+
+        return offset_x, offset_y
+
+    def get_perspective_compensated_offset(self, current_height: float = None) -> Tuple[float, float]:
+        """
+        获取透视补偿后的目标偏移量
+
+        Args:
+            current_height: 当前高度(mm)，None则自动获取
+
+        Returns:
+            (compensated_offset_x, compensated_offset_y) 补偿后的目标偏移
+        """
+        if not hasattr(self, '_setup_height') or self._setup_height is None:
+            # 没有记录设置高度，不进行补偿
+            return self.target_offset_x, self.target_offset_y
+
+        if current_height is None:
+            current_height = self.get_current_height()
+
+        if current_height is None:
+            # 无法获取当前高度，不进行补偿
+            print("  ⚠ 无法获取当前高度，跳过透视补偿")
+            return self.target_offset_x, self.target_offset_y
+
+        # 计算高度差
+        height_diff = current_height - self._setup_height
+
+        if abs(height_diff) < 10:  # 高度差小于10mm，忽略
+            return self.target_offset_x, self.target_offset_y
+
+        # 计算透视补偿
+        comp_x, comp_y = self.compute_perspective_offset(height_diff)
+
+        compensated_x = self.target_offset_x + comp_x
+        compensated_y = self.target_offset_y + comp_y
+
+        print(f"\n[透视补偿]")
+        print(f"  设置高度: {self._setup_height:.1f}mm, 当前高度: {current_height:.1f}mm")
+        print(f"  高度差: {height_diff:.1f}mm")
+        print(f"  透视偏移: ({comp_x:.1f}, {comp_y:.1f}) px")
+        print(f"  补偿后目标: ({compensated_x:.1f}, {compensated_y:.1f}) px")
+
+        return compensated_x, compensated_y
 
     def get_current_offset(self) -> Tuple[float, float]:
         """
@@ -2362,6 +2431,7 @@ class PrecisionPlaceController:
         - 支持退化模式（标记不足时仍尝试工作）
         - 支持副相机融合检测
         - 支持预测位置功能
+        - 支持透视效应补偿
 
         Args:
             tolerance_mm: 目标精度
@@ -2373,9 +2443,14 @@ class PrecisionPlaceController:
         if tolerance_mm is None:
             tolerance_mm = self.tolerance_mm
 
+        # 获取透视补偿后的目标偏移
+        if hasattr(self, '_use_perspective_compensation') and self._use_perspective_compensation:
+            target_offset_x, target_offset_y = self.get_perspective_compensated_offset()
+        else:
+            target_offset_x, target_offset_y = self.target_offset_x, self.target_offset_y
+
         print(f"\nXY对齐 - 目标精度: {tolerance_mm}mm")
-        if self.target_offset_x != 0 or self.target_offset_y != 0:
-            print(f"对齐目标偏移: ({self.target_offset_x:.1f}, {self.target_offset_y:.1f}) 像素")
+        print(f"目标偏移: ({target_offset_x:.1f}, {target_offset_y:.1f}) 像素")
 
         # 检查标定数据
         if not self.calibration_points:
@@ -2497,17 +2572,17 @@ class PrecisionPlaceController:
             # P1: 记录历史偏移（用于预测）
             self._record_offset(state.offset_x, state.offset_y)
 
-            # 计算误差：当前偏移减去目标偏移
-            current_offset_x = state.offset_x - self.target_offset_x
-            current_offset_y = state.offset_y - self.target_offset_y
+            # 计算误差：当前偏移减去目标偏移（使用透视补偿后的目标）
+            current_offset_x = state.offset_x - target_offset_x
+            current_offset_y = state.offset_y - target_offset_y
 
             mm_x = current_offset_x * self.pixel_to_mm_ratio
             mm_y = current_offset_y * self.pixel_to_mm_ratio
             error_mm = np.sqrt(mm_x**2 + mm_y**2)
 
             print(f"  当前偏移: ({state.offset_x:.1f}, {state.offset_y:.1f}) px")
-            if self.target_offset_x != 0 or self.target_offset_y != 0:
-                print(f"  目标偏移: ({self.target_offset_x:.1f}, {self.target_offset_y:.1f}) px")
+            if target_offset_x != 0 or target_offset_y != 0:
+                print(f"  目标偏移: ({target_offset_x:.1f}, {target_offset_y:.1f}) px")
 
             # P1: 退化模式下显示精度警告
             if state.degraded_mode:
@@ -2620,9 +2695,9 @@ class PrecisionPlaceController:
                     actual_dy = new_state.offset_y - pre_state_offset_y
                     print(f"  [验证] 实际像素变化: X={actual_dx:.1f}px, Y={actual_dy:.1f}px")
 
-                    # 计算新的误差
-                    new_error_x = new_state.offset_x - self.target_offset_x
-                    new_error_y = new_state.offset_y - self.target_offset_y
+                    # 计算新的误差（使用透视补偿后的目标）
+                    new_error_x = new_state.offset_x - target_offset_x
+                    new_error_y = new_state.offset_y - target_offset_y
                     new_error_mag = np.sqrt(new_error_x**2 + new_error_y**2)
                     old_error_mag = np.sqrt(current_offset_x**2 + current_offset_y**2)
 
@@ -4185,16 +4260,23 @@ class PrecisionPlaceController:
         print("开始精准对齐")
         print("="*50)
 
-        # 步骤0: 恢复到设置偏移量时的姿态（消除透视效应）
-        print("\n[步骤0] 恢复对齐姿态（消除透视效应）")
-        if self._calibration_joint_states is not None:
-            pose_ok = self.move_to_calibration_pose()
-            if not pose_ok:
-                print("  ⚠ 姿态恢复失败，透视效应可能导致误差")
-                print("  建议: 重新设置偏移量")
+        # 步骤0: 透视效应补偿
+        print("\n[步骤0] 透视效应补偿")
+        current_height = self.get_current_height()
+        if hasattr(self, '_setup_height') and self._setup_height is not None and current_height is not None:
+            height_diff = current_height - self._setup_height
+            print(f"  设置高度: {self._setup_height:.1f}mm, 当前高度: {current_height:.1f}mm")
+            print(f"  高度差: {height_diff:.1f}mm")
+
+            if abs(height_diff) > 10:
+                print("  将在XY对齐时使用透视补偿")
+                self._use_perspective_compensation = True
+            else:
+                print("  高度差较小，无需透视补偿")
+                self._use_perspective_compensation = False
         else:
-            print("  ⚠ 未记录设置偏移量时的姿态")
-            print("  建议: 在对齐高度下重新设置偏移量")
+            print("  未记录设置高度或无法获取当前高度，跳过透视补偿")
+            self._use_perspective_compensation = False
 
         print("\n[步骤1] 检查检测")
         height_ok = self.auto_adjust_height()
