@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """
-精准放置系统 - 主启动脚本 (优化版)
+精准放置系统 - 主启动脚本 (V4 重构版)
 
 功能:
-1. 引导式操作
-2. 左手/右手切换
-3. 夹爪控制
-4. 自动下降放置
-5. 运动平滑
-6. 标定验证
-7. 预设位置
-8. 标定历史
+1. 手眼标定 (ChArUco板 + Tsai-Lenz算法)
+2. 双标记点对齐 (工件3绿 + 卡槽3红)
+3. XY对齐 (外参矩阵精确变换)
+4. Z轴精确控制 (双目立体视觉)
+5. 预设位置管理
+6. 标定历史
 
 使用: python precision_place/run.py
 """
@@ -32,9 +30,13 @@ from lerobot.robots.supre_robot_follower.supre_robot_follower_config import Supr
 from lerobot.cameras.opencv.camera_opencv import OpenCVCamera
 from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
 
-from precision_place.dual_point_alignment import (
-    PrecisionPlaceController, ARM_CONFIGS, DualPointDetector, JointSensitivity
-)
+# 新模块结构
+from precision_place.models.calibration_data import ARM_CONFIGS, JointSensitivity
+from precision_place.models.marker import DualMarkerState
+from precision_place.core.detector import DualPointDetector
+
+# 向后兼容：旧控制器
+from precision_place.dual_point_alignment import PrecisionPlaceController
 
 # 尝试导入Z轴控制器
 try:
@@ -46,7 +48,8 @@ except ImportError:
 
 # 尝试导入手眼标定模块
 try:
-    from precision_place.hand_eye_calibration import HandEyeCalibrator, CalibrationResult
+    from precision_place.calibration.hand_eye import HandEyeCalibrator
+    from precision_place.models.state import CalibrationResult
     _has_hand_eye = True
 except ImportError:
     _has_hand_eye = False
@@ -54,7 +57,7 @@ except ImportError:
 
 # 尝试导入正运动学模块
 try:
-    from precision_place.forward_kinematics import ForwardKinematics, create_fk_from_urdf
+    from precision_place.calibration.forward_kinematics import ForwardKinematics, create_fk_from_urdf
     _has_fk = True
 except ImportError:
     _has_fk = False
@@ -62,7 +65,8 @@ except ImportError:
 
 # 尝试导入坐标变换模块
 try:
-    from precision_place.coordinate_transformer import CoordinateTransformer, AlignmentController
+    from precision_place.calibration.coordinate_transform import CoordinateTransformer
+    from precision_place.core.aligner import HandEyeAligner
     _has_coord_transform = True
 except ImportError:
     _has_coord_transform = False
