@@ -986,6 +986,192 @@ class PrecisionPlaceSystem:
 
         cv2.destroyWindow("Hand-Eye Calibration")
 
+    def reprojection_verification(self):
+        """重投影验证 - 验证手眼标定精度"""
+        if not _has_hand_eye:
+            print("✗ 手眼标定模块未加载")
+            return
+
+        print("\n" + "="*60)
+        print("重投影验证")
+        print("="*60)
+        print("""
+原理：
+  使用已标定的外参矩阵，验证相机到法兰的变换是否正确。
+
+步骤：
+  1. 加载手眼标定结果
+  2. 在不同姿态下拍摄图像
+  3. 检测图像中的特征点
+  4. 用外参矩阵反推特征点在世界坐标系的位置
+  5. 计算重投影误差 (RMSE)
+
+验收标准：
+  - RMSE < 1.5像素 = 标定正确
+  - RMSE > 1.5像素 = 需要重新标定
+""")
+
+        # 加载标定结果
+        extrinsic_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
+        if not extrinsic_path.exists():
+            print(f"✗ 未找到手眼标定结果: {extrinsic_path}")
+            print("  请先运行手眼标定 (选项 H)")
+            return
+
+        result = HandEyeCalibrator.load(str(extrinsic_path))
+        if result is None or not result.valid:
+            print("✗ 标定结果无效")
+            return
+
+        print(f"✓ 已加载标定结果 (RMSE: {result.rmse_error:.2f}像素)")
+
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        # 获取相机
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera = self.cameras.get(arm_config.camera_name)
+        if camera is None:
+            print("✗ 主相机未连接")
+            return
+
+        # 相机内参
+        camera_matrix = np.array([
+            [500.0, 0, 320.0],
+            [0, 500.0, 240.0],
+            [0, 0, 1]
+        ], dtype=np.float64)
+        dist_coeffs = np.zeros(5)
+
+        from precision_place.hand_eye_calibration import ReprojectionVerifier
+        verifier = ReprojectionVerifier(camera_matrix, dist_coeffs, result)
+
+        print("\n验证方法：")
+        print("  方法1: 使用TCP探针戳验证点（最准确）")
+        print("  方法2: 使用固定标记点（简化）")
+        method = input("选择方法 (1/2): ").strip()
+
+        if method == "1":
+            print("\n准备验证点:")
+            print("  1. 在工作台上放置一个明显特征点")
+            print("  2. 用TCP探针测量其世界坐标")
+            print("  3. 输入坐标并拍摄图像")
+
+            num_points = 0
+            while num_points < 4:
+                print(f"\n验证点 #{num_points + 1}:")
+                coord_input = input("  世界坐标 x,y,z (米，逗号分隔): ").strip()
+                try:
+                    x, y, z = [float(v.strip()) for v in coord_input.split(",")]
+                    world_pos = np.array([x, y, z])
+                except:
+                    print("  ✗ 格式错误，请使用: x,y,z")
+                    continue
+
+                input("  按Enter拍摄图像...")
+                image = camera.read()
+                if image is None:
+                    print("  ✗ 无法获取图像")
+                    continue
+
+                # 让用户点击像素位置
+                cv2.namedWindow("Click Pixel", cv2.WINDOW_NORMAL)
+                cv2.imshow("Click Pixel", image)
+
+                pixel_pos = [0, 0]
+                def mouse_callback(event, x, y, flags, param):
+                    if event == cv2.EVENT_LBUTTONDOWN:
+                        pixel_pos[0] = x
+                        pixel_pos[1] = y
+
+                cv2.setMouseCallback("Click Pixel", mouse_callback)
+                print("  请在图像中点击特征点位置...")
+                cv2.waitKey(0)
+                cv2.destroyWindow("Click Pixel")
+
+                verifier.add_verification_point(world_pos, (pixel_pos[0], pixel_pos[1]))
+                print(f"  ✓ 添加验证点: 世界({x:.3f}, {y:.3f}, {z:.3f}) -> 像素({pixel_pos[0]}, {pixel_pos[1]})")
+                num_points += 1
+
+            # 执行验证
+            print("\n执行验证...")
+            joints = self.controller.get_joint_states()
+            if joints is None:
+                print("✗ 无法获取关节状态")
+                return
+
+            if self.forward_kinematics:
+                pose = self.forward_kinematics.compute(joints)
+                flange_pos = pose.get_position()
+                flange_rot = pose.quaternion
+            else:
+                print("⚠ 正运动学未启用，使用默认姿态")
+                flange_pos = np.array([0.0, 0.0, 0.5])
+                flange_rot = np.array([0.0, 0.0, 0.0, 1.0])
+
+            passed, rmse = verifier.verify(flange_pos, flange_rot)
+
+            if passed:
+                print("\n✓ 手眼标定验证通过！")
+                print("  可以放心使用该标定结果进行精准放置。")
+            else:
+                print("\n✗ 验证失败！")
+                print("  建议重新进行手眼标定。")
+
+        elif method == "2":
+            print("\n简化验证: 检查ChArUco板检测一致性")
+            print("  移动机械臂到不同姿态，检测标定板位置是否一致")
+
+            calibrator = HandEyeCalibrator(camera_matrix, dist_coeffs)
+            positions = []
+
+            print("\n按 'C' 捕获，按 'Q' 完成")
+            cv2.namedWindow("Verification", cv2.WINDOW_NORMAL)
+
+            while True:
+                image = camera.read()
+                if image is None:
+                    continue
+
+                display = image.copy()
+                success, rvec, tvec, corners = calibrator.detect_charuco(image)
+
+                if success:
+                    cv2.drawFrameAxes(display, camera_matrix, dist_coeffs, rvec, tvec, 0.1)
+                    cv2.putText(display, "Board Detected", (10, 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+                cv2.putText(display, f"Captures: {len(positions)}", (10, 60),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                cv2.putText(display, "[C]apture [Q]uit", (10, 90),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+                cv2.imshow("Verification", display)
+                key = cv2.waitKey(10) & 0xFF
+
+                if key == ord('c') or key == ord('C'):
+                    if success:
+                        positions.append(tvec.flatten())
+                        print(f"  捕获: tvec = ({tvec[0,0]:.4f}, {tvec[1,0]:.4f}, {tvec[2,0]:.4f})")
+                elif key == ord('q') or key == ord('Q'):
+                    break
+
+            cv2.destroyWindow("Verification")
+
+            if len(positions) >= 3:
+                positions = np.array(positions)
+                mean_pos = np.mean(positions, axis=0)
+                std_pos = np.std(positions, axis=0)
+                print(f"\n标定板位置统计:")
+                print(f"  平均: ({mean_pos[0]:.4f}, {mean_pos[1]:.4f}, {mean_pos[2]:.4f}) 米")
+                print(f"  标准差: ({std_pos[0]:.4f}, {std_pos[1]:.4f}, {std_pos[2]:.4f}) 米")
+
+                if np.max(std_pos) < 0.005:  # 5mm
+                    print("  ✓ 位置一致性良好")
+                else:
+                    print("  ⚠ 位置波动较大，可能需要重新标定")
+
     def show_calibration_history(self):
         """显示标定历史"""
         if not self.controller:
@@ -1822,6 +2008,7 @@ def main():
                 print("\n标定选项:")
                 print("  === 手眼标定 (推荐，精度更高) ===")
                 print("  H. 手眼标定 (ChArUco板，一次完成)")
+                print("  R. 重投影验证 (验证手眼标定精度)")
                 print("  === 传统标定 ===")
                 print("  1. 像素-毫米标定 (基础标定)")
                 print("  2. 关节灵敏度标定 (手动移动)")
@@ -1846,6 +2033,9 @@ def main():
                     if not system.controller:
                         system.connect()
                     system.hand_eye_calibration()
+                elif calib_choice == "R":
+                    # 重投影验证
+                    system.reprojection_verification()
                 elif calib_choice == "1":
                     if not system.controller:
                         system.connect()
