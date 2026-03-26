@@ -20,21 +20,38 @@ Precision Place - 毫米级精准放置模块
     - Z轴精度: ±0.5mm
 """
 
-# 新模块结构
+# 数据模型
 from precision_place.models.marker import Marker, DualMarkerState
 from precision_place.models.calibration_data import (
     JointSensitivity, CalibrationPoint, ArmConfig, ARM_CONFIGS
 )
-from precision_place.models.state import DetectionResult, AlignmentResult
+from precision_place.models.state import (
+    DetectionResult, AlignmentResult, CalibrationResult
+)
 
+# 核心模块
 from precision_place.core.detector import DualPointDetector
 from precision_place.core.aligner import HandEyeAligner, SensitivityAligner
 
+# 标定模块
 from precision_place.calibration.hand_eye import HandEyeCalibrator
 from precision_place.calibration.forward_kinematics import ForwardKinematics, create_fk_from_urdf
 from precision_place.calibration.coordinate_transform import CoordinateTransformer
 
-# 保持向后兼容
+# 视觉模块
+from precision_place.vision.charuco import CharucoDetector
+
+# 工具模块
+from precision_place.utils.visualization import draw_markers, draw_offset_arrow
+from precision_place.utils.file_io import load_yaml, save_yaml, load_json, save_json
+
+# 配置模块
+from precision_place.config.settings import (
+    PrecisionPlaceConfig, CameraConfig, MarkerConfig, AlignmentConfig,
+    get_default_config, load_config
+)
+
+# 向后兼容：旧控制器
 from precision_place.dual_point_alignment import PrecisionPlaceController
 from precision_place.z_axis_controller import (
     ZAxisController,
@@ -56,6 +73,7 @@ __all__ = [
     'ARM_CONFIGS',
     'DetectionResult',
     'AlignmentResult',
+    'CalibrationResult',
 
     # 核心模块
     'DualPointDetector',
@@ -67,6 +85,25 @@ __all__ = [
     'ForwardKinematics',
     'create_fk_from_urdf',
     'CoordinateTransformer',
+
+    # 视觉模块
+    'CharucoDetector',
+
+    # 工具模块
+    'draw_markers',
+    'draw_offset_arrow',
+    'load_yaml',
+    'save_yaml',
+    'load_json',
+    'save_json',
+
+    # 配置模块
+    'PrecisionPlaceConfig',
+    'CameraConfig',
+    'MarkerConfig',
+    'AlignmentConfig',
+    'get_default_config',
+    'load_config',
 
     # 控制器（向后兼容）
     'PrecisionPlaceController',
