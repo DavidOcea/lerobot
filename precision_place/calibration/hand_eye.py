@@ -119,7 +119,15 @@ class HandEyeCalibrator:
             self.dictionary
         )
         self.params = cv2.aruco.DetectorParameters()
-        self.detector = cv2.aruco.ArucoDetector(self.dictionary, self.params)
+
+        # OpenCV 4.7+ 使用 CharucoDetector
+        try:
+            self.charuco_detector = cv2.aruco.CharucoDetector(self.board)
+            self.use_charuco_detector = True
+        except AttributeError:
+            # OpenCV < 4.7 使用 ArucoDetector
+            self.detector = cv2.aruco.ArucoDetector(self.dictionary, self.params)
+            self.use_charuco_detector = False
 
         # 采集的数据
         self.R_base2gripper: List[np.ndarray] = []  # 法兰旋转矩阵 (Base -> Flange)
@@ -158,31 +166,63 @@ class HandEyeCalibrator:
 
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
 
-        # 检测ArUco标记
-        marker_corners, marker_ids, rejected = self.detector.detectMarkers(gray)
+        # OpenCV 4.7+ 使用 CharucoDetector
+        if self.use_charuco_detector:
+            charuco_corners, charuco_ids, marker_corners, marker_ids = \
+                self.charuco_detector.detectBoard(gray)
 
-        if marker_ids is None or len(marker_ids) == 0:
-            return False, None, None, None
+            if charuco_ids is None or len(charuco_ids) < 4:
+                return False, None, None, None
 
-        # 提取ChArUco角点
-        ret, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-            marker_corners, marker_ids, gray, self.board
-        )
+            # 估计标定板位姿
+            object_points = self.board.getChessboardCorners()
+            image_points = charuco_corners.reshape(-1, 2)
 
-        if not ret or charuco_ids is None or len(charuco_ids) < 4:
-            return False, None, None, None
+            # 使用对应点估计位姿
+            success, rvec, tvec = cv2.solvePnP(
+                object_points[charuco_ids.flatten()],
+                image_points,
+                self.camera_matrix,
+                self.dist_coeffs
+            )
 
-        # 估计标定板位姿
-        success, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
-            charuco_corners, charuco_ids, self.board,
-            self.camera_matrix, self.dist_coeffs,
-            np.empty(1), np.empty(1)
-        )
+            if not success or rvec is None or tvec is None:
+                return False, None, None, None
 
-        if not success:
-            return False, None, None, None
+            return True, rvec, tvec, charuco_corners
 
-        return True, rvec, tvec, charuco_corners
+        else:
+            # OpenCV < 4.7 使用旧API
+            marker_corners, marker_ids, rejected = self.detector.detectMarkers(gray)
+
+            if marker_ids is None or len(marker_ids) == 0:
+                return False, None, None, None
+
+            # 提取ChArUco角点
+            try:
+                ret, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+                    marker_corners, marker_ids, gray, self.board
+                )
+            except AttributeError:
+                return False, None, None, None
+
+            if not ret or charuco_ids is None or len(charuco_ids) < 4:
+                return False, None, None, None
+
+            # 估计标定板位姿
+            try:
+                success, rvec, tvec = cv2.aruco.estimatePoseCharucoBoard(
+                    charuco_corners, charuco_ids, self.board,
+                    self.camera_matrix, self.dist_coeffs,
+                    np.empty(1), np.empty(1)
+                )
+            except AttributeError:
+                return False, None, None, None
+
+            if not success or rvec is None or tvec is None:
+                return False, None, None, None
+
+            return True, rvec, tvec, charuco_corners
 
     def capture_pose(self,
                      image: np.ndarray,
