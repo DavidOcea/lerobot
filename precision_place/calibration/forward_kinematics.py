@@ -267,28 +267,39 @@ def create_fk_from_urdf(urdf_path: str, arm: str = "right") -> ForwardKinematics
 
     Returns:
         ForwardKinematics实例
+
+    Note:
+        URDF中的命名规范：
+        - 关节: right_arm_joint0 ~ right_arm_joint5 (从0开始，无下划线)
+        - Link: right_arm_link0 ~ right_arm_link4
+        - 末端TCP: right_hand_tcp (工具中心点)
+        - 手腕基座: right_hand_base
     """
-    # 根据手臂选择关节名称
+    # URDF中的关节名称 (注意：与配置文件中的命名不同)
+    # URDF: right_arm_joint0, right_arm_joint1, ...
+    # 配置: right_arm_joint_1, right_arm_joint_2, ...
     if arm == "right":
         joint_names = [
-            "right_arm_joint_1",
-            "right_arm_joint_2",
-            "right_arm_joint_3",
-            "right_arm_joint_4",
-            "right_arm_joint_5",
-            "right_arm_joint_6",
+            "right_arm_joint0",
+            "right_arm_joint1",
+            "right_arm_joint2",
+            "right_arm_joint3",
+            "right_arm_joint4",
+            "right_arm_joint5",
         ]
-        end_effector = "right_arm_link_6"  # 或根据URDF中的实际名称
+        # 末端执行器：工具中心点 (TCP)
+        end_effector = "right_hand_tcp"
     else:
         joint_names = [
-            "left_arm_joint_1",
-            "left_arm_joint_2",
-            "left_arm_joint_3",
-            "left_arm_joint_4",
-            "left_arm_joint_5",
-            "left_arm_joint_6",
+            "left_arm_joint0",
+            "left_arm_joint1",
+            "left_arm_joint2",
+            "left_arm_joint3",
+            "left_arm_joint4",
+            "left_arm_joint5",
         ]
-        end_effector = "left_arm_link_6"
+        # 末端执行器：工具中心点 (TCP)
+        end_effector = "left_hand_tcp"
 
     return ForwardKinematics.from_urdf(urdf_path, joint_names, end_effector)
 

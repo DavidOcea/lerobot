@@ -2844,7 +2844,14 @@ Z轴控制关节 (全部6个):
             # 执行移动
             if auto_mode:
                 velocity_scale = 0.8
+                max_velocity = 0.02  # 最大速度 20mm/s (安全限制)
+
                 scaled_velocity = V_flange[:3] * velocity_scale
+
+                # 速度限制（防止大幅移动）
+                velocity_magnitude = np.linalg.norm(scaled_velocity)
+                if velocity_magnitude > max_velocity:
+                    scaled_velocity = scaled_velocity * (max_velocity / velocity_magnitude)
 
                 # 优先级1: 速度控制（最平滑）
                 if hasattr(self.controller, 'has_velocity_control') and \
@@ -2853,7 +2860,7 @@ Z轴控制关节 (全部6个):
                     self.controller.set_cartesian_velocity(
                         scaled_velocity[0], scaled_velocity[1], scaled_velocity[2]
                     )
-                    print(f"\r迭代 {iteration}: 误差={info['total_error']:.2f}px [速度控制]   ", end="", flush=True)
+                    print(f"\r迭代 {iteration}: 误差={info['total_error']:.2f}px 速度={velocity_magnitude*1000:.1f}mm/s [速度控制]   ", end="", flush=True)
                     time.sleep(0.02)  # 50Hz控制周期
 
                 # 优先级2: 伺服模式（平滑轨迹）
@@ -2866,7 +2873,7 @@ Z轴控制关节 (全部6个):
                         flange_rot[0], flange_rot[1], flange_rot[2], flange_rot[3],
                         time_ms=50
                     )
-                    print(f"\r迭代 {iteration}: 误差={info['total_error']:.2f}px [伺服模式]   ", end="", flush=True)
+                    print(f"\r迭代 {iteration}: 误差={info['total_error']:.2f}px 速度={velocity_magnitude*1000:.1f}mm/s [伺服模式]   ", end="", flush=True)
                     time.sleep(dt)
 
                 # 优先级3: 位置增量（阶梯式，可能有小抖动）
@@ -2877,7 +2884,7 @@ Z轴控制关节 (全部6个):
                         new_pos[0], new_pos[1], new_pos[2],
                         flange_rot[0], flange_rot[1], flange_rot[2], flange_rot[3]
                     )
-                    print(f"\r迭代 {iteration}: 误差={info['total_error']:.2f}px [位置模式]   ", end="", flush=True)
+                    print(f"\r迭代 {iteration}: 误差={info['total_error']:.2f}px 速度={velocity_magnitude*1000:.1f}mm/s [位置模式]   ", end="", flush=True)
                     time.sleep(dt)
 
                 else:
