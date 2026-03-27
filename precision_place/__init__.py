@@ -37,6 +37,13 @@ from precision_place.core.aligner import HandEyeAligner, SensitivityAligner
 from precision_place.calibration.hand_eye import HandEyeCalibrator
 from precision_place.calibration.forward_kinematics import ForwardKinematics, create_fk_from_urdf
 from precision_place.calibration.coordinate_transform import CoordinateTransformer
+from precision_place.calibration.tcp_calibrator import TCPCalibrator, TCPCalibrationResult
+from precision_place.calibration.sync_capture import (
+    SynchronizedCapture, ContinuousCapture, CaptureResult
+)
+from precision_place.calibration.ibvs_controller import (
+    VirtualIBVSController, IBVSAlignmentRunner
+)
 
 # 视觉模块
 from precision_place.vision.charuco import CharucoDetector
@@ -85,6 +92,13 @@ __all__ = [
     'ForwardKinematics',
     'create_fk_from_urdf',
     'CoordinateTransformer',
+    'TCPCalibrator',
+    'TCPCalibrationResult',
+    'SynchronizedCapture',
+    'ContinuousCapture',
+    'CaptureResult',
+    'VirtualIBVSController',
+    'IBVSAlignmentRunner',
 
     # 视觉模块
     'CharucoDetector',

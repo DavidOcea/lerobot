@@ -72,6 +72,32 @@ except ImportError:
     _has_coord_transform = False
     CoordinateTransformer = None
 
+# 尝试导入TCP标定模块
+try:
+    from precision_place.calibration.tcp_calibrator import TCPCalibrator, TCPCalibrationResult
+    _has_tcp_calibrator = True
+except ImportError:
+    _has_tcp_calibrator = False
+    TCPCalibrator = None
+
+# 尝试导入同步捕获模块
+try:
+    from precision_place.calibration.sync_capture import (
+        SynchronizedCapture, ContinuousCapture, CaptureResult
+    )
+    _has_sync_capture = True
+except ImportError:
+    _has_sync_capture = False
+    SynchronizedCapture = None
+
+# 尝试导入IBVS模块
+try:
+    from precision_place.calibration.ibvs_controller import VirtualIBVSController, IBVSAlignmentRunner
+    _has_ibvs = True
+except ImportError:
+    _has_ibvs = False
+    VirtualIBVSController = None
+
 
 # ==================== 配置 ====================
 
@@ -100,8 +126,10 @@ class PrecisionPlaceSystem:
         self.is_first_run = not (Path(__file__).parent / "calibration_history.json").exists()
         self.passive_mode = False  # 被动模式：与示教系统协同
         self.hand_eye_calibrator = None  # 手眼标定器
+        self.tcp_calibrator = None  # TCP标定器
         self.forward_kinematics = None  # 正运动学计算器
         self.coordinate_transformer = None  # 坐标变换器（基于手眼标定）
+        self.ibvs_controller = None  # IBVS控制器
         self.urdf_path = None  # URDF文件路径
         # 目标偏移量（用于标记点有固定偏移的情况）
         self.target_offset_x = 0.0  # 像素
@@ -904,11 +932,28 @@ class PrecisionPlaceSystem:
             print("\n⚠ 正运动学未启用，将使用简化模式")
             print("  提示: 提供URDF文件可获得更高精度")
 
+        # 创建同步捕获器
+        if _has_sync_capture:
+            sync_capture = SynchronizedCapture(
+                camera=camera,
+                controller=self.controller,
+                forward_kinematics=self.forward_kinematics,
+                warmup_frames=3,
+                max_sync_delay_ms=50.0
+            )
+            print("✓ 同步捕获已启用")
+        else:
+            sync_capture = None
+            print("⚠ 同步捕获模块未加载，使用传统模式")
+
         print("\n开始采集数据...")
         print("按键: [C]捕获  [S]标定  [Q]退出")
 
         cv2.namedWindow("Hand-Eye Calibration", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Hand-Eye Calibration", 800, 600)
+
+        # 同步状态显示
+        sync_delay_display = 0.0
 
         while True:
             # 获取图像
@@ -939,6 +984,12 @@ class PrecisionPlaceSystem:
             cv2.putText(display, fk_status, (10, 120),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0) if self.forward_kinematics else (0, 0, 255), 1)
 
+            # 显示同步延迟
+            if sync_capture:
+                sync_color = (0, 255, 0) if sync_delay_display < 30 else (0, 165, 255)
+                cv2.putText(display, f"Sync: {sync_delay_display:.1f}ms", (10, 150),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, sync_color, 1)
+
             cv2.imshow("Hand-Eye Calibration", display)
 
             key = cv2.waitKey(10) & 0xFF
@@ -949,29 +1000,56 @@ class PrecisionPlaceSystem:
                     print("  ⚠ 未检测到标定板，无法捕获")
                     continue
 
-                # 获取关节角度
-                joints = self.controller.get_joint_states()
-                if joints is None:
-                    print("  ⚠ 无法获取关节状态")
-                    continue
-
-                # 计算法兰位姿
-                if self.forward_kinematics:
-                    try:
-                        pose = self.forward_kinematics.compute(joints)
-                        flange_position = pose.get_position()
-                        flange_rotation = pose.quaternion
-                        print(f"  法兰位姿: pos=({pose.x:.3f}, {pose.y:.3f}, {pose.z:.3f})m")
-                    except Exception as e:
-                        print(f"  ⚠ 正运动学计算失败: {e}")
+                # 使用同步捕获
+                if sync_capture:
+                    # 同步捕获图像和关节状态
+                    capture_result = sync_capture.capture_with_verification()
+                    if not capture_result.success:
+                        print(f"  ✗ 同步捕获失败: {capture_result.error_message}")
                         continue
+
+                    image = capture_result.image
+                    joints = capture_result.joints
+                    flange_position = capture_result.flange_position
+                    flange_rotation = capture_result.flange_rotation
+                    sync_delay_display = capture_result.sync_delay_ms
+
+                    print(f"  同步延迟: {sync_delay_display:.1f}ms")
+
+                    # 如果没有正运动学，使用默认值
+                    if flange_position is None:
+                        if self.forward_kinematics:
+                            try:
+                                pose = self.forward_kinematics.compute(joints)
+                                flange_position = pose.get_position()
+                                flange_rotation = pose.quaternion
+                            except Exception as e:
+                                print(f"  ⚠ 正运动学计算失败: {e}")
+                                continue
+                        else:
+                            print("  ⚠ 使用简化模式，精度较低")
+                            flange_position = np.array([0.0, 0.0, 0.5])
+                            flange_rotation = np.array([0.0, 0.0, 0.0, 1.0])
                 else:
-                    # 简化模式：使用关节角度估算（不准确）
-                    print("  ⚠ 使用简化模式，精度较低")
-                    # 这里使用一个简化的估算方法
-                    # 实际应该用正运动学
-                    flange_position = np.array([0.0, 0.0, 0.5])  # 示例
-                    flange_rotation = np.array([0.0, 0.0, 0.0, 1.0])
+                    # 传统模式
+                    joints = self.controller.get_joint_states()
+                    if joints is None:
+                        print("  ⚠ 无法获取关节状态")
+                        continue
+
+                    if self.forward_kinematics:
+                        try:
+                            pose = self.forward_kinematics.compute(joints)
+                            flange_position = pose.get_position()
+                            flange_rotation = pose.quaternion
+                            print(f"  法兰位姿: pos=({pose.x:.3f}, {pose.y:.3f}, {pose.z:.3f})m")
+                        except Exception as e:
+                            print(f"  ⚠ 正运动学计算失败: {e}")
+                            continue
+                    else:
+                        print("  ⚠ 使用简化模式，精度较低")
+                        flange_position = np.array([0.0, 0.0, 0.5])
+                        flange_rotation = np.array([0.0, 0.0, 0.0, 1.0])
 
                 if self.hand_eye_calibrator.capture_pose(image, flange_position, flange_rotation):
                     print(f"  ✓ 捕获成功 ({count + 1})")
@@ -1187,6 +1265,164 @@ class PrecisionPlaceSystem:
                     print("  ✓ 位置一致性良好")
                 else:
                     print("  ⚠ 位置波动较大，可能需要重新标定")
+
+    def tcp_calibration(self):
+        """
+        TCP标定 (工具中心点标定)
+
+        使用四点法标定工具中心点相对于法兰的偏移量。
+        """
+        if not _has_tcp_calibrator:
+            print("✗ TCP标定模块未加载")
+            return
+
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        print("\n" + "="*60)
+        print("TCP标定 (四点法)")
+        print("="*60)
+        print("""
+原理：
+  假设探针尖端固定在世界坐标系的某一点 P_tip，
+  通过采集多个姿态下的法兰位姿，使用最小二乘法求解
+  探针相对于法兰的偏置向量 t_offset。
+
+公式：
+  P_flange_i + R_i * t_offset = P_tip
+
+操作步骤：
+  1. 在工作台上固定一个尖锐靶点（如大头针）
+  2. 安装探针到机械臂末端
+  3. 用探针尖端精确对准靶点
+  4. 按 'C' 键捕获当前姿态（保持针尖对准，变换姿态）
+  5. 至少采集4个不同姿态（姿态差异越大越好）
+  6. 采集足够后按 'S' 键开始标定
+  7. 按 'Q' 键退出
+
+验收标准：
+  RMSE < 0.5mm = 合格
+""")
+
+        # 检查/初始化正运动学
+        if self.forward_kinematics is None:
+            if self.urdf_path is None:
+                print("\n需要URDF文件来计算正运动学。")
+                urdf_input = input("请输入URDF文件路径 (或按Enter跳过): ").strip()
+                if urdf_input:
+                    self.urdf_path = urdf_input
+
+            if self.urdf_path and _has_fk:
+                try:
+                    self.forward_kinematics = create_fk_from_urdf(self.urdf_path, self.current_arm)
+                    print(f"✓ 正运动学已初始化")
+                except Exception as e:
+                    print(f"✗ 正运动学初始化失败: {e}")
+                    print("  TCP标定需要正运动学支持，无法继续")
+                    return
+            else:
+                print("✗ 缺少正运动学，TCP标定无法进行")
+                return
+
+        # 创建TCP标定器
+        self.tcp_calibrator = TCPCalibrator()
+
+        # 创建同步捕获器
+        if _has_sync_capture:
+            # TCP标定不需要相机，但需要同步读取关节状态
+            sync_capture = SynchronizedCapture(
+                camera=None,  # TCP标定不需要相机
+                controller=self.controller,
+                forward_kinematics=self.forward_kinematics,
+                warmup_frames=2,
+                max_sync_delay_ms=30.0
+            )
+            print("✓ 同步捕获已启用")
+        else:
+            sync_capture = None
+
+        print("\n准备采集数据...")
+        print("按键: [C]捕获  [S]标定  [Q]退出")
+        print("\n注意: 每次捕获前，请确保探针尖端精确对准靶点！")
+
+        while True:
+            # 显示当前状态
+            joints = self.controller.get_joint_states()
+            if joints is None:
+                print("⚠ 无法获取关节状态，请重试")
+                continue
+
+            count = self.tcp_calibrator.get_capture_count()
+            print(f"\r当前已捕获: {count}/4+  ", end="", flush=True)
+
+            # 等待用户输入
+            key = input("\n按键 [C]捕获 [S]标定 [Q]退出: ").strip().upper()
+
+            if key == 'C':
+                # 捕获当前姿态
+                if sync_capture:
+                    # 同步捕获（预热丢弃旧数据）
+                    for _ in range(2):
+                        joints = self.controller.get_joint_states()
+
+                    try:
+                        # 计算法兰位姿
+                        pose = self.forward_kinematics.compute(joints)
+                        flange_position = pose.get_position()
+                        flange_rotation = pose.quaternion
+
+                        self.tcp_calibrator.capture_pose(flange_position, flange_rotation, "quaternion")
+                        count = self.tcp_calibrator.get_capture_count()
+                        print(f"  ✓ 捕获成功 (同步模式)")
+
+                        if count >= 4:
+                            print(f"  已采集足够数据 ({count}个)，可以按 'S' 开始标定")
+
+                    except Exception as e:
+                        print(f"  ✗ 捕获失败: {e}")
+                else:
+                    try:
+                        pose = self.forward_kinematics.compute(joints)
+                        flange_position = pose.get_position()
+                        flange_rotation = pose.quaternion
+
+                        self.tcp_calibrator.capture_pose(flange_position, flange_rotation, "quaternion")
+                        count = self.tcp_calibrator.get_capture_count()
+
+                        if count >= 4:
+                            print(f"  ✓ 已采集足够数据 ({count}个)，可以按 'S' 开始标定")
+
+                    except Exception as e:
+                        print(f"  ✗ 捕获失败: {e}")
+
+            elif key == 'S':
+                # 开始标定
+                count = self.tcp_calibrator.get_capture_count()
+                if count < 4:
+                    print(f"  ⚠ 采集数量不足 ({count}/4)，至少需要4个姿态")
+                    continue
+
+                success, result = self.tcp_calibrator.solve()
+
+                if success and result.valid:
+                    # 保存结果
+                    output_path = Path(__file__).parent / "tcp_offset.yaml"
+                    self.tcp_calibrator.save(str(output_path))
+                    print(f"\n✓ TCP标定成功！结果已保存到: {output_path}")
+                    print(f"  TCP偏移: ({result.offset_x*1000:.2f}, {result.offset_y*1000:.2f}, {result.offset_z*1000:.2f}) mm")
+                    print(f"  RMSE误差: {result.rmse_mm:.3f} mm")
+                else:
+                    print(f"\n✗ TCP标定失败或精度不足")
+                    print("  建议: 检查探针是否牢固安装，姿态差异是否足够大")
+                    retry = input("  是否重新采集? [Y/N]: ").strip().upper()
+                    if retry == 'Y':
+                        self.tcp_calibrator.clear_captures()
+                        print("已清空采集数据，请重新开始")
+
+            elif key == 'Q':
+                print("退出TCP标定")
+                break
 
     def load_coordinate_transformer(self) -> bool:
         """加载坐标变换器（基于手眼标定结果）"""
@@ -2115,21 +2351,549 @@ Z轴控制关节 (全部6个):
                 print("无效选项")
 
     # ----------------- 对齐 -----------------
-    
+
     def run_alignment(self, auto_place: bool = False):
         """运行对齐"""
         if not self.controller:
             print("请先连接设备")
             return
-        
+
         print("\n请将机器人移动到卡槽上方 (5-10cm)")
         input("准备好后按 Enter...")
-        
+
         self.controller.run_full_sequence(
             tolerance_mm=2.0,
             auto_place=auto_place
         )
-    
+
+    def ibvs_memory_phase(self):
+        """
+        IBVS记忆阶段 - 采集定妆照
+
+        在完美对齐位置抬高15cm，保存特征点的3D世界坐标。
+        """
+        if not _has_ibvs:
+            print("✗ IBVS模块未加载")
+            return False
+
+        if not self.controller:
+            print("请先连接设备")
+            return False
+
+        print("\n" + "="*60)
+        print("IBVS 记忆阶段 - 采集定妆照")
+        print("="*60)
+        print("""
+原理：
+  在完美对齐位置记录特征点的3D世界坐标。
+  后续盲插时，即使相机被遮挡，也能通过"脑补"虚拟像素精确对齐。
+
+┌─────────────────────────────────────────────────────────────┐
+│ 操作步骤：                                                   │
+│                                                              │
+│  1. 【完美对齐】手动将工件精确放入卡槽                       │
+│     └─ 工件在夹爪里，完美插入卡槽                           │
+│                                                              │
+│  2. 【垂直抬高】切换到直线模式，沿Z轴抬高15cm                │
+│     ├─ ✓ 只沿Z轴向上移动                                    │
+│     ├─ ✓ XY方向不动                                         │
+│     ├─ ✓ 末端执行器不旋转                                   │
+│     └─ ⚠ 工件还在夹爪里，不要放下！                         │
+│                                                              │
+│  3. 【确认标记】确保工件标记和卡槽标记都清晰可见             │
+│                                                              │
+│  4. 【记忆】按 'M' 键记忆当前位置                           │
+│                                                              │
+│  5. 【保存】按 'S' 键保存到文件                              │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+
+为什么工件要在夹爪里？
+  - 如果工件留在卡槽，会遮挡卡槽标记，无法检测
+  - 工件在夹爪里，抬高后两组标记都可见
+
+为什么只沿Z轴抬高？
+  - 保证像素位置一致性
+  - 简化操作，不易出错
+  - 记忆的像素位置 = 完美对齐时看到的像素位置
+""")
+
+        # 检查/初始化正运动学
+        if self.forward_kinematics is None:
+            if self.urdf_path is None:
+                print("\n需要URDF文件来计算正运动学。")
+                urdf_input = input("请输入URDF文件路径: ").strip()
+                if urdf_input:
+                    self.urdf_path = urdf_input
+
+            if self.urdf_path and _has_fk:
+                try:
+                    self.forward_kinematics = create_fk_from_urdf(self.urdf_path, self.current_arm)
+                    print(f"✓ 正运动学已初始化")
+                except Exception as e:
+                    print(f"✗ 正运动学初始化失败: {e}")
+                    return False
+            else:
+                print("✗ 缺少正运动学，IBVS无法工作")
+                return False
+
+        # 检查手眼标定
+        if self.coordinate_transformer is None:
+            if not self.load_coordinate_transformer():
+                print("✗ 请先完成手眼标定")
+                return False
+
+        # 获取相机
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera = self.cameras.get(arm_config.camera_name)
+        if camera is None:
+            print("✗ 主相机未连接")
+            return False
+
+        # 创建IBVS控制器
+        camera_matrix = np.array([
+            [500.0, 0, 320.0],
+            [0, 500.0, 240.0],
+            [0, 0, 1]
+        ], dtype=np.float64)
+
+        self.ibvs_controller = VirtualIBVSController(
+            camera_matrix=camera_matrix,
+            extrinsic_matrix=self.coordinate_transformer.T_flange2cam,
+            lambda_gain=0.5,
+            pixel_tolerance=3.0
+        )
+
+        # 获取深度估计器（如果有）
+        depth_estimator = getattr(self.controller, 'z_controller', None)
+
+        # 运行记忆阶段
+        import cv2
+
+        cv2.namedWindow("IBVS Memory", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("IBVS Memory", 800, 600)
+
+        memory_captured = False
+
+        while True:
+            image = camera.read()
+            if image is None:
+                continue
+
+            display = image.copy()
+
+            # 检测标记
+            state = self.controller.detector.detect_dual_marker_state(image)
+
+            # 绘制检测结果
+            if state.workpiece_detected:
+                for m in state.workpiece_markers:
+                    if m:
+                        cv2.circle(display, (int(m[0]), int(m[1])), 8, (0, 255, 0), -1)
+                        cv2.circle(display, (int(m[0]), int(m[1])), 10, (255, 255, 255), 2)
+
+            if state.slot_detected:
+                for m in state.slot_markers:
+                    if m:
+                        cv2.circle(display, (int(m[0]), int(m[1])), 8, (0, 0, 255), -1)
+                        cv2.circle(display, (int(m[0]), int(m[1])), 10, (255, 255, 255), 2)
+
+            # 状态显示
+            status = "CAPTURED" if memory_captured else "READY"
+            color = (0, 255, 0) if memory_captured else (0, 255, 255)
+            cv2.putText(display, f"Status: {status}", (10, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+            cv2.putText(display, "[M]emorize [Z]Lift+15cm [S]ave [L]oad [Q]uit", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+            # 显示标记数量
+            wp_count = sum(1 for m in state.workpiece_markers if m is not None)
+            slot_count = sum(1 for m in state.slot_markers if m is not None)
+            cv2.putText(display, f"Markers: WP={wp_count} Slot={slot_count} (Need 4+)", (10, 90),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+            # 显示当前高度和操作提示
+            joints = self.controller.get_joint_states()
+            current_height = 0
+            current_pose = None
+            if joints is not None and self.forward_kinematics:
+                try:
+                    current_pose = self.forward_kinematics.compute(joints)
+                    current_height = current_pose.z
+                    cv2.putText(display, f"Height: {current_height*100:.1f}cm", (10, 120),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
+                except:
+                    pass
+
+            # 显示操作提示
+            cv2.putText(display, "Tip: Put workpiece in slot, then press Z to lift 15cm", (10, display.shape[0]-20),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+
+            cv2.imshow("IBVS Memory", display)
+            key = cv2.waitKey(10) & 0xFF
+
+            if key == ord('z') or key == ord('Z'):
+                # 自动沿Z轴抬高15cm（XY不变）
+                if current_pose is None:
+                    print("\n⚠ 无法获取当前位姿")
+                    continue
+
+                print("\n正在沿Z轴抬高...")
+                try:
+                    # 获取当前位姿
+                    current_x = current_pose.x
+                    current_y = current_pose.y
+                    current_z = current_pose.z
+                    current_rot = current_pose.quaternion
+
+                    # 计算目标高度（抬高15cm）
+                    target_z = current_z + 0.15
+
+                    # 调用控制器移动（只改变Z，XY和旋转不变）
+                    if hasattr(self.controller, 'move_to_position'):
+                        print(f"  当前高度: {current_z*100:.1f}cm")
+                        print(f"  目标高度: {target_z*100:.1f}cm")
+
+                        # 分步抬高，更安全
+                        step_height = 0.03  # 每步3cm
+                        total_steps = int(0.15 / step_height)
+                        actual_lift = 0.0
+
+                        for step in range(total_steps):
+                            step_z = current_z + (step + 1) * step_height
+
+                            success = self.controller.move_to_position(
+                                current_x, current_y, step_z,
+                                current_rot[0], current_rot[1], current_rot[2], current_rot[3]
+                            )
+
+                            if not success:
+                                print(f"  ⚠ 第{step+1}步移动失败，已抬高约 {step * step_height * 100:.1f}cm")
+                                break
+
+                            time.sleep(0.3)  # 等待稳定
+
+                            # 验证实际位置
+                            new_joints = self.controller.get_joint_states()
+                            if new_joints is not None:
+                                try:
+                                    new_pose = self.forward_kinematics.compute(new_joints)
+                                    actual_z = new_pose.z
+                                    actual_lift = actual_z - current_z
+                                    print(f"  步骤 {step+1}/{total_steps}: 实际高度 {actual_z*100:.1f}cm")
+
+                                    # 检查XY是否偏移
+                                    xy_error = np.sqrt((new_pose.x - current_x)**2 + (new_pose.y - current_y)**2)
+                                    if xy_error > 0.005:  # 5mm
+                                        print(f"    ⚠ XY偏移: {xy_error*1000:.1f}mm")
+                                except:
+                                    pass
+
+                        if actual_lift > 0.1:  # 至少抬高10cm
+                            print(f"\n✓ 抬高完成: 实际抬高 {actual_lift*100:.1f}cm")
+                            print("  如果标记可见，请按 M 记忆")
+                        else:
+                            print(f"\n⚠ 抬高不足 ({actual_lift*100:.1f}cm)，可能受到关节限位限制")
+                            print("  建议：")
+                            print("  1. 调整机器人姿态后重试")
+                            print("  2. 或手动使用示教器抬高")
+
+                    else:
+                        print("\n⚠ 控制器不支持 move_to_position 方法")
+                        print("  请手动使用示教器抬高：")
+                        print("  1. 切换到直线模式")
+                        print("  2. 只操作Z轴方向")
+                        print("  3. 抬高约15cm")
+                        print("  4. 注意观察是否有关节限位警告")
+
+                except Exception as e:
+                    print(f"\n✗ 抬高失败: {e}")
+                    print("  可能原因：")
+                    print("  - 关节到达限位")
+                    print("  - 逆运动学无解（奇异点）")
+                    print("  - 目标位置超出工作空间")
+                    print("\n  请尝试：")
+                    print("  1. 调整机器人姿态")
+                    print("  2. 使用示教器手动抬高")
+                    print("  3. 减小抬高距离")
+
+            elif key == ord('m') or key == ord('M'):
+                # 记忆当前位置
+                if wp_count + slot_count < 4:
+                    print(f"\n⚠ 标记数量不足 ({wp_count + slot_count}/4)")
+                    continue
+
+                if joints is None:
+                    print("\n⚠ 无法获取关节状态")
+                    continue
+
+                try:
+                    pose = self.forward_kinematics.compute(joints)
+                    flange_pos = pose.get_position()
+                    flange_rot = pose.quaternion
+
+                    # 获取深度
+                    depth = None
+                    if depth_estimator and hasattr(depth_estimator, 'get_depth_estimate'):
+                        depth_est = depth_estimator.get_depth_estimate()
+                        if depth_est and depth_est.valid:
+                            depth = depth_est.depth_m
+
+                    # 收集特征点
+                    workpiece_markers = [m for m in state.workpiece_markers if m is not None]
+                    slot_markers = [m for m in state.slot_markers if m is not None]
+
+                    # 记忆特征点
+                    success = self.ibvs_controller.memorize_from_markers(
+                        workpiece_markers=workpiece_markers,
+                        slot_markers=slot_markers,
+                        flange_position=flange_pos,
+                        flange_rotation=flange_rot,
+                        depth=depth
+                    )
+
+                    if success:
+                        memory_captured = True
+
+                except Exception as e:
+                    print(f"\n✗ 记忆失败: {e}")
+
+            elif key == ord('s') or key == ord('S'):
+                # 保存记忆
+                if self.ibvs_controller and self.ibvs_controller.state.memorized:
+                    output_path = Path(__file__).parent / "ibvs_memory.json"
+                    self.ibvs_controller.save_memory(str(output_path))
+                else:
+                    print("\n⚠ 请先按M记忆特征点")
+
+            elif key == ord('l') or key == ord('L'):
+                # 加载记忆
+                input_path = Path(__file__).parent / "ibvs_memory.json"
+                if input_path.exists():
+                    if self.ibvs_controller is None:
+                        self.ibvs_controller = VirtualIBVSController(
+                            camera_matrix=camera_matrix,
+                            extrinsic_matrix=self.coordinate_transformer.T_flange2cam
+                        )
+                    if self.ibvs_controller.load_memory(str(input_path)):
+                        memory_captured = True
+                else:
+                    print("\n⚠ 未找到保存的记忆文件")
+
+            elif key == ord('q') or key == ord('Q'):
+                break
+
+        cv2.destroyWindow("IBVS Memory")
+        return memory_captured
+
+    def ibvs_alignment_phase(self):
+        """
+        IBVS对齐阶段 - 盲插控制
+
+        即使相机被遮挡，也能通过虚拟重投影精确对齐。
+        """
+        if not _has_ibvs:
+            print("✗ IBVS模块未加载")
+            return False
+
+        if not self.controller:
+            print("请先连接设备")
+            return False
+
+        if self.ibvs_controller is None or not self.ibvs_controller.state.memorized:
+            # 尝试加载记忆
+            input_path = Path(__file__).parent / "ibvs_memory.json"
+            if input_path.exists():
+                if self.ibvs_controller is None:
+                    # 需要先初始化
+                    if self.coordinate_transformer is None:
+                        if not self.load_coordinate_transformer():
+                            print("✗ 请先完成手眼标定")
+                            return False
+
+                    camera_matrix = np.array([
+                        [500.0, 0, 320.0],
+                        [0, 500.0, 240.0],
+                        [0, 0, 1]
+                    ], dtype=np.float64)
+
+                    self.ibvs_controller = VirtualIBVSController(
+                        camera_matrix=camera_matrix,
+                        extrinsic_matrix=self.coordinate_transformer.T_flange2cam,
+                        lambda_gain=0.5,
+                        pixel_tolerance=3.0
+                    )
+
+                self.ibvs_controller.load_memory(str(input_path))
+            else:
+                print("✗ 请先执行IBVS记忆阶段 (选项 M)")
+                return False
+
+        if self.forward_kinematics is None:
+            print("✗ 正运动学未初始化")
+            return False
+
+        print("\n" + "="*60)
+        print("IBVS 对齐阶段 - 盲插控制")
+        print("="*60)
+        print("""
+原理：
+  利用记忆的3D特征点坐标，通过正运动学实时计算"虚拟像素"。
+  即使相机被遮挡，也能精确对齐。
+
+操作步骤：
+  1. 移动机器人到卡槽上方
+  2. 按 'A' 开始自动IBVS对齐
+  3. 按 'M' 单步对齐
+  4. 按 'Q' 退出
+
+特点：
+  - 不依赖实时图像
+  - 控制频率可达1000Hz
+  - 毫米级精度
+""")
+
+        # 获取相机（可选，用于调试显示）
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera = self.cameras.get(arm_config.camera_name)
+
+        import cv2
+
+        if camera:
+            cv2.namedWindow("IBVS Alignment", cv2.WINDOW_NORMAL)
+
+        success = False
+        iteration = 0
+        max_iterations = 500
+        auto_mode = False
+
+        while iteration < max_iterations:
+            # 获取当前位姿
+            joints = self.controller.get_joint_states()
+            if joints is None:
+                print("\n⚠ 无法获取关节状态")
+                break
+
+            try:
+                pose = self.forward_kinematics.compute(joints)
+                flange_pos = pose.get_position()
+                flange_rot = pose.quaternion
+            except Exception as e:
+                print(f"\n⚠ 正运动学计算失败: {e}")
+                break
+
+            # 计算速度指令
+            V_flange, info = self.ibvs_controller.calculate_velocity(flange_pos, flange_rot)
+
+            if "error" in info:
+                print(f"\n⚠ 控制错误: {info['error']}")
+                break
+
+            # 调试显示
+            if camera:
+                image = camera.read()
+                if image is not None:
+                    display = image.copy()
+
+                    # 绘制虚拟特征点（紫色）和目标位置（绿色）
+                    for i, (u, v) in enumerate(info.get("virtual_pixels", [])):
+                        cv2.circle(display, (int(u), int(v)), 8, (255, 0, 255), -1)
+                        if i < len(self.ibvs_controller.state.feature_points):
+                            target = self.ibvs_controller.state.feature_points[i].target_pixel
+                            cv2.circle(display, (int(target[0]), int(target[1])), 8, (0, 255, 0), 2)
+                            cv2.line(display, (int(u), int(v)), (int(target[0]), int(target[1])), (255, 255, 0), 1)
+
+                    # 显示误差
+                    cv2.putText(display, f"Error: {info['total_error']:.2f}px", (10, 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
+                    status = "ALIGNED!" if info['aligned'] else ("AUTO" if auto_mode else "MANUAL")
+                    color = (0, 255, 0) if info['aligned'] else ((0, 255, 255) if auto_mode else (255, 255, 255))
+                    cv2.putText(display, f"Status: {status}", (10, 60),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+                    cv2.putText(display, "[A]uto [M]anual [Q]uit", (10, display.shape[0]-20),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+                    cv2.imshow("IBVS Alignment", display)
+                    key = cv2.waitKey(1) & 0xFF
+                else:
+                    key = 0
+            else:
+                key = input("\n[A]uto [M]anual [Q]uit: ").strip().upper()
+                if key:
+                    key = ord(key)
+                else:
+                    key = ord('a') if auto_mode else 0
+
+            if key == ord('a') or key == ord('A'):
+                auto_mode = True
+                print("开始自动IBVS对齐...")
+            elif key == ord('m') or key == ord('M'):
+                auto_mode = False
+            elif key == ord('q') or key == ord('Q'):
+                break
+
+            # 检查是否对齐
+            if info["aligned"]:
+                print(f"\n✓ 对齐成功! 最终误差: {info['total_error']:.2f}px")
+                success = True
+                break
+
+            # 执行移动
+            if auto_mode:
+                velocity_scale = 0.8
+                scaled_velocity = V_flange[:3] * velocity_scale
+
+                # 优先级1: 速度控制（最平滑）
+                if hasattr(self.controller, 'has_velocity_control') and \
+                   self.controller.has_velocity_control():
+                    # 直接发送速度指令，连续平滑移动
+                    self.controller.set_cartesian_velocity(
+                        scaled_velocity[0], scaled_velocity[1], scaled_velocity[2]
+                    )
+                    print(f"\r迭代 {iteration}: 误差={info['total_error']:.2f}px [速度控制]   ", end="", flush=True)
+                    time.sleep(0.02)  # 50Hz控制周期
+
+                # 优先级2: 伺服模式（平滑轨迹）
+                elif hasattr(self.controller, 'has_servo_mode') and \
+                     self.controller.has_servo_mode():
+                    dt = 0.05
+                    new_pos = flange_pos + scaled_velocity * dt
+                    self.controller.servo_to_position(
+                        new_pos[0], new_pos[1], new_pos[2],
+                        flange_rot[0], flange_rot[1], flange_rot[2], flange_rot[3],
+                        time_ms=50
+                    )
+                    print(f"\r迭代 {iteration}: 误差={info['total_error']:.2f}px [伺服模式]   ", end="", flush=True)
+                    time.sleep(dt)
+
+                # 优先级3: 位置增量（阶梯式，可能有小抖动）
+                elif hasattr(self.controller, 'move_to_position'):
+                    dt = 0.05
+                    new_pos = flange_pos + scaled_velocity * dt
+                    self.controller.move_to_position(
+                        new_pos[0], new_pos[1], new_pos[2],
+                        flange_rot[0], flange_rot[1], flange_rot[2], flange_rot[3]
+                    )
+                    print(f"\r迭代 {iteration}: 误差={info['total_error']:.2f}px [位置模式]   ", end="", flush=True)
+                    time.sleep(dt)
+
+                else:
+                    print(f"\n✗ 控制器不支持移动方法")
+                    break
+
+                iteration += 1
+
+        if camera:
+            cv2.destroyWindow("IBVS Alignment")
+
+        if not success:
+            print(f"\n⚠ IBVS对齐结束")
+
+        return success
+
     def run_full(self):
         """完整流程"""
         if not self.controller:
@@ -2227,6 +2991,10 @@ def main():
             print("7. 设置对齐目标偏移")
             print("8. 运行对齐 (传统灵敏度方法)")
             print("8.5 手眼标定对齐 (推荐，精度更高)")
+            print("--- IBVS 视觉伺服 (抗遮挡) ---")
+            print("M. IBVS记忆 (采集定妆照)")
+            print("I. IBVS对齐 (盲插控制)")
+            print("---")
             print("9. 完整流程")
             print("10. 连续运行 (10次)")
             print("11. 设置标记面积范围")
@@ -2283,6 +3051,7 @@ def main():
                 print("\n标定选项:")
                 print("  === 手眼标定 (推荐，精度更高) ===")
                 print("  H. 手眼标定 (ChArUco板，一次完成)")
+                print("  T. TCP标定 (探针四点法)")
                 print("  R. 重投影验证 (验证手眼标定精度)")
                 print("  === 传统标定 ===")
                 print("  1. 像素-毫米标定 (基础标定)")
@@ -2308,6 +3077,11 @@ def main():
                     if not system.controller:
                         system.connect()
                     system.hand_eye_calibration()
+                elif calib_choice == "T":
+                    # TCP标定
+                    if not system.controller:
+                        system.connect()
+                    system.tcp_calibration()
                 elif calib_choice == "R":
                     # 重投影验证
                     system.reprojection_verification()
@@ -2428,6 +3202,18 @@ def main():
                 if not system.controller:
                     system.connect()
                 system.align_with_hand_eye()
+
+            elif choice.upper() == "M":
+                # IBVS记忆阶段
+                if not system.controller:
+                    system.connect()
+                system.ibvs_memory_phase()
+
+            elif choice.upper() == "I":
+                # IBVS对齐阶段
+                if not system.controller:
+                    system.connect()
+                system.ibvs_alignment_phase()
 
             elif choice == "9":
                 if not system.controller:

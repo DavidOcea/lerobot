@@ -62,6 +62,42 @@ class RobotInterface(ABC):
         """设置夹爪"""
         pass
 
+    @abstractmethod
+    def set_cartesian_velocity(self, vx: float, vy: float, vz: float,
+                                wx: float = 0, wy: float = 0, wz: float = 0) -> bool:
+        """设置笛卡尔速度（平滑IBVS所需）
+
+        Args:
+            vx, vy, vz: 线速度 (m/s)
+            wx, wy, wz: 角速度 (rad/s)
+        """
+        pass
+
+    @abstractmethod
+    def servo_to_position(self, x: float, y: float, z: float,
+                          qx: float, qy: float, qz: float, qw: float,
+                          time_ms: int = 100) -> bool:
+        """伺服模式移动（平滑轨迹）
+
+        与move_to_position的区别：
+        - move_to_position: 点到点，可能有加速减速
+        - servo_to_position: 流式位置，平滑轨迹，适合连续控制
+
+        Args:
+            x, y, z: 目标位置
+            qx, qy, qz, qw: 目标姿态四元数
+            time_ms: 到达目标的时间（毫秒）
+        """
+        pass
+
+    def has_velocity_control(self) -> bool:
+        """是否支持速度控制"""
+        return False
+
+    def has_servo_mode(self) -> bool:
+        """是否支持伺服模式"""
+        return False
+
 
 class MockRobot(RobotInterface):
     """模拟机器人（用于测试）"""
@@ -111,4 +147,27 @@ class MockRobot(RobotInterface):
     def set_gripper(self, value: float) -> bool:
         self.gripper = value
         print(f"[Mock] 夹爪 -> {value:.1f}")
+        return True
+
+    def set_cartesian_velocity(self, vx: float, vy: float, vz: float,
+                                wx: float = 0, wy: float = 0, wz: float = 0) -> bool:
+        """模拟速度控制（通过积分更新位置）"""
+        dt = 0.05  # 50ms周期
+        self.tcp_pos += np.array([vx, vy, vz]) * dt
+        print(f"[Mock] 速度 ({vx:.3f}, {vy:.3f}, {vz:.3f}) m/s")
+        return True
+
+    def servo_to_position(self, x: float, y: float, z: float,
+                          qx: float, qy: float, qz: float, qw: float,
+                          time_ms: int = 100) -> bool:
+        """模拟伺服模式"""
+        self.tcp_pos = np.array([x, y, z])
+        self.tcp_rot = np.array([qx, qy, qz, qw])
+        print(f"[Mock] Servo到 ({x:.3f}, {y:.3f}, {z:.3f})")
+        return True
+
+    def has_velocity_control(self) -> bool:
+        return True
+
+    def has_servo_mode(self) -> bool:
         return True
