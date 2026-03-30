@@ -240,21 +240,27 @@ class SynchronizedCapture:
             CaptureResult: 捕获结果
         """
         max_retries = 3
+        last_error = "未知错误"
 
         for attempt in range(max_retries):
             result = self.capture()
 
             if not result.success:
+                last_error = result.error_message or "捕获失败"
+                print(f"  重试 {attempt + 1}/{max_retries} ({last_error})")
+                time.sleep(0.1)
                 continue
 
             if result.sync_delay_ms <= self.max_sync_delay_ms:
                 return result
 
-            print(f"  重试 {attempt + 1}/{max_retries} (延迟: {result.sync_delay_ms:.1f}ms)")
+            last_error = f"同步延迟超标: {result.sync_delay_ms:.1f}ms"
+            print(f"  重试 {attempt + 1}/{max_retries} ({last_error})")
             time.sleep(0.1)
 
-        # 返回最后一次结果，即使延迟超标
-        result.error_message = f"同步延迟超标: {result.sync_delay_ms:.1f}ms"
+        # 返回最后一次结果，带上正确的错误信息
+        result.success = False
+        result.error_message = last_error
         return result
 
     def close(self):
