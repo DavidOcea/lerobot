@@ -1186,33 +1186,31 @@ class PrecisionPlaceSystem:
             print("="*60)
             print("""
 操作流程:
-  1. 相机拍摄 → 显示ChArUco角点编号
-  2. 鼠标点击要验证的角点 → 系统记录像素坐标
-  3. 探针戳该角点 → 按 'P' 记录世界坐标
+  1. 相机距离较远时拍摄 → 显示ChArUco角点编号
+  2. 鼠标点击要验证的角点 → 系统立即记录像素坐标
+  3. 移动探针戳该角点 → 按 'P' 记录世界坐标（此时可遮挡）
   4. 重复采集4+个角点 → 按 'V' 验证
 
-优势:
-  - 角点像素位置自动检测（精确）
-  - 点击确认明确角点编号
-  - 一个标定板可验证多个角点
+注意: 点击选择角点时相机需能检测到角点
+      探针戳角点时可遮挡（像素位置已记录）
 """)
 
-            verification_points = []  # [{'corner_id': int, 'pixel_pos': tuple, 'world_pos': array}, ...]
-            current_corner_id = None  # 当前选中的角点编号
+            # 验证点存储结构: {'corner_id': int, 'pixel_pos': tuple(已记录), 'world_pos': None/array}
+            verification_points = []
+            current_selection = None  # {'corner_id': int, 'pixel_pos': tuple}
 
             cv2.namedWindow("ChArUco Verification", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("ChArUco Verification", 800, 600)
 
-            print("\n按键: [鼠标点击]选择角点 [P]记录探针位置 [V]验证 [Q]退出")
-            print("提示: 先点击角点确认编号，再用探针戳该角点并按P")
+            print("\n按键: [鼠标点击]选择角点并记录像素 [P]记录探针世界坐标 [V]验证 [Q]退出")
+            print("提示: 先在远处点击角点（记录像素），再移近探针戳点并按P")
 
             # 鼠标回调
-            clicked_corner = {'id': None, 'pixel': None}
+            clicked_corner = {'pixel': None}
 
             def mouse_callback(event, x, y, flags, param):
                 if event == cv2.EVENT_LBUTTONDOWN:
                     clicked_corner['pixel'] = (x, y)
-                    clicked_corner['id'] = None  # 需要在主循环中查找最近角点
 
             cv2.setMouseCallback("ChArUco Verification", mouse_callback)
 
@@ -1233,56 +1231,74 @@ class PrecisionPlaceSystem:
                         corner_pos = corner.flatten()
                         detected_corners.append({'id': i, 'pixel': corner_pos})
 
-                        # 绘制角点
+                        # 绘制角点（绿色）
                         cv2.circle(display, (int(corner_pos[0]), int(corner_pos[1])), 5, (0, 255, 0), -1)
                         cv2.putText(display, str(i), (int(corner_pos[0]) + 5, int(corner_pos[1]) - 5),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
-                    # 高亮已验证的角点
-                    for pt in verification_points:
-                        corner_id = pt['corner_id']
-                        if corner_id < len(detected_corners):
-                            corner_pos = detected_corners[corner_id]['pixel']
-                            if pt.get('world_pos') is not None:
-                                cv2.circle(display, (int(corner_pos[0]), int(corner_pos[1])), 8, (0, 0, 255), 2)
-                                cv2.putText(display, f"#{corner_id} OK", (int(corner_pos[0]) + 10, int(corner_pos[1])),
-                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                # 显示已完成的验证点（红色）
+                for pt in verification_points:
+                    corner_id = pt['corner_id']
+                    pixel_pos = pt['pixel_pos']
+                    cv2.circle(display, (int(pixel_pos[0]), int(pixel_pos[1])), 8, (0, 0, 255), 2)
+                    cv2.putText(display, f"#{corner_id} OK", (int(pixel_pos[0]) + 10, int(pixel_pos[1])),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
-                    # 高亮当前选中的角点
-                    if current_corner_id is not None and current_corner_id < len(detected_corners):
-                        corner_pos = detected_corners[current_corner_id]['pixel']
-                        cv2.circle(display, (int(corner_pos[0]), int(corner_pos[1])), 12, (255, 0, 0), 3)
-                        cv2.putText(display, f"#{current_corner_id} SELECTED", (int(corner_pos[0]) - 20, int(corner_pos[1]) - 20),
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                # 显示当前选中的角点（蓝色）- 使用已记录的像素位置
+                if current_selection is not None:
+                    pixel_pos = current_selection['pixel_pos']
+                    corner_id = current_selection['corner_id']
+                    cv2.circle(display, (int(pixel_pos[0]), int(pixel_pos[1])), 12, (255, 0, 0), 3)
+                    cv2.putText(display, f"#{corner_id} SELECTED", (int(pixel_pos[0]) - 20, int(pixel_pos[1]) - 20),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                    cv2.putText(display, "Press P to record world coord", (int(pixel_pos[0]), int(pixel_pos[1]) + 30),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
 
-                # 处理鼠标点击
+                # 处理鼠标点击 - 立即记录像素位置
                 if clicked_corner['pixel'] is not None:
-                    click_x, click_y = clicked_corner['pixel']
-                    # 找最近的角点
-                    min_dist = float('inf')
-                    nearest_id = None
-                    for corner in detected_corners:
-                        cx, cy = corner['pixel']
-                        dist = np.sqrt((click_x - cx)**2 + (click_y - cy)**2)
-                        if dist < min_dist and dist < 30:  # 30像素阈值
-                            min_dist = dist
-                            nearest_id = corner['id']
+                    if len(detected_corners) > 0:
+                        click_x, click_y = clicked_corner['pixel']
+                        # 找最近的角点
+                        min_dist = float('inf')
+                        nearest_id = None
+                        nearest_pixel = None
+                        for corner in detected_corners:
+                            cx, cy = corner['pixel']
+                            dist = np.sqrt((click_x - cx)**2 + (click_y - cy)**2)
+                            if dist < min_dist and dist < 30:  # 30像素阈值
+                                min_dist = dist
+                                nearest_id = corner['id']
+                                nearest_pixel = corner['pixel']
 
-                    if nearest_id is not None:
-                        current_corner_id = nearest_id
-                        current_pixel = detected_corners[nearest_id]['pixel']
-                        print(f"\n  ✓ 选择角点 #{nearest_id}")
-                        print(f"    像素位置 = ({current_pixel[0]:.1f}, {current_pixel[1]:.1f})")
-                        print("    请用探针戳该角点，然后按 'P' 记录世界坐标")
+                        if nearest_id is not None:
+                            # 检查是否已验证该角点
+                            existing = [pt for pt in verification_points if pt['corner_id'] == nearest_id]
+                            if existing:
+                                print(f"  ⚠ 角点 #{nearest_id} 已验证，请选择其他角点")
+                            else:
+                                # 立即记录像素位置
+                                current_selection = {
+                                    'corner_id': nearest_id,
+                                    'pixel_pos': nearest_pixel
+                                }
+                                print(f"\n  ✓ 选择角点 #{nearest_id}")
+                                print(f"    像素位置 = ({nearest_pixel[0]:.1f}, {nearest_pixel[1]:.1f}) [已记录]")
+                                print("    请移动探针戳该角点，然后按 'P' 记录世界坐标")
+                        else:
+                            print("  ⚠ 点击位置不接近任何角点（阈值30像素）")
                     else:
-                        print("  ⚠ 未检测到角点或点击位置不接近任何角点")
+                        print("  ⚠ 未检测到ChArUco角点，请调整相机距离或角度")
 
                     clicked_corner['pixel'] = None  # 重置
 
                 # 显示状态信息
                 cv2.putText(display, f"Verified: {len(verification_points)}/4+", (10, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                cv2.putText(display, "[Click] select corner [P] probe [V] verify [Q] quit", (10, 60),
+
+                status_text = "[Click] select [P] probe [V] verify [Q] quit"
+                if current_selection is not None:
+                    status_text = f"[P] record world coord for #{current_selection['corner_id']} [V] verify [Q] quit"
+                cv2.putText(display, status_text, (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
                 if tcp_result:
@@ -1292,26 +1308,23 @@ class PrecisionPlaceSystem:
                     cv2.putText(display, "TCP: N/A", (10, 90),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 1)
 
-                if current_corner_id is not None:
-                    cv2.putText(display, f"Corner #{current_corner_id} selected", (10, 120),
+                if current_selection is not None:
+                    cv2.putText(display, f"Corner #{current_selection['corner_id']} selected (pixel recorded)", (10, 120),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 1)
-                else:
-                    cv2.putText(display, "Click a corner to select", (10, 120),
+                elif len(detected_corners) > 0:
+                    cv2.putText(display, f"Detected {len(detected_corners)} corners - click to select", (10, 120),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+                else:
+                    cv2.putText(display, "No corners detected - adjust camera distance", (10, 120),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 1)
 
                 cv2.imshow("ChArUco Verification", display)
                 key = cv2.waitKey(10) & 0xFF
 
                 if key == ord('p') or key == ord('P'):
-                    # 记录探针位置（世界坐标）
-                    if current_corner_id is None:
+                    # 记录探针位置（世界坐标）- 不需要重新检测角点
+                    if current_selection is None:
                         print("  ⚠ 请先点击选择要验证的角点")
-                        continue
-
-                    # 检查是否已验证该角点
-                    existing = [pt for pt in verification_points if pt['corner_id'] == current_corner_id]
-                    if existing:
-                        print(f"  ⚠ 角点 #{current_corner_id} 已验证，请选择其他角点")
                         continue
 
                     joints = self.controller.get_joint_states()
@@ -1335,27 +1348,24 @@ class PrecisionPlaceSystem:
                         else:
                             world_pos = flange_pos
 
-                        # 获取当前角点的像素位置
-                        if current_corner_id < len(detected_corners):
-                            pixel_pos = detected_corners[current_corner_id]['pixel']
-                        else:
-                            print("  ✗ 角点检测丢失，请重新选择")
-                            continue
+                        # 使用已记录的像素位置（点击时已保存）
+                        corner_id = current_selection['corner_id']
+                        pixel_pos = current_selection['pixel_pos']
 
                         # 添加验证点
                         verification_points.append({
-                            'corner_id': current_corner_id,
+                            'corner_id': corner_id,
                             'pixel_pos': pixel_pos,
                             'world_pos': world_pos
                         })
 
-                        print(f"  ✓ 角点 #{current_corner_id} 验证数据已记录:")
-                        print(f"    像素位置 = ({pixel_pos[0]:.1f}, {pixel_pos[1]:.1f})")
-                        print(f"    世界坐标 = ({world_pos[0]:.4f}, {world_pos[1]:.4f}, {world_pos[2]:.4f}) m")
+                        print(f"  ✓ 角点 #{corner_id} 验证数据已完成:")
+                        print(f"    像素位置 = ({pixel_pos[0]:.1f}, {pixel_pos[1]:.1f}) [之前记录]")
+                        print(f"    世界坐标 = ({world_pos[0]:.4f}, {world_pos[1]:.4f}, {world_pos[2]:.4f}) m [刚刚记录]")
                         print(f"    已采集: {len(verification_points)}/4+")
 
                         # 清除当前选中，准备下一个
-                        current_corner_id = None
+                        current_selection = None
                     else:
                         print("  ✗ 正运动学未启用，无法记录TCP位置")
 
