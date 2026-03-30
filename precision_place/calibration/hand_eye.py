@@ -44,10 +44,10 @@ class CalibrationResult:
     # 表示: 法兰坐标系 -> 相机坐标系 的变换
     extrinsic_matrix: np.ndarray = field(default_factory=lambda: np.eye(4))
 
-    # 旋转矩阵 (3x3)
+    # 旋转矩阵 (3x3) - 法兰到相机的旋转
     rotation_matrix: np.ndarray = field(default_factory=lambda: np.eye(3))
 
-    # 平移向量 (3x1, 单位: 米)
+    # 平移向量 (3x1, 单位: 米) - 法兰到相机的平移
     translation_vector: np.ndarray = field(default_factory=lambda: np.zeros(3))
 
     # 重投影误差 (像素)
@@ -61,6 +61,27 @@ class CalibrationResult:
 
     # 是否有效
     valid: bool = False
+
+    # 属性别名（便于理解和使用）
+    @property
+    def R_flange2cam(self) -> np.ndarray:
+        """法兰到相机的旋转矩阵 (等同于 rotation_matrix)"""
+        return self.rotation_matrix
+
+    @property
+    def t_flange2cam(self) -> np.ndarray:
+        """法兰到相机的平移向量 (等同于 translation_vector)"""
+        return self.translation_vector
+
+    @property
+    def R_cam2flange(self) -> np.ndarray:
+        """相机到法兰的旋转矩阵 (rotation_matrix的逆)"""
+        return self.rotation_matrix.T
+
+    @property
+    def t_cam2flange(self) -> np.ndarray:
+        """相机到法兰的平移向量"""
+        return -self.rotation_matrix.T @ self.translation_vector
 
 
 class HandEyeCalibrator:

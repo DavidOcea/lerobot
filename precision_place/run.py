@@ -1123,6 +1123,22 @@ class PrecisionPlaceSystem:
             print("请先连接设备")
             return
 
+        # 检查/初始化正运动学（方法2需要）
+        if self.forward_kinematics is None:
+            if self.urdf_path is None:
+                print("\n重投影验证需要URDF文件来计算正运动学（方法2需要）。")
+                urdf_input = input("请输入URDF文件路径 (或按Enter跳过，只能使用方法1): ").strip()
+                if urdf_input:
+                    self.urdf_path = urdf_input
+
+            if self.urdf_path and _has_fk:
+                try:
+                    self.forward_kinematics = create_fk_from_urdf(self.urdf_path, self.current_arm)
+                    print(f"✓ 正运动学已初始化")
+                except Exception as e:
+                    print(f"⚠ 正运动学初始化失败: {e}")
+                    self.forward_kinematics = None
+
         # 获取相机
         arm_config = ARM_CONFIGS.get(self.current_arm)
         camera = self.cameras.get(arm_config.camera_name)
@@ -1218,7 +1234,12 @@ class PrecisionPlaceSystem:
             print("  移动机械臂到不同姿态，标定板在世界坐标系的位置应保持不变")
 
             if not self.forward_kinematics:
-                print("✗ 需要正运动学支持，请重新运行并输入URDF路径")
+                print("\n✗ 正运动学未初始化")
+                if self.urdf_path:
+                    print("  URDF加载失败，请检查文件路径和格式")
+                else:
+                    print("  请重新运行并输入有效的URDF路径")
+                print("  或使用方法1（TCP探针验证）")
                 return
 
             calibrator = HandEyeCalibrator(camera_matrix, dist_coeffs)
