@@ -163,6 +163,8 @@ class SynchronizedCapture:
 
             if joints is None:
                 result.error_message = "无法获取关节状态"
+                if hasattr(self.controller, 'passive_mode') and self.controller.passive_mode:
+                    result.error_message += "（请确认示教程序已启用 share_status=true）"
                 return result
 
             # 计算同步延迟
