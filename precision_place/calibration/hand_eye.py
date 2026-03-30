@@ -14,7 +14,7 @@
 5. 重投影误差验证
 
 使用方法：
-    from precision_place.hand_eye_calibration import HandEyeCalibrator
+    from precision_place.calibration.hand_eye import HandEyeCalibrator
 
     calibrator = HandEyeCalibrator(camera_matrix, dist_coeffs)
     calibrator.capture_pose(image, flange_pose)  # 重复多次

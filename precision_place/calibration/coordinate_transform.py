@@ -13,7 +13,7 @@
 4. 像素偏移 → 世界坐标偏移（对齐用）
 
 使用方法：
-    from precision_place.coordinate_transformer import CoordinateTransformer
+    from precision_place.calibration.coordinate_transform import CoordinateTransformer
 
     # 加载外参矩阵
     transformer = CoordinateTransformer.from_calibration_file("hand_eye_extrinsic.yaml")
