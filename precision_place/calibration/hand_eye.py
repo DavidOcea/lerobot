@@ -171,7 +171,7 @@ class HandEyeCalibrator:
             charuco_corners, charuco_ids, marker_corners, marker_ids = \
                 self.charuco_detector.detectBoard(gray)
 
-            if charuco_ids is None or len(charuco_ids) < 4:
+            if charuco_ids is None or len(charuco_ids) < 6:
                 return False, None, None, None
 
             # 估计标定板位姿
