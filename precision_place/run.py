@@ -1138,7 +1138,7 @@ class PrecisionPlaceSystem:
         ], dtype=np.float64)
         dist_coeffs = np.zeros(5)
 
-        from precision_place.hand_eye_calibration import ReprojectionVerifier
+        from precision_place.calibration.hand_eye import ReprojectionVerifier
         verifier = ReprojectionVerifier(camera_matrix, dist_coeffs, result)
 
         print("\n验证方法：")
