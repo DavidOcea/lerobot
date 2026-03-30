@@ -1214,11 +1214,19 @@ class PrecisionPlaceSystem:
                 print("  建议重新进行手眼标定。")
 
         elif method == "2":
-            print("\n简化验证: 检查ChArUco板检测一致性")
-            print("  移动机械臂到不同姿态，检测标定板位置是否一致")
+            print("\n简化验证: 检查ChArUco板在世界坐标系的位置一致性")
+            print("  移动机械臂到不同姿态，标定板在世界坐标系的位置应保持不变")
+
+            if not self.forward_kinematics:
+                print("✗ 需要正运动学支持，请重新运行并输入URDF路径")
+                return
 
             calibrator = HandEyeCalibrator(camera_matrix, dist_coeffs)
-            positions = []
+            positions_world = []  # 世界坐标系下的标定板位置
+
+            # 获取外参矩阵
+            R_flange2cam = result.R_flange2cam
+            t_flange2cam = result.t_flange2cam
 
             print("\n按 'C' 捕获，按 'Q' 完成")
             cv2.namedWindow("Verification", cv2.WINDOW_NORMAL)
@@ -1236,7 +1244,7 @@ class PrecisionPlaceSystem:
                     cv2.putText(display, "Board Detected", (10, 30),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-                cv2.putText(display, f"Captures: {len(positions)}", (10, 60),
+                cv2.putText(display, f"Captures: {len(positions_world)}", (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
                 cv2.putText(display, "[C]apture [Q]uit", (10, 90),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
@@ -1245,26 +1253,69 @@ class PrecisionPlaceSystem:
                 key = cv2.waitKey(10) & 0xFF
 
                 if key == ord('c') or key == ord('C'):
-                    if success:
-                        positions.append(tvec.flatten())
-                        print(f"  捕获: tvec = ({tvec[0,0]:.4f}, {tvec[1,0]:.4f}, {tvec[2,0]:.4f})")
+                    if not success:
+                        print("  ⚠ 未检测到标定板")
+                        continue
+
+                    # 获取当前法兰位姿
+                    joints = self.controller.get_joint_states()
+                    if joints is None:
+                        print("  ⚠ 无法获取关节状态")
+                        continue
+
+                    try:
+                        pose = self.forward_kinematics.compute(joints)
+                        flange_pos = pose.get_position()
+                        flange_rot = pose.quaternion
+                    except Exception as e:
+                        print(f"  ⚠ 正运动学计算失败: {e}")
+                        continue
+
+                    # 计算标定板在世界坐标系的位置
+                    # P_world = R_flange2world @ (R_cam2flange @ P_cam + t_cam2flange) + t_flange2world
+                    from scipy.spatial.transform import Rotation as R
+
+                    # 法兰到世界的变换
+                    R_flange2world = R.from_quat(flange_rot).as_matrix()
+                    t_flange2world = flange_pos
+
+                    # 相机到法兰的变换（外参）
+                    R_cam2flange = R_flange2cam.T  # 逆变换
+                    t_cam2flange = -R_flange2cam.T @ t_flange2cam
+
+                    # 标定板在相机坐标系的位置
+                    P_cam = tvec.flatten()
+
+                    # 标定板在法兰坐标系的位置
+                    P_flange = R_cam2flange @ P_cam + t_cam2flange
+
+                    # 标定板在世界坐标系的位置
+                    P_world = R_flange2world @ P_flange + t_flange2world
+
+                    positions_world.append(P_world)
+                    print(f"  捕获: 世界坐标 = ({P_world[0]:.4f}, {P_world[1]:.4f}, {P_world[2]:.4f}) 米")
+
                 elif key == ord('q') or key == ord('Q'):
                     break
 
             cv2.destroyWindow("Verification")
 
-            if len(positions) >= 3:
-                positions = np.array(positions)
-                mean_pos = np.mean(positions, axis=0)
-                std_pos = np.std(positions, axis=0)
-                print(f"\n标定板位置统计:")
-                print(f"  平均: ({mean_pos[0]:.4f}, {mean_pos[1]:.4f}, {mean_pos[2]:.4f}) 米")
-                print(f"  标准差: ({std_pos[0]:.4f}, {std_pos[1]:.4f}, {std_pos[2]:.4f}) 米")
+            if len(positions_world) >= 3:
+                positions_world = np.array(positions_world)
+                mean_pos = np.mean(positions_world, axis=0)
+                std_pos = np.std(positions_world, axis=0)
 
-                if np.max(std_pos) < 0.005:  # 5mm
-                    print("  ✓ 位置一致性良好")
+                print(f"\n标定板在世界坐标系的位置统计:")
+                print(f"  平均: ({mean_pos[0]:.4f}, {mean_pos[1]:.4f}, {mean_pos[2]:.4f}) 米")
+                print(f"  标准差: ({std_pos[0]*1000:.1f}, {std_pos[1]*1000:.1f}, {std_pos[2]*1000:.1f}) 毫米")
+
+                max_std_mm = np.max(std_pos) * 1000
+                if max_std_mm < 3:  # 3mm
+                    print(f"  ✓ 位置一致性良好 (最大标准差: {max_std_mm:.1f}mm)")
+                elif max_std_mm < 10:  # 10mm
+                    print(f"  ⚠ 位置一致性一般 (最大标准差: {max_std_mm:.1f}mm)")
                 else:
-                    print("  ⚠ 位置波动较大，可能需要重新标定")
+                    print(f"  ✗ 位置波动较大 (最大标准差: {max_std_mm:.1f}mm)，建议重新标定")
 
     def tcp_calibration(self):
         """
