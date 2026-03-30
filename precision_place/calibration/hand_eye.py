@@ -519,7 +519,7 @@ class ReprojectionVerifier:
 
     原理：
     1. 用TCP探针戳出几个验证点的物理坐标（Ground Truth）
-    2. 移动机械臂到多个不同姿态
+    2. 记录拍摄像素时的法兰位姿
     3. 用标定的外参矩阵"脑补"验证点的像素位置
     4. 与实际拍摄的像素位置对比
     5. RMSE < 1.5像素 = 标定正确
@@ -547,18 +547,94 @@ class ReprojectionVerifier:
         # 对应的像素坐标 (由相机检测)
         self.pixel_points: List[Tuple[float, float]] = []
 
+        # 对应的法兰位姿 (拍摄像素时的位姿)
+        self.flange_positions: List[np.ndarray] = []
+        self.flange_rotations: List[np.ndarray] = []
+
     def add_verification_point(self,
                                world_position: np.ndarray,
-                               pixel_position: Tuple[float, float]):
+                               pixel_position: Tuple[float, float],
+                               flange_position: np.ndarray = None,
+                               flange_rotation: np.ndarray = None):
         """
         添加验证点
 
         Args:
             world_position: 世界坐标 [x, y, z] (米)
             pixel_position: 像素坐标 (u, v)
+            flange_position: 拍摄时的法兰位置 (可选，用于逐点验证)
+            flange_rotation: 拍摄时的法兰旋转矩阵 (可选)
         """
         self.world_points.append(np.array(world_position))
         self.pixel_points.append(pixel_position)
+        if flange_position is not None:
+            self.flange_positions.append(np.array(flange_position))
+        if flange_rotation is not None:
+            self.flange_rotations.append(np.array(flange_rotation))
+
+    def verify_with_individual_poses(self) -> Tuple[bool, float]:
+        """
+        验证重投影误差（每个验证点使用各自的法兰位姿）
+
+        Returns:
+            (passed, rmse)
+        """
+        if len(self.world_points) < 4:
+            print(f"验证点不足 ({len(self.world_points)}/4)")
+            return False, 999.0
+
+        if len(self.flange_positions) != len(self.world_points):
+            print("错误: 法兰位姿数量与验证点数量不匹配")
+            return False, 999.0
+
+        errors = []
+
+        for i, (world_pt, pixel_pt, flange_pos, flange_rot) in enumerate(zip(
+                self.world_points, self.pixel_points, self.flange_positions, self.flange_rotations)):
+
+            # 计算相机在世界坐标系中的位姿
+            T_base2flange = np.eye(4)
+            T_base2flange[:3, :3] = flange_rot
+            T_base2flange[:3, 3] = flange_pos
+
+            T_flange2cam = self.extrinsic.extrinsic_matrix
+            T_base2cam = T_base2flange @ T_flange2cam
+            T_cam2base = np.linalg.inv(T_base2cam)
+
+            # 将世界坐标转换到相机坐标系
+            P_world = np.append(world_pt, 1.0)  # 齐次坐标
+            P_cam = T_cam2base @ P_world
+
+            # 透视投影
+            X, Y, Z = P_cam[0], P_cam[1], P_cam[2]
+            if Z <= 0:
+                continue
+
+            fx = self.camera_matrix[0, 0]
+            fy = self.camera_matrix[1, 1]
+            cx = self.camera_matrix[0, 2]
+            cy = self.camera_matrix[1, 2]
+
+            u_proj = fx * X / Z + cx
+            v_proj = fy * Y / Z + cy
+
+            # 计算误差
+            error = np.sqrt((u_proj - pixel_pt[0])**2 + (v_proj - pixel_pt[1])**2)
+            errors.append(error)
+            print(f"  点 #{i}: 像素误差 = {error:.2f} px")
+
+        if len(errors) == 0:
+            return False, 999.0
+
+        rmse = np.sqrt(np.mean(np.array(errors)**2))
+
+        print(f"\n重投影误差: RMSE = {rmse:.2f} 像素")
+        if rmse < 1.5:
+            print("  ✓ 验证通过")
+            return True, rmse
+        else:
+            print("  ✗ 验证失败，建议重新标定")
+            return False, rmse
 
     def verify(self,
                flange_position: np.ndarray,

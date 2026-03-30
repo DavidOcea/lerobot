@@ -1195,9 +1195,9 @@ class PrecisionPlaceSystem:
       探针戳角点时可遮挡（像素位置已记录）
 """)
 
-            # 验证点存储结构: {'corner_id': int, 'pixel_pos': tuple(已记录), 'world_pos': None/array}
+            # 验证点存储结构: {'corner_id': int, 'pixel_pos': tuple, 'flange_pos': array, 'flange_rot': array, 'world_pos': None/array}
             verification_points = []
-            current_selection = None  # {'corner_id': int, 'pixel_pos': tuple}
+            current_selection = None  # {'corner_id': int, 'pixel_pos': tuple, 'flange_pos': array, 'flange_rot': array}
 
             cv2.namedWindow("ChArUco Verification", cv2.WINDOW_NORMAL)
             cv2.resizeWindow("ChArUco Verification", 800, 600)
@@ -1276,13 +1276,32 @@ class PrecisionPlaceSystem:
                             if existing:
                                 print(f"  ⚠ 角点 #{nearest_id} 已验证，请选择其他角点")
                             else:
-                                # 立即记录像素位置
+                                # 获取当前法兰位姿（拍摄像素时的位姿）
+                                joints = self.controller.get_joint_states()
+                                if joints is None:
+                                    print("  ✗ 无法获取关节状态")
+                                    clicked_corner['pixel'] = None
+                                    continue
+
+                                if self.forward_kinematics:
+                                    pose = self.forward_kinematics.compute(joints)
+                                    flange_pos = pose.get_position()
+                                    flange_rot = pose.rotation_matrix
+                                else:
+                                    print("  ✗ 正运动学未启用")
+                                    clicked_corner['pixel'] = None
+                                    continue
+
+                                # 立即记录像素位置和法兰位姿
                                 current_selection = {
                                     'corner_id': nearest_id,
-                                    'pixel_pos': nearest_pixel
+                                    'pixel_pos': nearest_pixel,
+                                    'flange_pos': flange_pos.copy(),
+                                    'flange_rot': flange_rot.copy()
                                 }
                                 print(f"\n  ✓ 选择角点 #{nearest_id}")
                                 print(f"    像素位置 = ({nearest_pixel[0]:.1f}, {nearest_pixel[1]:.1f}) [已记录]")
+                                print(f"    法兰位姿 = ({flange_pos[0]:.4f}, {flange_pos[1]:.4f}, {flange_pos[2]:.4f}) m [已记录]")
                                 print("    请移动探针戳该角点，然后按 'P' 记录世界坐标")
                         else:
                             print("  ⚠ 点击位置不接近任何角点（阈值30像素）")
@@ -1348,20 +1367,24 @@ class PrecisionPlaceSystem:
                         else:
                             world_pos = flange_pos
 
-                        # 使用已记录的像素位置（点击时已保存）
+                        # 使用已记录的数据
                         corner_id = current_selection['corner_id']
                         pixel_pos = current_selection['pixel_pos']
+                        flange_pos_recorded = current_selection['flange_pos']
+                        flange_rot_recorded = current_selection['flange_rot']
 
-                        # 添加验证点
+                        # 添加验证点（包含拍摄时的法兰位姿）
                         verification_points.append({
                             'corner_id': corner_id,
                             'pixel_pos': pixel_pos,
+                            'flange_pos': flange_pos_recorded,
+                            'flange_rot': flange_rot_recorded,
                             'world_pos': world_pos
                         })
 
                         print(f"  ✓ 角点 #{corner_id} 验证数据已完成:")
-                        print(f"    像素位置 = ({pixel_pos[0]:.1f}, {pixel_pos[1]:.1f}) [之前记录]")
-                        print(f"    世界坐标 = ({world_pos[0]:.4f}, {world_pos[1]:.4f}, {world_pos[2]:.4f}) m [刚刚记录]")
+                        print(f"    像素位置 = ({pixel_pos[0]:.1f}, {pixel_pos[1]:.1f}) [拍摄时记录]")
+                        print(f"    世界坐标 = ({world_pos[0]:.4f}, {world_pos[1]:.4f}, {world_pos[2]:.4f}) m [探针测量]")
                         print(f"    已采集: {len(verification_points)}/4+")
 
                         # 清除当前选中，准备下一个
@@ -1377,26 +1400,17 @@ class PrecisionPlaceSystem:
 
                     print("\n执行重投影验证...")
 
-                    # 添加验证点
+                    # 添加验证点（包含各自的法兰位姿）
                     for pt in verification_points:
-                        verifier.add_verification_point(pt['world_pos'], pt['pixel_pos'])
+                        verifier.add_verification_point(
+                            pt['world_pos'],
+                            pt['pixel_pos'],
+                            pt['flange_pos'],
+                            pt['flange_rot']
+                        )
 
-                    # 获取当前法兰位姿
-                    joints = self.controller.get_joint_states()
-                    if joints is None:
-                        print("✗ 无法获取关节状态")
-                        continue
-
-                    if self.forward_kinematics:
-                        pose = self.forward_kinematics.compute(joints)
-                        flange_pos = pose.get_position()
-                        flange_rot = pose.quaternion
-                    else:
-                        print("⚠ 正运动学未启用，使用默认姿态")
-                        flange_pos = np.array([0.0, 0.0, 0.5])
-                        flange_rot = np.array([0.0, 0.0, 0.0, 1.0])
-
-                    passed, rmse = verifier.verify(flange_pos, flange_rot)
+                    # 使用逐点验证方法
+                    passed, rmse = verifier.verify_with_individual_poses()
 
                     print("\n" + "="*50)
                     print("验证结果")
