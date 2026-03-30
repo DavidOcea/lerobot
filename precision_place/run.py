@@ -1178,47 +1178,142 @@ class PrecisionPlaceSystem:
             else:
                 print("⚠ 未找到TCP标定结果，请先运行TCP标定 (选项 T)")
 
-            print("\n准备验证点:")
-            print("  操作流程:")
-            print("  1. 移动机械臂，用探针尖端精确戳验证点")
-            print("  2. 按 'P' 键记录当前TCP位置（作为验证点的世界坐标）")
-            print("  3. 移开机械臂，相机能看到验证点")
-            print("  4. 按 'C' 键拍摄图像并点击像素位置")
-            print("  5. 重复步骤1-4，采集至少4个验证点")
-            print("  6. 按 'V' 键执行验证")
+            # 创建ChArUco检测器用于检测角点
+            charuco_calibrator = HandEyeCalibrator(camera_matrix, dist_coeffs)
 
-            verification_points = []  # [(world_pos, pixel_pos), ...]
+            print("\n" + "="*60)
+            print("ChArUco角点验证 (推荐)")
+            print("="*60)
+            print("""
+操作流程:
+  1. 相机拍摄 → 显示ChArUco角点编号
+  2. 鼠标点击要验证的角点 → 系统记录像素坐标
+  3. 探针戳该角点 → 按 'P' 记录世界坐标
+  4. 重复采集4+个角点 → 按 'V' 验证
 
-            cv2.namedWindow("TCP Verification", cv2.WINDOW_NORMAL)
-            cv2.resizeWindow("TCP Verification", 800, 600)
+优势:
+  - 角点像素位置自动检测（精确）
+  - 点击确认明确角点编号
+  - 一个标定板可验证多个角点
+""")
 
-            print("\n按键: [P]记录探针位置 [C]拍摄并点击 [V]验证 [Q]退出")
-            print("提示: 先用探针戳验证点，按P记录位置，然后移开机械臂按C拍摄")
+            verification_points = []  # [{'corner_id': int, 'pixel_pos': tuple, 'world_pos': array}, ...]
+            current_corner_id = None  # 当前选中的角点编号
+
+            cv2.namedWindow("ChArUco Verification", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("ChArUco Verification", 800, 600)
+
+            print("\n按键: [鼠标点击]选择角点 [P]记录探针位置 [V]验证 [Q]退出")
+            print("提示: 先点击角点确认编号，再用探针戳该角点并按P")
+
+            # 鼠标回调
+            clicked_corner = {'id': None, 'pixel': None}
+
+            def mouse_callback(event, x, y, flags, param):
+                if event == cv2.EVENT_LBUTTONDOWN:
+                    clicked_corner['pixel'] = (x, y)
+                    clicked_corner['id'] = None  # 需要在主循环中查找最近角点
+
+            cv2.setMouseCallback("ChArUco Verification", mouse_callback)
 
             while True:
-                # 显示当前状态
                 image = camera.read()
                 if image is None:
                     continue
 
                 display = image.copy()
-                cv2.putText(display, f"Points: {len(verification_points)}/4+", (10, 30),
+
+                # 检测ChArUco角点
+                success, rvec, tvec, charuco_corners = charuco_calibrator.detect_charuco(image)
+
+                detected_corners = []
+                if success and charuco_corners is not None:
+                    # 显示角点编号
+                    for i, corner in enumerate(charuco_corners):
+                        corner_pos = corner.flatten()
+                        detected_corners.append({'id': i, 'pixel': corner_pos})
+
+                        # 绘制角点
+                        cv2.circle(display, (int(corner_pos[0]), int(corner_pos[1])), 5, (0, 255, 0), -1)
+                        cv2.putText(display, str(i), (int(corner_pos[0]) + 5, int(corner_pos[1]) - 5),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+                    # 高亮已验证的角点
+                    for pt in verification_points:
+                        corner_id = pt['corner_id']
+                        if corner_id < len(detected_corners):
+                            corner_pos = detected_corners[corner_id]['pixel']
+                            if pt.get('world_pos') is not None:
+                                cv2.circle(display, (int(corner_pos[0]), int(corner_pos[1])), 8, (0, 0, 255), 2)
+                                cv2.putText(display, f"#{corner_id} OK", (int(corner_pos[0]) + 10, int(corner_pos[1])),
+                                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+
+                    # 高亮当前选中的角点
+                    if current_corner_id is not None and current_corner_id < len(detected_corners):
+                        corner_pos = detected_corners[current_corner_id]['pixel']
+                        cv2.circle(display, (int(corner_pos[0]), int(corner_pos[1])), 12, (255, 0, 0), 3)
+                        cv2.putText(display, f"#{current_corner_id} SELECTED", (int(corner_pos[0]) - 20, int(corner_pos[1]) - 20),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+                # 处理鼠标点击
+                if clicked_corner['pixel'] is not None:
+                    click_x, click_y = clicked_corner['pixel']
+                    # 找最近的角点
+                    min_dist = float('inf')
+                    nearest_id = None
+                    for corner in detected_corners:
+                        cx, cy = corner['pixel']
+                        dist = np.sqrt((click_x - cx)**2 + (click_y - cy)**2)
+                        if dist < min_dist and dist < 30:  # 30像素阈值
+                            min_dist = dist
+                            nearest_id = corner['id']
+
+                    if nearest_id is not None:
+                        current_corner_id = nearest_id
+                        current_pixel = detected_corners[nearest_id]['pixel']
+                        print(f"\n  ✓ 选择角点 #{nearest_id}")
+                        print(f"    像素位置 = ({current_pixel[0]:.1f}, {current_pixel[1]:.1f})")
+                        print("    请用探针戳该角点，然后按 'P' 记录世界坐标")
+                    else:
+                        print("  ⚠ 未检测到角点或点击位置不接近任何角点")
+
+                    clicked_corner['pixel'] = None  # 重置
+
+                # 显示状态信息
+                cv2.putText(display, f"Verified: {len(verification_points)}/4+", (10, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-                cv2.putText(display, "[P]robe [C]apture [V]erify [Q]uit", (10, 60),
+                cv2.putText(display, "[Click] select corner [P] probe [V] verify [Q] quit", (10, 60),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
                 if tcp_result:
                     cv2.putText(display, "TCP: OK", (10, 90),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
                 else:
-                    cv2.putText(display, "TCP: N/A (using flange)", (10, 90),
+                    cv2.putText(display, "TCP: N/A", (10, 90),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 1)
 
-                cv2.imshow("TCP Verification", display)
+                if current_corner_id is not None:
+                    cv2.putText(display, f"Corner #{current_corner_id} selected", (10, 120),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 1)
+                else:
+                    cv2.putText(display, "Click a corner to select", (10, 120),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+
+                cv2.imshow("ChArUco Verification", display)
                 key = cv2.waitKey(10) & 0xFF
 
                 if key == ord('p') or key == ord('P'):
-                    # 记录探针位置（验证点的世界坐标）
+                    # 记录探针位置（世界坐标）
+                    if current_corner_id is None:
+                        print("  ⚠ 请先点击选择要验证的角点")
+                        continue
+
+                    # 检查是否已验证该角点
+                    existing = [pt for pt in verification_points if pt['corner_id'] == current_corner_id]
+                    if existing:
+                        print(f"  ⚠ 角点 #{current_corner_id} 已验证，请选择其他角点")
+                        continue
+
                     joints = self.controller.get_joint_states()
                     if joints is None:
                         print("  ✗ 无法获取关节状态")
@@ -1229,7 +1324,7 @@ class PrecisionPlaceSystem:
                         flange_pos = pose.get_position()
                         flange_rot = pose.rotation_matrix
 
-                        # 如果有TCP标定结果，计算TCP位置
+                        # 计算TCP位置
                         if tcp_result:
                             tcp_offset = np.array([
                                 tcp_result.offset_x,
@@ -1238,74 +1333,45 @@ class PrecisionPlaceSystem:
                             ])
                             world_pos = flange_pos + flange_rot @ tcp_offset
                         else:
-                            world_pos = flange_pos  # 使用法兰位置（精度较低）
+                            world_pos = flange_pos
 
-                        print(f"  ✓ 记录验证点 #{len(verification_points) + 1}:")
-                        print(f"    世界坐标 = ({world_pos[0]:.4f}, {world_pos[1]:.4f}, {world_pos[2]:.4f}) m")
+                        # 获取当前角点的像素位置
+                        if current_corner_id < len(detected_corners):
+                            pixel_pos = detected_corners[current_corner_id]['pixel']
+                        else:
+                            print("  ✗ 角点检测丢失，请重新选择")
+                            continue
 
-                        # 暂存验证点（等待后续拍摄像素位置）
+                        # 添加验证点
                         verification_points.append({
-                            'world_pos': world_pos,
-                            'pixel_pos': None,
-                            'captured': False
+                            'corner_id': current_corner_id,
+                            'pixel_pos': pixel_pos,
+                            'world_pos': world_pos
                         })
+
+                        print(f"  ✓ 角点 #{current_corner_id} 验证数据已记录:")
+                        print(f"    像素位置 = ({pixel_pos[0]:.1f}, {pixel_pos[1]:.1f})")
+                        print(f"    世界坐标 = ({world_pos[0]:.4f}, {world_pos[1]:.4f}, {world_pos[2]:.4f}) m")
+                        print(f"    已采集: {len(verification_points)}/4+")
+
+                        # 清除当前选中，准备下一个
+                        current_corner_id = None
                     else:
                         print("  ✗ 正运动学未启用，无法记录TCP位置")
 
-                elif key == ord('c') or key == ord('C'):
-                    # 拍摄并点击像素位置
-                    if len(verification_points) == 0:
-                        print("  ⚠ 请先按P记录至少一个验证点")
-                        continue
-
-                    # 找到第一个未拍摄的验证点
-                    uncaptured = [i for i, pt in enumerate(verification_points) if not pt['captured']]
-                    if len(uncaptured) == 0:
-                        print("  ⚠ 所有验证点已拍摄，请按V验证或添加更多验证点")
-                        continue
-
-                    idx = uncaptured[0]
-                    print(f"\n  拍摄验证点 #{idx + 1}:")
-                    print("  请在图像中点击验证点的像素位置...")
-
-                    # 让用户点击
-                    click_window = "Click Verification Point"
-                    cv2.namedWindow(click_window, cv2.WINDOW_NORMAL)
-                    cv2.imshow(click_window, image)
-
-                    pixel_pos = [0, 0]
-                    def mouse_callback(event, x, y, flags, param):
-                        if event == cv2.EVENT_LBUTTONDOWN:
-                            pixel_pos[0] = x
-                            pixel_pos[1] = y
-
-                    cv2.setMouseCallback(click_window, mouse_callback)
-                    cv2.waitKey(0)
-                    cv2.destroyWindow(click_window)
-
-                    # 更新验证点
-                    verification_points[idx]['pixel_pos'] = (pixel_pos[0], pixel_pos[1])
-                    verification_points[idx]['captured'] = True
-
-                    world_pos = verification_points[idx]['world_pos']
-                    print(f"  ✓ 验证点 #{idx + 1} 完成:")
-                    print(f"    世界坐标 = ({world_pos[0]:.4f}, {world_pos[1]:.4f}, {world_pos[2]:.4f}) m")
-                    print(f"    像素位置 = ({pixel_pos[0]}, {pixel_pos[1]})")
-
                 elif key == ord('v') or key == ord('V'):
                     # 执行验证
-                    captured_points = [pt for pt in verification_points if pt['captured']]
-                    if len(captured_points) < 4:
-                        print(f"  ⚠ 已拍摄验证点不足 ({len(captured_points)}/4)")
+                    if len(verification_points) < 4:
+                        print(f"  ⚠ 验证点不足 ({len(verification_points)}/4)")
                         continue
 
                     print("\n执行重投影验证...")
 
                     # 添加验证点
-                    for pt in captured_points:
+                    for pt in verification_points:
                         verifier.add_verification_point(pt['world_pos'], pt['pixel_pos'])
 
-                    # 获取当前法兰位姿（用于验证）
+                    # 获取当前法兰位姿
                     joints = self.controller.get_joint_states()
                     if joints is None:
                         print("✗ 无法获取关节状态")
@@ -1322,21 +1388,25 @@ class PrecisionPlaceSystem:
 
                     passed, rmse = verifier.verify(flange_pos, flange_rot)
 
+                    print("\n" + "="*50)
+                    print("验证结果")
+                    print("="*50)
+                    print(f"验证点数量: {len(verification_points)}")
+                    print(f"RMSE误差: {rmse:.2f} 像素")
+
                     if passed:
                         print("\n✓ 手眼标定验证通过！")
-                        print(f"  RMSE = {rmse:.2f} 像素")
                         print("  可以放心使用该标定结果进行精准放置。")
                     else:
                         print("\n✗ 验证失败！")
-                        print(f"  RMSE = {rmse:.2f} 像素")
                         print("  建议重新进行手眼标定。")
 
-                    cv2.destroyWindow("TCP Verification")
+                    cv2.destroyWindow("ChArUco Verification")
                     return
 
                 elif key == ord('q') or key == ord('Q'):
                     print("退出重投影验证")
-                    cv2.destroyWindow("TCP Verification")
+                    cv2.destroyWindow("ChArUco Verification")
                     return
 
         elif method == "2":
