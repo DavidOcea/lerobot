@@ -284,6 +284,30 @@ class HandEyeCalibrator:
         # 转换标定板旋转向量为旋转矩阵
         r_target, _ = cv2.Rodrigues(rvec)
 
+        # 姿态差异检查
+        pose_diversity_ok = True
+        if len(self.R_base2gripper) > 0:
+            # 计算与已有姿态的最小差异
+            min_rotation_diff = float('inf')
+            min_position_diff = float('inf')
+
+            for i, (R_old, t_old) in enumerate(zip(self.R_base2gripper, self.t_base2gripper)):
+                # 旋转差异（Frobenius范数）
+                rot_diff = np.linalg.norm(r_flange - R_old, 'fro')
+                min_rotation_diff = min(min_rotation_diff, rot_diff)
+
+                # 位置差异（欧氏距离）
+                pos_diff = np.linalg.norm(np.array(flange_position) - t_old.flatten())
+                min_position_diff = min(min_position_diff, pos_diff)
+
+            # 警告阈值
+            if min_rotation_diff < 0.1 and min_position_diff < 0.01:
+                print(f"  ⚠ 警告: 新姿态与已有姿态差异太小")
+                print(f"    旋转差异: {min_rotation_diff:.4f} (建议 > 0.1)")
+                print(f"    位置差异: {min_position_diff*1000:.1f}mm (建议 > 10mm)")
+                print(f"    建议: 大幅改变机械臂姿态")
+                pose_diversity_ok = False
+
         # 保存数据
         self.R_base2gripper.append(r_flange)
         self.t_base2gripper.append(np.array(flange_position).reshape(3, 1))
@@ -298,6 +322,7 @@ class HandEyeCalibrator:
             idx = len(self.R_base2gripper)
             cv2.imwrite(os.path.join(self.debug_dir, f"calib_{idx:03d}.jpg"), debug_img)
 
+        # 返回是否采集成功（即使姿态差异小也保存，只是警告）
         return True
 
     def get_capture_count(self) -> int:
@@ -357,10 +382,32 @@ class HandEyeCalibrator:
             self.result.rmse_error = rmse
             self.result.num_poses = len(self.R_base2gripper)
             self.result.method = "Tsai-Lenz" if method == cv2.CALIB_HAND_EYE_TSAI else f"Method-{method}"
+
+            # 外参矩阵有效性检查
+            translation_norm = np.linalg.norm(t_cam2gripper)
+            rotation_diff = np.linalg.norm(R_cam2gripper - np.eye(3))
+
+            if translation_norm < 0.001 and rotation_diff < 0.01:
+                # 外参矩阵接近单位矩阵，标定失败
+                print("\n✗ 标定失败：外参矩阵接近单位矩阵")
+                print("  平移向量模长: {:.6f} m (应 > 0.001m)".format(translation_norm))
+                print("  旋转矩阵偏差: {:.6f} (应 > 0.01)".format(rotation_diff))
+                print("\n可能原因：")
+                print("  1. 姿态变化太小（机械臂几乎没动）")
+                print("  2. 标定板在所有姿态下位置几乎相同")
+                print("  3. 法兰位姿数据异常")
+                print("\n建议：")
+                print("  - 增大姿态变化幅度（大角度倾斜）")
+                print("  - 确保标定板在相机视野中心")
+                print("  - 检查正运动学是否正常工作")
+                self.result.valid = False
+                return False, self.result
+
             self.result.valid = rmse < 5.0  # 5像素以内认为有效
 
             print(f"标定完成:")
             print(f"  平移: [{t_cam2gripper[0,0]:.4f}, {t_cam2gripper[1,0]:.4f}, {t_cam2gripper[2,0]:.4f}] 米")
+            print(f"  平移距离: {translation_norm*1000:.1f} mm")
             print(f"  RMSE: {rmse:.2f} 像素")
 
             if rmse > 1.5:
