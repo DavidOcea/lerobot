@@ -955,6 +955,10 @@ class PrecisionPlaceSystem:
         # 同步状态显示
         sync_delay_display = 0.0
 
+        # 用于存储第一个姿态（计算差异用）
+        first_flange_pos = None
+        first_flange_rot = None
+
         while True:
             # 获取图像
             image = camera.read()
@@ -989,6 +993,56 @@ class PrecisionPlaceSystem:
                 sync_color = (0, 255, 0) if sync_delay_display < 30 else (0, 165, 255)
                 cv2.putText(display, f"Sync: {sync_delay_display:.1f}ms", (10, 150),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, sync_color, 1)
+
+            # 实时显示姿态差异（相对于第一个姿态）
+            y_offset = 180
+            if self.forward_kinematics and first_flange_pos is not None:
+                # 获取当前关节状态
+                current_joints = self.controller.get_joint_states()
+                if current_joints is not None:
+                    try:
+                        current_pose = self.forward_kinematics.compute(current_joints)
+                        current_pos = current_pose.get_position()
+                        current_rot = current_pose.rotation_matrix
+
+                        # 计算与第一个姿态的差异
+                        rot_diff = np.linalg.norm(current_rot - first_flange_rot, 'fro')
+                        pos_diff = np.linalg.norm(current_pos - first_flange_pos) * 1000  # mm
+
+                        # 显示差异信息
+                        cv2.putText(display, "=== Pose Diversity ===", (10, y_offset),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                        y_offset += 25
+
+                        # 旋转差异
+                        rot_ok = rot_diff > 0.1
+                        rot_color = (0, 255, 0) if rot_ok else (0, 0, 255)
+                        rot_status = "OK" if rot_ok else "LOW"
+                        cv2.putText(display, f"Rotation: {rot_diff:.4f} [{rot_status}]", (10, y_offset),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, rot_color, 1)
+                        y_offset += 25
+
+                        # 位置差异
+                        pos_ok = pos_diff > 10.0
+                        pos_color = (0, 255, 0) if pos_ok else (0, 0, 255)
+                        pos_status = "OK" if pos_ok else "LOW"
+                        cv2.putText(display, f"Position: {pos_diff:.1f}mm [{pos_status}]", (10, y_offset),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, pos_color, 1)
+                        y_offset += 25
+
+                        # 整体状态
+                        if rot_ok and pos_ok:
+                            cv2.putText(display, "Ready to capture (OK)", (10, y_offset),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        else:
+                            cv2.putText(display, "Move arm more!", (10, y_offset),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    except Exception as e:
+                        cv2.putText(display, f"FK error: {e}", (10, y_offset),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+            elif self.forward_kinematics and count == 0:
+                cv2.putText(display, "Press [C] to set baseline", (10, y_offset),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
             cv2.imshow("Hand-Eye Calibration", display)
 
@@ -1052,7 +1106,14 @@ class PrecisionPlaceSystem:
                         flange_rotation = np.array([0.0, 0.0, 0.0, 1.0])
 
                 if self.hand_eye_calibrator.capture_pose(image, flange_position, flange_rotation):
-                    print(f"  ✓ 捕获成功 ({count + 1})")
+                    # 如果是第一个捕获，记录基准姿态
+                    if count == 0:
+                        from scipy.spatial.transform import Rotation as R
+                        first_flange_pos = np.array(flange_position).copy()
+                        first_flange_rot = R.from_quat(flange_rotation).as_matrix().copy()
+                        print(f"  ✓ 捕获成功 ({count + 1}) - 基准姿态已设置")
+                    else:
+                        print(f"  ✓ 捕获成功 ({count + 1})")
                 else:
                     print("  ✗ 捕获失败")
 
