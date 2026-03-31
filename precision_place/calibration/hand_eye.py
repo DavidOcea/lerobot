@@ -455,7 +455,7 @@ class HandEyeCalibrator:
 
             os.makedirs(os.path.dirname(filepath), exist_ok=True)
             with open(filepath, 'w') as f:
-                yaml.dump(data, f, default_flow_style=False)
+                yaml.safe_dump(data, f, default_flow_style=False)
 
             print(f"标定结果已保存: {filepath}")
             return True

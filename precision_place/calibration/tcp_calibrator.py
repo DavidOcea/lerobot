@@ -184,17 +184,17 @@ class TCPCalibrator:
             rmse_m = np.sqrt(np.mean(np.array(errors)**2))
             rmse_mm = rmse_m * 1000.0
 
-            # 保存结果
+            # 保存结果 (确保转换为Python原生类型)
             self.result = TCPCalibrationResult(
-                offset_x=t_offset[0],
-                offset_y=t_offset[1],
-                offset_z=t_offset[2],
-                target_x=p_tip[0],
-                target_y=p_tip[1],
-                target_z=p_tip[2],
-                rmse_mm=rmse_mm,
-                num_poses=n,
-                valid=rmse_mm < 0.5
+                offset_x=float(t_offset[0]),
+                offset_y=float(t_offset[1]),
+                offset_z=float(t_offset[2]),
+                target_x=float(p_tip[0]),
+                target_y=float(p_tip[1]),
+                target_z=float(p_tip[2]),
+                rmse_mm=float(rmse_mm),
+                num_poses=int(n),
+                valid=bool(rmse_mm < 0.5)
             )
 
             # 打印结果
@@ -260,7 +260,7 @@ class TCPCalibrator:
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
 
             with open(filepath, 'w') as f:
-                yaml.dump(data, f, default_flow_style=False)
+                yaml.safe_dump(data, f, default_flow_style=False)
 
             print(f"✓ TCP标定结果已保存: {filepath}")
             return True
