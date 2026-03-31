@@ -79,17 +79,21 @@ class ForwardKinematics:
         self.backend = None
         self.joint_names = []
         self.num_joints = 0
+        self.arm = None  # 手臂类型 ("left" 或 "right")
+        self.joint_indices = None  # 在完整关节数组中的索引
 
     @classmethod
     def from_urdf(cls, urdf_path: str, joint_names: List[str],
-                  end_effector_frame: str = "gripper_frame_link") -> 'ForwardKinematics':
+                  end_effector_frame: str = "gripper_frame_link",
+                  arm: str = None) -> 'ForwardKinematics':
         """
         从URDF文件创建正运动学计算器
 
         Args:
             urdf_path: URDF文件路径
-            joint_names: 关节名称列表
+            joint_names: 关节名称列表 (URDF中的名称)
             end_effector_frame: 末端执行器坐标系名称
+            arm: 手臂类型 ("left" 或 "right")，用于从完整关节数组中提取正确的关节索引
 
         Returns:
             ForwardKinematics实例
@@ -100,6 +104,22 @@ class ForwardKinematics:
         fk.num_joints = len(joint_names)
         fk.urdf_path = urdf_path
         fk.end_effector_frame = end_effector_frame
+        fk.arm = arm
+
+        # 根据手臂类型设置关节索引
+        # 完整关节数组格式: [left_1-7, right_1-7, trunk_1-2] = 16维
+        # 索引映射:
+        #   left_arm_joint_1-6: indices 0-5
+        #   left_arm_joint_7 (夹爪): index 6
+        #   right_arm_joint_1-6: indices 7-12
+        #   right_arm_joint_7 (夹爪): index 13
+        #   trunk_joint_1-2: indices 14-15
+        if arm == "right":
+            fk.joint_indices = list(range(7, 13))  # indices 7-12
+        elif arm == "left":
+            fk.joint_indices = list(range(0, 6))  # indices 0-5
+        else:
+            fk.joint_indices = None  # 不自动提取
 
         try:
             from lerobot.model.kinematics import RobotKinematics
@@ -154,10 +174,16 @@ class ForwardKinematics:
 
         Args:
             joint_angles: 关节角度 (度)
+                - 如果 joint_indices 已设置，可以是完整关节数组(16维)，会自动提取对应手臂的关节
+                - 否则需要传入正确维度的关节数组(如6维)
 
         Returns:
             EndEffectorPose 末端位姿
         """
+        # 自动提取正确的关节子数组
+        if self.joint_indices is not None and len(joint_angles) > self.num_joints:
+            joint_angles = joint_angles[self.joint_indices]
+
         if self.backend == 'placo':
             return self._compute_placo(joint_angles)
         elif self.backend == 'dh':
@@ -274,6 +300,11 @@ def create_fk_from_urdf(urdf_path: str, arm: str = "right") -> ForwardKinematics
         - Link: right_arm_link0 ~ right_arm_link4
         - 末端TCP: right_hand_tcp (工具中心点)
         - 手腕基座: right_hand_base
+
+        完整关节数组格式 (从共享状态读取):
+        - indices 0-6: 左手臂关节 (left_arm_joint_1-7)
+        - indices 7-13: 右手臂关节 (right_arm_joint_1-7)
+        - indices 14-15: trunk关节
     """
     # URDF中的关节名称 (注意：与配置文件中的命名不同)
     # URDF: right_arm_joint0, right_arm_joint1, ...
@@ -301,7 +332,8 @@ def create_fk_from_urdf(urdf_path: str, arm: str = "right") -> ForwardKinematics
         # 末端执行器：工具中心点 (TCP)
         end_effector = "left_hand_tcp"
 
-    return ForwardKinematics.from_urdf(urdf_path, joint_names, end_effector)
+    # 传递 arm 参数以便自动提取正确的关节索引
+    return ForwardKinematics.from_urdf(urdf_path, joint_names, end_effector, arm=arm)
 
 
 if __name__ == "__main__":
