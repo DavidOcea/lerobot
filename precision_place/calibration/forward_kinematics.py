@@ -295,11 +295,16 @@ def create_fk_from_urdf(urdf_path: str, arm: str = "right") -> ForwardKinematics
         ForwardKinematics实例
 
     Note:
-        URDF中的命名规范：
-        - 关节: right_arm_joint0 ~ right_arm_joint5 (从0开始，无下划线)
-        - Link: right_arm_link0 ~ right_arm_link4
-        - 末端TCP: right_hand_tcp (工具中心点)
-        - 手腕基座: right_hand_base
+        URDF坐标系定义 (从URDF分析):
+        - right_hand_base: 手腕基座/法兰位置 (joint5末端, 真实物理位置)
+        - right_hand_tcp: 工具中心点，相对于hand_base偏移 [47mm, -215mm, 0]
+
+        标定应使用 hand_base (法兰位置)，而非 hand_tcp (虚拟TCP点)。
+        TCP偏移215mm会导致标定结果无物理意义。
+
+        关节命名规范：
+        - URDF: right_arm_joint0 ~ right_arm_joint5 (从0开始，无下划线)
+        - 配置: right_arm_joint_1 ~ right_arm_joint_6 (从1开始，有下划线)
 
         完整关节数组格式 (从共享状态读取):
         - indices 0-6: 左手臂关节 (left_arm_joint_1-7)
@@ -318,8 +323,8 @@ def create_fk_from_urdf(urdf_path: str, arm: str = "right") -> ForwardKinematics
             "right_arm_joint4",
             "right_arm_joint5",
         ]
-        # 末端执行器：工具中心点 (TCP)
-        end_effector = "right_hand_tcp"
+        # 末端执行器：法兰/手腕基座 (真实物理位置，用于标定)
+        end_effector = "right_hand_base"
     else:
         joint_names = [
             "left_arm_joint0",
@@ -329,8 +334,8 @@ def create_fk_from_urdf(urdf_path: str, arm: str = "right") -> ForwardKinematics
             "left_arm_joint4",
             "left_arm_joint5",
         ]
-        # 末端执行器：工具中心点 (TCP)
-        end_effector = "left_hand_tcp"
+        # 末端执行器：法兰/手腕基座 (真实物理位置，用于标定)
+        end_effector = "left_hand_base"
 
     # 传递 arm 参数以便自动提取正确的关节索引
     return ForwardKinematics.from_urdf(urdf_path, joint_names, end_effector, arm=arm)
