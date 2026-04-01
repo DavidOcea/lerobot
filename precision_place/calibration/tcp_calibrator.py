@@ -81,6 +81,8 @@ class TCPCalibrator:
         self.R_flanges: List[np.ndarray] = []  # 法兰旋转矩阵
         self.p_flanges: List[np.ndarray] = []  # 法兰位置向量
         self.result = TCPCalibrationResult()
+        # 诊断信息
+        self._first_rotation = None  # 第一个旋转矩阵（用于计算变化）
 
     def capture_pose(self,
                      flange_position: np.ndarray,
@@ -114,8 +116,16 @@ class TCPCalibrator:
         self.R_flanges.append(r_matrix)
         self.p_flanges.append(np.array(flange_position).reshape(3, 1))
 
-        print(f"  ✓ 捕获姿态 {len(self.R_flanges)}: "
-              f"pos=({flange_position[0]:.4f}, {flange_position[1]:.4f}, {flange_position[2]:.4f})m")
+        # 诊断：计算旋转变化
+        n = len(self.R_flanges)
+        if n == 1:
+            self._first_rotation = r_matrix.copy()
+            rot_diff = 0.0
+        else:
+            rot_diff = np.linalg.norm(r_matrix - self._first_rotation, 'fro')
+
+        print(f"  ✓ 捕获姿态 {n}: pos=({flange_position[0]:.4f}, {flange_position[1]:.4f}, {flange_position[2]:.4f})m")
+        print(f"    旋转变化: {rot_diff:.4f} {'✓' if rot_diff > 0.3 else '⚠ 建议增大姿态变化'}")
 
         return True
 
@@ -167,6 +177,19 @@ class TCPCalibrator:
                 A[3*i : 3*i+3, 0:3] = self.R_flanges[i]
                 A[3*i : 3*i+3, 3:6] = -I3
                 B[3*i : 3*i+3, 0] = -self.p_flanges[i].flatten()
+
+            # 诊断：计算方程组条件数
+            try:
+                cond_num = np.linalg.cond(A)
+                print(f"  方程组条件数: {cond_num:.1f}")
+                if cond_num > 100:
+                    print(f"  ⚠ 条件数过大，方程组接近奇异，需要更大的姿态差异")
+                elif cond_num > 50:
+                    print(f"  ⚠ 条件数偏高，建议增大姿态差异")
+                else:
+                    print(f"  ✓ 方程组条件良好")
+            except:
+                pass
 
             # 最小二乘求解
             X, residuals, rank, s = np.linalg.lstsq(A, B, rcond=None)
