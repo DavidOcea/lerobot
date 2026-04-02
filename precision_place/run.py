@@ -2342,8 +2342,8 @@ class PrecisionPlaceSystem:
         square_length = 0.03  # 米
         marker_length = 0.022  # 米
 
-        # 创建ChArUco字典和检测器
-        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        # 创建ChArUco字典和检测器 (与手眼标定使用相同的字典 DICT_6X6_250)
+        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_6X6_250)
         charuco_board = cv2.aruco.CharucoBoard(
             (squares_x, squares_y),
             square_length,
