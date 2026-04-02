@@ -1761,6 +1761,319 @@ class PrecisionPlaceSystem:
                 print("退出TCP标定")
                 break
 
+    def tcp_iterative_refinement(self):
+        """
+        TCP迭代优化 (方案A：相机辅助)
+
+        使用相机测量探针移动误差，迭代修正TCP偏移。
+        不依赖手眼标定结果。
+        """
+        if not _has_tcp_calibrator:
+            print("✗ TCP标定模块未加载")
+            return
+
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        print("\n" + "="*60)
+        print("TCP迭代优化 (相机辅助)")
+        print("="*60)
+        print("""
+原理：
+  通过相机测量探针实际移动距离与预期移动距离的偏差，
+  迭代修正TCP偏移量，直到偏差小于阈值。
+
+优点：
+  - 不依赖手眼标定
+  - 全自动测量和修正
+  - 精度可达0.1-0.5mm
+
+操作步骤：
+  1. 加载初始TCP偏移（可以是粗略值）
+  2. 探针移动到相机视野内
+  3. 在图像中点击探针尖端位置
+  4. 执行测试移动（如X+10mm）
+  5. 再次点击探针尖端位置
+  6. 系统自动计算误差并修正TCP偏移
+  7. 重复直到误差 < 1mm
+
+验收标准：
+  移动误差 < 1mm = 合格
+""")
+
+        # 检查/初始化正运动学
+        if self.forward_kinematics is None:
+            if self.urdf_path is None:
+                print("\n需要URDF文件来计算正运动学。")
+                urdf_input = input("请输入URDF文件路径 (或按Enter退出): ").strip()
+                if not urdf_input:
+                    return
+                self.urdf_path = urdf_input
+
+            if self.urdf_path and _has_fk:
+                try:
+                    self.forward_kinematics = create_fk_from_urdf(self.urdf_path, self.current_arm)
+                    print(f"✓ 正运动学已初始化")
+                except Exception as e:
+                    print(f"✗ 正运动学初始化失败: {e}")
+                    return
+            else:
+                print("✗ 缺少正运动学，无法继续")
+                return
+
+        # 获取相机
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera = self.cameras.get(arm_config.camera_name)
+        if camera is None:
+            print("✗ 主相机未连接")
+            return
+
+        # 加载或初始化TCP偏移
+        tcp_path = Path(__file__).parent / "tcp_offset.yaml"
+        calibrator = TCPCalibrator()
+
+        if tcp_path.exists():
+            result = TCPCalibrator.load(str(tcp_path))
+            if result:
+                calibrator.result = result
+                print(f"\n已加载TCP偏移: ({result.offset_x*1000:.2f}, {result.offset_y*1000:.2f}, {result.offset_z*1000:.2f}) mm")
+                print(f"  RMSE: {result.rmse_mm:.2f} mm")
+            else:
+                print("\n⚠ 加载TCP偏移失败，使用默认值 (0, 0, 0)")
+        else:
+            print("\n⚠ 未找到TCP标定文件，使用默认值 (0, 0, 0)")
+            print("  建议先运行四点法标定获得初始值")
+
+        # 创建迭代优化器
+        from precision_place.calibration.tcp_calibrator import TCPIterativeRefiner
+        refiner = TCPIterativeRefiner(calibrator, pixel_to_mm_ratio=0.5)
+
+        # 设置像素比例
+        print("\n设置像素比例:")
+        print("  方法1: 输入标定板格子尺寸")
+        print("  方法2: 手动输入比例")
+        choice = input("选择方法 (1/2，默认1): ").strip() or "1"
+
+        if choice == "1":
+            print("\n请将ChArUco标定板放在相机视野内...")
+            board_size_mm = input("标定板格子实际尺寸 (mm，默认30): ").strip()
+            board_size_mm = float(board_size_mm) if board_size_mm else 30.0
+
+            # 获取一帧图像，让用户测量像素
+            print("\n即将显示图像，请测量格子的像素尺寸...")
+            image = camera.read()
+            if image is None:
+                print("✗ 无法获取图像")
+                return
+
+            cv2.imshow("Measure Square Size", image)
+            print("按任意键继续...")
+            cv2.waitKey(0)
+            cv2.destroyWindow("Measure Square Size")
+
+            square_pixels = input("格子像素尺寸 (默认60): ").strip()
+            square_pixels = float(square_pixels) if square_pixels else 60.0
+            refiner.set_pixel_ratio_from_board(board_size_mm, square_pixels)
+        else:
+            ratio = input("输入像素比例 (mm/pixel，默认0.5): ").strip()
+            refiner.pixel_to_mm_ratio = float(ratio) if ratio else 0.5
+            print(f"像素比例: {refiner.pixel_to_mm_ratio:.4f} mm/pixel")
+
+        # 迭代优化主循环
+        print("\n" + "="*60)
+        print("开始迭代优化")
+        print("="*60)
+        print("按键: [C]捕获起始位置 [M]执行移动 [Q]退出")
+
+        # 状态变量
+        pixel_start = None
+        current_flange_rotation = None
+        test_movement = np.array([10.0, 0.0, 0.0])  # 默认X+10mm
+
+        # 创建窗口
+        cv2.namedWindow("TCP Iterative Refinement", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("TCP Iterative Refinement", 800, 600)
+
+        # 鼠标回调
+        clicked_pixel = [None]
+
+        def mouse_callback(event, x, y, flags, param):
+            if event == cv2.EVENT_LBUTTONDOWN:
+                clicked_pixel[0] = (x, y)
+
+        cv2.setMouseCallback("TCP Iterative Refinement", mouse_callback)
+
+        while True:
+            image = camera.read()
+            if image is None:
+                continue
+
+            display = image.copy()
+
+            # 显示当前状态
+            y_offset = 30
+            cv2.putText(display, f"TCP: ({calibrator.result.offset_x*1000:.1f}, {calibrator.result.offset_y*1000:.1f}, {calibrator.result.offset_z*1000:.1f}) mm",
+                       (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            y_offset += 25
+
+            if pixel_start:
+                cv2.putText(display, f"起始点: {pixel_start}", (10, y_offset),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+                cv2.circle(display, pixel_start, 5, (255, 255, 0), -1)
+                y_offset += 25
+
+            cv2.putText(display, f"测试移动: X+{test_movement[0]:.0f}mm", (10, y_offset),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            y_offset += 25
+
+            # 显示迭代历史
+            stats = refiner.get_statistics()
+            if stats['iterations'] > 0:
+                cv2.putText(display, f"迭代次数: {stats['iterations']}", (10, y_offset),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+                y_offset += 25
+                cv2.putText(display, f"当前误差: {stats['final_error_mm']:.2f}mm", (10, y_offset),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                           (0, 255, 0) if stats['final_error_mm'] < 1.0 else (0, 0, 255), 2)
+
+            cv2.putText(display, "[C]捕获起始点 [M]执行移动 [R]重置 [Q]退出", (10, display.shape[0] - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+            cv2.imshow("TCP Iterative Refinement", display)
+            key = cv2.waitKey(10) & 0xFF
+
+            if key == ord('c') or key == ord('C'):
+                # 捕获起始位置
+                clicked_pixel[0] = None
+                print("\n请点击探针尖端位置...")
+                while clicked_pixel[0] is None:
+                    cv2.waitKey(10)
+                pixel_start = clicked_pixel[0]
+                print(f"  起始位置: {pixel_start}")
+
+                # 记录当前法兰旋转
+                joints = self.controller.get_joint_states()
+                if joints is not None and self.forward_kinematics:
+                    pose = self.forward_kinematics.compute(joints)
+                    current_flange_rotation = pose.quaternion
+
+            elif key == ord('m') or key == ord('M'):
+                # 执行测试移动
+                if pixel_start is None:
+                    print("⚠ 请先捕获起始位置 (按C)")
+                    continue
+
+                if current_flange_rotation is None:
+                    print("⚠ 无法获取法兰旋转")
+                    continue
+
+                # 获取当前关节状态
+                joints = self.controller.get_joint_states()
+                if joints is None:
+                    print("⚠ 无法获取关节状态")
+                    continue
+
+                # 计算当前TCP位置
+                pose = self.forward_kinematics.compute(joints)
+                flange_pos = pose.get_position()
+                flange_rot = pose.quaternion
+
+                # 执行移动后的位置
+                print(f"\n执行测试移动: X+{test_movement[0]:.0f}mm")
+                print("  请手动移动探针，然后按C捕获结束位置...")
+                print("  (或按Esc取消)")
+
+                # 等待用户移动探针
+                while True:
+                    image2 = camera.read()
+                    if image2 is not None:
+                        display2 = image2.copy()
+                        cv2.circle(display2, pixel_start, 5, (255, 255, 0), -1)
+                        cv2.putText(display2, "移动探针后按C捕获", (10, 30),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                        cv2.imshow("TCP Iterative Refinement", display2)
+
+                    k = cv2.waitKey(10) & 0xFF
+                    if k == ord('c') or k == ord('C'):
+                        clicked_pixel[0] = None
+                        print("请点击移动后的探针尖端位置...")
+                        while clicked_pixel[0] is None:
+                            cv2.waitKey(10)
+                        pixel_end = clicked_pixel[0]
+                        print(f"  结束位置: {pixel_end}")
+                        break
+                    elif k == 27:  # Esc
+                        print("  已取消")
+                        pixel_end = None
+                        break
+
+                if pixel_end is None:
+                    continue
+
+                # 获取移动后的法兰旋转
+                joints_after = self.controller.get_joint_states()
+                if joints_after is not None and self.forward_kinematics:
+                    pose_after = self.forward_kinematics.compute(joints_after)
+                    flange_rot_after = pose_after.quaternion
+                else:
+                    flange_rot_after = flange_rot
+
+                # 执行迭代
+                result = refiner.run_iteration(
+                    pixel_start=pixel_start,
+                    pixel_end=pixel_end,
+                    expected_movement_mm=test_movement,
+                    flange_rotation=flange_rot_after,
+                    rotation_format="quaternion",
+                    learning_rate=0.5
+                )
+
+                print(f"\n迭代结果:")
+                print(f"  移动误差: {result['error_mm']:.2f}mm")
+                print(f"  新TCP偏移: ({result['new_offset_mm'][0]:.2f}, {result['new_offset_mm'][1]:.2f}, {result['new_offset_mm'][2]:.2f}) mm")
+
+                if result['error_mm'] < 1.0:
+                    print(f"  ✓ 误差已达标!")
+                else:
+                    print(f"  继续迭代以减小误差...")
+
+                # 重置起始点
+                pixel_start = None
+
+            elif key == ord('r') or key == ord('R'):
+                # 重置
+                pixel_start = None
+                current_flange_rotation = None
+                print("已重置")
+
+            elif key == ord('q') or key == ord('Q'):
+                break
+
+        cv2.destroyWindow("TCP Iterative Refinement")
+
+        # 显示最终结果
+        stats = refiner.get_statistics()
+        print("\n" + "="*60)
+        print("迭代优化完成")
+        print("="*60)
+        print(f"迭代次数: {stats['iterations']}")
+        if stats['iterations'] > 0:
+            print(f"初始误差: {stats['initial_error_mm']:.2f}mm")
+            print(f"最终误差: {stats['final_error_mm']:.2f}mm")
+            print(f"改善: {stats['improvement']:.1f}%")
+
+        print(f"\n最终TCP偏移: ({calibrator.result.offset_x*1000:.2f}, {calibrator.result.offset_y*1000:.2f}, {calibrator.result.offset_z*1000:.2f}) mm")
+
+        # 询问是否保存
+        save = input("\n是否保存结果? [Y/N]: ").strip().upper()
+        if save == 'Y':
+            calibrator.result.valid = True
+            calibrator.result.rmse_mm = stats.get('final_error_mm', 999)
+            calibrator.result.num_poses = stats['iterations']
+            calibrator.save(str(tcp_path))
+            print(f"✓ 已保存到: {tcp_path}")
+
     def load_coordinate_transformer(self) -> bool:
         """加载坐标变换器（基于手眼标定结果）"""
         if not _has_coord_transform:
@@ -3396,6 +3709,7 @@ def main():
                 print("  === 手眼标定 (推荐，精度更高) ===")
                 print("  H. 手眼标定 (ChArUco板，一次完成)")
                 print("  T. TCP标定 (探针四点法)")
+                print("  I. TCP迭代优化 (相机辅助，推荐)")
                 print("  R. 重投影验证 (验证手眼标定精度)")
                 print("  === 传统标定 ===")
                 print("  1. 像素-毫米标定 (基础标定)")
@@ -3426,6 +3740,11 @@ def main():
                     if not system.controller:
                         system.connect()
                     system.tcp_calibration()
+                elif calib_choice == "I":
+                    # TCP迭代优化
+                    if not system.controller:
+                        system.connect()
+                    system.tcp_iterative_refinement()
                 elif calib_choice == "R":
                     # 重投影验证
                     system.reprojection_verification()

@@ -335,6 +335,212 @@ class TCPCalibrator:
             self.result.offset_z
         ])
 
+    def set_offset(self, offset: np.ndarray):
+        """设置TCP偏移量"""
+        self.result.offset_x = float(offset[0])
+        self.result.offset_y = float(offset[1])
+        self.result.offset_z = float(offset[2])
+
+    def compute_tcp_position(self, flange_position: np.ndarray,
+                              flange_rotation: np.ndarray,
+                              rotation_format: str = "quaternion") -> np.ndarray:
+        """
+        根据法兰位姿和TCP偏移计算TCP位置
+
+        Args:
+            flange_position: 法兰位置 [x, y, z] (米)
+            flange_rotation: 法兰旋转
+            flange_rotation: 法兰旋转
+
+            rotation_format: 旋转格式
+
+        Returns:
+            TCP位置 [x, y, z] (米)
+        """
+        # 转换旋转格式
+        if rotation_format == "quaternion":
+            r_matrix = R.from_quat(flange_rotation).as_matrix()
+        elif rotation_format == "euler":
+            r_matrix = R.from_euler('xyz', flange_rotation).as_matrix()
+        elif rotation_format == "matrix":
+            r_matrix = np.array(flange_rotation)
+        else:
+            raise ValueError(f"未知的旋转格式: {rotation_format}")
+
+        t_offset = self.get_offset_array()
+        tcp_position = np.array(flange_position) + r_matrix @ t_offset
+
+        return tcp_position
+
+
+class TCPIterativeRefiner:
+    """
+    TCP迭代优化器
+
+    使用相机辅助迭代优化TCP偏移量。
+    通过测量探针实际移动距离与预期移动距离的偏差来修正TCP偏移。
+
+    原理：
+      假设TCP偏移误差为 Δt，执行移动指令后：
+      实际移动 = 指令移动 + R × Δt
+
+      通过测量实际移动偏差，可以反推并修正 Δt。
+    """
+
+    def __init__(self, tcp_calibrator: TCPCalibrator, pixel_to_mm_ratio: float = 0.5):
+        """
+        初始化迭代优化器
+
+        Args:
+            tcp_calibrator: TCP标定器实例
+            pixel_to_mm_ratio: 像素到毫米的转换比例 (mm/pixel)
+        """
+        self.tcp_calibrator = tcp_calibrator
+        self.pixel_to_mm_ratio = pixel_to_mm_ratio
+        self.iteration_history = []
+
+    def set_pixel_ratio_from_board(self, board_square_size_mm: float,
+                                     square_pixels: float):
+        """
+        从标定板设置像素比例
+
+        Args:
+            board_square_size_mm: 标定板格子实际尺寸 (mm)
+            square_pixels: 格子在图像中的像素尺寸
+        """
+        self.pixel_to_mm_ratio = board_square_size_mm / square_pixels
+        print(f"像素比例已设置: {self.pixel_to_mm_ratio:.4f} mm/pixel")
+
+    def measure_movement_error(self,
+                               pixel_start: Tuple[float, float],
+                               pixel_end: Tuple[float, float],
+                               expected_movement_mm: np.ndarray) -> Tuple[np.ndarray, float]:
+        """
+        测量移动误差
+
+        Args:
+            pixel_start: 起始像素坐标 (u, v)
+            pixel_end: 结束像素坐标 (u, v)
+            expected_movement_mm: 预期移动向量 [dx, dy, dz] (mm)
+
+        Returns:
+            (误差向量 [mm], 误差距离 mm)
+        """
+        # 计算实际移动 (像素)
+        du = pixel_end[0] - pixel_start[0]
+        dv = pixel_end[1] - pixel_start[1]
+
+        # 转换为毫米 (仅XY平面)
+        actual_dx = du * self.pixel_to_mm_ratio
+        actual_dy = dv * self.pixel_to_mm_ratio
+
+        # 计算误差
+        error_x = actual_dx - expected_movement_mm[0]
+        error_y = actual_dy - expected_movement_mm[1]
+
+        error_vector = np.array([error_x, error_y, 0.0])
+        error_distance = np.sqrt(error_x**2 + error_y**2)
+
+        return error_vector, error_distance
+
+    def refine_offset_2d(self,
+                         error_xy_mm: np.ndarray,
+                         flange_rotation: np.ndarray,
+                         rotation_format: str = "quaternion",
+                         learning_rate: float = 0.5) -> np.ndarray:
+        """
+        根据XY平面误差修正TCP偏移
+
+        Args:
+            error_xy_mm: XY平面误差 [ex, ey, 0] (mm)
+            flange_rotation: 法兰旋转
+            rotation_format: 旋转格式
+            learning_rate: 学习率 (0-1)
+
+        Returns:
+            修正后的TCP偏移 (mm)
+        """
+        # 转换旋转格式
+        if rotation_format == "quaternion":
+            r_matrix = R.from_quat(flange_rotation).as_matrix()
+        elif rotation_format == "euler":
+            r_matrix = R.from_euler('xyz', flange_rotation).as_matrix()
+        else:
+            r_matrix = np.array(flange_rotation)
+
+        # 计算修正量 (逆向投影)
+        # 误差 = R × Δt，所以 Δt = R^T × error
+        r_matrix_inv = r_matrix.T
+        correction = r_matrix_inv @ (error_xy_mm / 1000.0)  # 转换为米
+
+        # 应用学习率
+        correction = correction * learning_rate
+
+        # 修正TCP偏移
+        current_offset = self.tcp_calibrator.get_offset_array()
+        new_offset = current_offset - correction
+
+        self.tcp_calibrator.set_offset(new_offset)
+
+        return new_offset * 1000  # 返回mm
+
+    def run_iteration(self,
+                      pixel_start: Tuple[float, float],
+                      pixel_end: Tuple[float, float],
+                      expected_movement_mm: np.ndarray,
+                      flange_rotation: np.ndarray,
+                      rotation_format: str = "quaternion",
+                      learning_rate: float = 0.5) -> dict:
+        """
+        执行一次迭代
+
+        Args:
+            pixel_start: 起始像素坐标
+            pixel_end: 结束像素坐标
+            expected_movement_mm: 预期移动 (mm)
+            flange_rotation: 法兰旋转
+            rotation_format: 旋转格式
+            learning_rate: 学习率
+
+        Returns:
+            迭代结果字典
+        """
+        # 测量误差
+        error_vector, error_distance = self.measure_movement_error(
+            pixel_start, pixel_end, expected_movement_mm
+        )
+
+        # 修正偏移
+        new_offset = self.refine_offset_2d(
+            error_vector, flange_rotation, rotation_format, learning_rate
+        )
+
+        # 记录历史
+        iteration_result = {
+            'error_mm': error_distance,
+            'error_vector_mm': error_vector,
+            'new_offset_mm': new_offset,
+            'pixel_start': pixel_start,
+            'pixel_end': pixel_end
+        }
+        self.iteration_history.append(iteration_result)
+
+        return iteration_result
+
+    def get_statistics(self) -> dict:
+        """获取迭代统计信息"""
+        if not self.iteration_history:
+            return {'iterations': 0}
+
+        errors = [h['error_mm'] for h in self.iteration_history]
+        return {
+            'iterations': len(self.iteration_history),
+            'initial_error_mm': errors[0],
+            'final_error_mm': errors[-1],
+            'min_error_mm': min(errors),
+            'improvement': (errors[0] - errors[-1]) / errors[0] * 100 if errors[0] > 0 else 0
+        }
+
 
 if __name__ == "__main__":
     # 测试
