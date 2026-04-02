@@ -2248,6 +2248,199 @@ class PrecisionPlaceSystem:
             else:
                 print(f"未知命令: {key}")
 
+    def calibrate_camera_intrinsics(self):
+        """
+        相机内参标定
+
+        使用ChArUco板标定相机内参（fx, fy, cx, cy）和畸变系数。
+        """
+        print("\n" + "="*60)
+        print("相机内参标定")
+        print("="*60)
+        print("""
+原理：
+  通过拍摄多张不同角度的ChArUco板图像，
+  计算相机的内参矩阵和畸变系数。
+
+内参矩阵:
+  | fx  0  cx |
+  |  0 fy  cy |
+  |  0  0   1 |
+
+畸变系数: [k1, k2, p1, p2, k3]
+
+要求：
+  1. ChArUco标定板
+  2. 至少采集15张不同角度的图像
+  3. 覆盖图像的各个区域（中心、边缘、角落）
+
+操作步骤：
+  1. 将ChArUco板放在相机视野内
+  2. 按 'C' 捕获图像
+  3. 改变标定板角度和位置
+  4. 重复步骤2-3，采集至少15张
+  5. 按 'S' 开始标定
+  6. 按 'Q' 退出
+""")
+
+        # 获取相机
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera = self.cameras.get(arm_config.camera_name)
+        if camera is None:
+            print("✗ 主相机未连接")
+            return
+
+        # ChArUco板参数（与手眼标定一致）
+        squares_x = 5
+        squares_y = 7
+        square_length = 0.03  # 米
+        marker_length = 0.022  # 米
+
+        # 创建ChArUco字典和检测器
+        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+        charuco_board = cv2.aruco.CharucoBoard(
+            (squares_x, squares_y),
+            square_length,
+            marker_length,
+            aruco_dict
+        )
+
+        # 存储所有角点
+        all_charuco_corners = []
+        all_charuco_ids = []
+        image_size = None
+
+        print("\n开始采集图像...")
+        print("按键: [C]捕获  [S]标定  [Q]退出")
+        print(f"已采集: 0/15+")
+
+        cv2.namedWindow("Camera Calibration", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("Camera Calibration", 800, 600)
+
+        while True:
+            image = camera.read()
+            if image is None:
+                continue
+
+            display = image.copy()
+
+            # 检测ChArUco板
+            detector = cv2.aruco.CharucoDetector(charuco_board)
+            charuco_corners, charuco_ids, marker_corners, marker_ids = detector.detectBoard(image)
+
+            if charuco_corners is not None and len(charuco_corners) > 4:
+                # 绘制检测到的角点
+                cv2.aruco.drawDetectedCornersCharuco(display, charuco_corners, charuco_ids)
+                cv2.putText(display, f"Detected: {len(charuco_corners)} corners", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            else:
+                cv2.putText(display, "No board detected", (10, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+            # 显示采集数量
+            cv2.putText(display, f"Captured: {len(all_charuco_corners)}/15+", (10, 60),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            cv2.putText(display, "[C]apture [S]olve [Q]uit", (10, 90),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+            cv2.imshow("Camera Calibration", display)
+            key = cv2.waitKey(10) & 0xFF
+
+            if key == ord('c') or key == ord('C'):
+                # 捕获图像
+                if charuco_corners is not None and len(charuco_corners) > 4:
+                    all_charuco_corners.append(charuco_corners)
+                    all_charuco_ids.append(charuco_ids)
+                    if image_size is None:
+                        image_size = (image.shape[1], image.shape[0])
+                    print(f"  ✓ 捕获成功 ({len(all_charuco_corners)}) - 检测到 {len(charuco_corners)} 个角点")
+                else:
+                    print("  ⚠ 未检测到足够的ChArUco角点")
+
+            elif key == ord('s') or key == ord('S'):
+                # 开始标定
+                if len(all_charuco_corners) < 10:
+                    print(f"  ⚠ 采集数量不足 ({len(all_charuco_corners)}/10)")
+                    continue
+
+                print(f"\n开始相机内参标定，使用 {len(all_charuco_corners)} 张图像...")
+
+                try:
+                    # 标定相机
+                    reprojection_error, camera_matrix, dist_coeffs, rvecs, tvecs = \
+                        cv2.aruco.calibrateCameraCharuco(
+                            all_charuco_corners,
+                            all_charuco_ids,
+                            charuco_board,
+                            image_size,
+                            None,
+                            None
+                        )
+
+                    # 打印结果
+                    print("\n" + "="*50)
+                    print("相机内参标定结果")
+                    print("="*50)
+                    print(f"\n重投影误差: {reprojection_error:.4f} 像素")
+                    if reprojection_error < 0.5:
+                        print("  ✓ 精度优秀")
+                    elif reprojection_error < 1.0:
+                        print("  ✓ 精度良好")
+                    else:
+                        print("  ⚠ 精度一般，建议重新标定")
+
+                    print(f"\n内参矩阵:")
+                    print(f"  fx = {camera_matrix[0, 0]:.2f}")
+                    print(f"  fy = {camera_matrix[1, 1]:.2f}")
+                    print(f"  cx = {camera_matrix[0, 2]:.2f}")
+                    print(f"  cy = {camera_matrix[1, 2]:.2f}")
+
+                    print(f"\n畸变系数:")
+                    print(f"  k1 = {dist_coeffs[0, 0]:.6f}")
+                    print(f"  k2 = {dist_coeffs[0, 1]:.6f}")
+                    print(f"  p1 = {dist_coeffs[0, 2]:.6f}")
+                    print(f"  p2 = {dist_coeffs[0, 3]:.6f}")
+                    print(f"  k3 = {dist_coeffs[0, 4]:.6f}")
+
+                    # 保存结果
+                    output_path = Path(__file__).parent / "camera_intrinsics.yaml"
+                    import yaml
+                    data = {
+                        'camera_matrix': {
+                            'rows': 3,
+                            'cols': 3,
+                            'data': camera_matrix.flatten().tolist()
+                        },
+                        'distortion_coefficients': {
+                            'rows': 1,
+                            'cols': 5,
+                            'data': dist_coeffs.flatten().tolist()
+                        },
+                        'reprojection_error': float(reprojection_error),
+                        'image_width': image_size[0],
+                        'image_height': image_size[1],
+                        'num_images': len(all_charuco_corners)
+                    }
+
+                    with open(output_path, 'w') as f:
+                        yaml.safe_dump(data, f, default_flow_style=False)
+
+                    print(f"\n✓ 结果已保存到: {output_path}")
+                    print("="*50)
+
+                    # 清空数据，准备重新标定
+                    all_charuco_corners.clear()
+                    all_charuco_ids.clear()
+
+                except Exception as e:
+                    print(f"✗ 标定失败: {e}")
+
+            elif key == ord('q') or key == ord('Q'):
+                print("退出相机内参标定")
+                break
+
+        cv2.destroyWindow("Camera Calibration")
+
     def load_coordinate_transformer(self) -> bool:
         """加载坐标变换器（基于手眼标定结果）"""
         if not _has_coord_transform:
@@ -3886,6 +4079,7 @@ def main():
                 print("  I. TCP迭代优化 (相机辅助，推荐)")
                 print("  R. 重投影验证 (验证手眼标定精度)")
                 print("  F. FK旋转验证 (验证URDF关节方向)")
+                print("  K. 相机内参标定 (标定焦距和畸变)")
                 print("  === 传统标定 ===")
                 print("  1. 像素-毫米标定 (基础标定)")
                 print("  2. 关节灵敏度标定 (手动移动)")
@@ -3925,6 +4119,11 @@ def main():
                     if not system.controller:
                         system.connect()
                     system.verify_fk_rotation()
+                elif calib_choice == "K":
+                    # 相机内参标定
+                    if not system.controller:
+                        system.connect()
+                    system.calibrate_camera_intrinsics()
                 elif calib_choice == "R":
                     # 重投影验证
                     system.reprojection_verification()
