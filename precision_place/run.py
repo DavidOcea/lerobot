@@ -898,22 +898,45 @@ class PrecisionPlaceSystem:
             print("✗ 主相机未连接")
             return
 
-        # 相机内参（需要预先标定或使用默认值）
-        # TODO: 从配置文件加载真实的相机内参
-        image_width = 640
-        image_height = 480
-        fx = 500.0  # 焦距x (像素)
-        fy = 500.0  # 焦距y (像素)
-        cx = image_width / 2  # 主点x
-        cy = image_height / 2  # 主点y
+        # 相机内参（优先从标定文件加载，否则使用默认值）
+        intrinsics_path = Path(__file__).parent / "camera_intrinsics.yaml"
+        if intrinsics_path.exists():
+            try:
+                import yaml
+                with open(intrinsics_path, 'r') as f:
+                    intrinsics_data = yaml.safe_load(f)
 
-        camera_matrix = np.array([
-            [fx, 0, cx],
-            [0, fy, cy],
-            [0, 0, 1]
-        ], dtype=np.float64)
+                camera_matrix = np.array(intrinsics_data['camera_matrix']['data']).reshape(
+                    intrinsics_data['camera_matrix']['rows'],
+                    intrinsics_data['camera_matrix']['cols']
+                )
+                dist_coeffs = np.array(intrinsics_data['distortion_coefficients']['data'])
+                reprojection_error = intrinsics_data.get('reprojection_error', 0.0)
 
-        dist_coeffs = np.zeros(5)  # 假设无畸变
+                print(f"✓ 已加载相机内参标定结果")
+                print(f"  重投影误差: {reprojection_error:.4f} 像素")
+                print(f"  fx={camera_matrix[0,0]:.1f}, fy={camera_matrix[1,1]:.1f}")
+                print(f"  cx={camera_matrix[0,2]:.1f}, cy={camera_matrix[1,2]:.1f}")
+                print(f"  畸变: k1={dist_coeffs[0]:.4f}, k2={dist_coeffs[1]:.4f}")
+            except Exception as e:
+                print(f"⚠ 加载相机内参失败: {e}")
+                print("  使用默认内参")
+                camera_matrix = np.array([
+                    [500.0, 0, 320.0],
+                    [0, 500.0, 240.0],
+                    [0, 0, 1]
+                ], dtype=np.float64)
+                dist_coeffs = np.zeros(5)
+        else:
+            print("⚠ 未找到相机内参标定文件 (camera_intrinsics.yaml)")
+            print("  使用默认内参 (fx=500, fy=500, 无畸变)")
+            print("  建议: 先运行相机内参标定 (选项 K)")
+            camera_matrix = np.array([
+                [500.0, 0, 320.0],
+                [0, 500.0, 240.0],
+                [0, 0, 1]
+            ], dtype=np.float64)
+            dist_coeffs = np.zeros(5)
 
         # 创建标定器
         self.hand_eye_calibrator = HandEyeCalibrator(
@@ -1207,13 +1230,36 @@ class PrecisionPlaceSystem:
             print("✗ 主相机未连接")
             return
 
-        # 相机内参
-        camera_matrix = np.array([
-            [500.0, 0, 320.0],
-            [0, 500.0, 240.0],
-            [0, 0, 1]
-        ], dtype=np.float64)
-        dist_coeffs = np.zeros(5)
+        # 相机内参（优先从标定文件加载）
+        intrinsics_path = Path(__file__).parent / "camera_intrinsics.yaml"
+        if intrinsics_path.exists():
+            try:
+                import yaml
+                with open(intrinsics_path, 'r') as f:
+                    intrinsics_data = yaml.safe_load(f)
+
+                camera_matrix = np.array(intrinsics_data['camera_matrix']['data']).reshape(
+                    intrinsics_data['camera_matrix']['rows'],
+                    intrinsics_data['camera_matrix']['cols']
+                )
+                dist_coeffs = np.array(intrinsics_data['distortion_coefficients']['data'])
+                print(f"✓ 已加载相机内参标定结果")
+            except Exception as e:
+                print(f"⚠ 加载相机内参失败: {e}")
+                camera_matrix = np.array([
+                    [500.0, 0, 320.0],
+                    [0, 500.0, 240.0],
+                    [0, 0, 1]
+                ], dtype=np.float64)
+                dist_coeffs = np.zeros(5)
+        else:
+            print("⚠ 未找到相机内参标定文件，使用默认值")
+            camera_matrix = np.array([
+                [500.0, 0, 320.0],
+                [0, 500.0, 240.0],
+                [0, 0, 1]
+            ], dtype=np.float64)
+            dist_coeffs = np.zeros(5)
 
         from precision_place.calibration.hand_eye import ReprojectionVerifier
         verifier = ReprojectionVerifier(camera_matrix, dist_coeffs, result)
