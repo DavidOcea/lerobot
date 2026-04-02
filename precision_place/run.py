@@ -2129,11 +2129,11 @@ class PrecisionPlaceSystem:
 
         print("\n" + "-"*60)
         print("验证步骤：")
-        print("  1. 按 [R] 记录当前位置作为参考")
+        print("  1. 输入 R 记录当前位置作为参考")
         print("  2. 用示教器转动关节（建议转动30-45度）")
-        print("  3. 按 [C] 捕获并对比变化")
-        print("  4. 按 [V] 查看详细关节变化")
-        print("  5. 按 [Q] 退出")
+        print("  3. 输入 C 捕获并对比变化")
+        print("  4. 输入 V 查看详细关节变化")
+        print("  5. 输入 Q 退出")
         print("-"*60)
 
         # 获取手臂关节名称
@@ -2149,6 +2149,7 @@ class PrecisionPlaceSystem:
         ref_rotation = None
 
         while True:
+            # 获取当前关节状态
             joints = self.controller.get_joint_states()
             if joints is None:
                 print("⚠ 无法获取关节状态")
@@ -2159,99 +2160,93 @@ class PrecisionPlaceSystem:
                 pose = self.forward_kinematics.compute(joints)
                 current_rotation = pose.rotation_matrix
                 current_pos = pose.get_position()
-
-                # 显示当前状态
-                print(f"\r当前位置: ({current_pos[0]:.3f}, {current_pos[1]:.3f}, {current_pos[2]:.3f})m  ", end="")
-
-                if ref_rotation is not None:
-                    rot_diff = np.linalg.norm(current_rotation - ref_rotation, 'fro')
-                    print(f"旋转变化: {rot_diff:.4f}  ", end="")
-
-                print("[R]记录 [C]捕获 [V]详情 [Q]退出  ", end="")
-                print(flush=True)
-
             except Exception as e:
-                print(f"\rFK计算错误: {e}          ", end="")
-                print(flush=True)
+                print(f"FK计算错误: {e}")
+                continue
 
-            # 等待用户输入
-            import select
-            import sys
+            # 显示当前状态
+            print(f"\n当前位置: ({current_pos[0]:.3f}, {current_pos[1]:.3f}, {current_pos[2]:.3f})m")
 
-            # 非阻塞检查输入
-            if select.select([sys.stdin], [], [], 0.1)[0]:
-                key = sys.stdin.readline().strip().upper()
+            if ref_rotation is not None:
+                rot_diff = np.linalg.norm(current_rotation - ref_rotation, 'fro')
+                print(f"旋转变化: {rot_diff:.4f} (近似 {rot_diff * 40:.1f}°)")
 
-                if key == 'R':
-                    # 记录参考位置
-                    ref_joints = joints.copy()
-                    ref_rotation = current_rotation.copy()
-                    print(f"\n✓ 已记录参考位置")
-                    # 显示关节角度
-                    print("  参考关节角度:")
-                    for i, (name, idx) in enumerate(zip(joint_names, joint_indices)):
-                        print(f"    {name}: {joints[idx]:.2f}°")
+            # 获取用户输入
+            try:
+                key = input("输入命令 [R/C/V/Q]: ").strip().upper()
+            except EOFError:
+                break
 
-                elif key == 'C':
-                    # 捕获并对比
-                    if ref_joints is None or ref_rotation is None:
-                        print("\n⚠ 请先按 [R] 记录参考位置")
-                        continue
+            if key == 'R':
+                # 记录参考位置
+                ref_joints = joints.copy()
+                ref_rotation = current_rotation.copy()
+                print("✓ 已记录参考位置")
+                print("  参考关节角度:")
+                for i, (name, idx) in enumerate(zip(joint_names, joint_indices)):
+                    print(f"    {name}: {joints[idx]:.2f}°")
 
-                    # 计算关节变化
-                    joint_changes = []
-                    for i, (name, idx) in enumerate(zip(joint_names, joint_indices)):
-                        change = joints[idx] - ref_joints[idx]
-                        joint_changes.append((name, change))
+            elif key == 'C':
+                # 捕获并对比
+                if ref_joints is None or ref_rotation is None:
+                    print("⚠ 请先输入 R 记录参考位置")
+                    continue
 
-                    # 计算旋转变化
-                    rot_diff = np.linalg.norm(current_rotation - ref_rotation, 'fro')
+                # 计算关节变化
+                joint_changes = []
+                for i, (name, idx) in enumerate(zip(joint_names, joint_indices)):
+                    change = joints[idx] - ref_joints[idx]
+                    joint_changes.append((name, change))
 
-                    print(f"\n" + "="*50)
-                    print("对比结果")
-                    print("="*50)
-                    print("关节变化:")
-                    for name, change in joint_changes:
-                        marker = "← 主要变化" if abs(change) > 5 else ""
-                        print(f"  {name}: {change:+.2f}° {marker}")
+                # 计算旋转变化
+                rot_diff = np.linalg.norm(current_rotation - ref_rotation, 'fro')
 
-                    print(f"\nFK旋转变化 (Frobenius norm): {rot_diff:.4f}")
-                    print(f"近似旋转角度: {rot_diff * 40:.1f}°")  # 粗略估算
+                print("\n" + "="*50)
+                print("对比结果")
+                print("="*50)
+                print("关节变化:")
+                for name, change in joint_changes:
+                    marker = "← 主要变化" if abs(change) > 5 else ""
+                    print(f"  {name}: {change:+.2f}° {marker}")
 
-                    # 判断验证结果
-                    max_change_idx = max(range(len(joint_changes)), key=lambda i: abs(joint_changes[i][1]))
-                    max_change_name = joint_changes[max_change_idx][0]
-                    max_change_value = joint_changes[max_change_idx][1]
+                print(f"\nFK旋转变化 (Frobenius norm): {rot_diff:.4f}")
+                print(f"近似旋转角度: {rot_diff * 40:.1f}°")
 
-                    if abs(max_change_value) < 5:
-                        print("\n⚠ 关节变化太小，请转动更大角度")
-                    elif rot_diff < 0.05:
-                        print("\n✗ FK旋转变化太小，可能有问题")
-                    elif max_change_value > 0 and rot_diff > 0.1:
-                        print(f"\n✓ 正向转动 {max_change_name} → FK旋转正向变化，验证通过")
-                    elif max_change_value < 0 and rot_diff > 0.1:
-                        print(f"\n✓ 反向转动 {max_change_name} → FK旋转变化 {rot_diff:.4f}")
-                        print("  提示: 请尝试反向转动同一关节，验证FK旋转变化是否反向")
-                    else:
-                        print(f"\n? 验证结果不明确，请重新测试")
+                # 判断验证结果
+                max_change_idx = max(range(len(joint_changes)), key=lambda i: abs(joint_changes[i][1]))
+                max_change_name = joint_changes[max_change_idx][0]
+                max_change_value = joint_changes[max_change_idx][1]
 
-                    print("="*50)
+                if abs(max_change_value) < 5:
+                    print("\n⚠ 关节变化太小，请转动更大角度")
+                elif rot_diff < 0.05:
+                    print("\n✗ FK旋转变化太小，可能有问题")
+                elif max_change_value > 0 and rot_diff > 0.1:
+                    print(f"\n✓ 正向转动 {max_change_name} → FK旋转正向变化，验证通过")
+                elif max_change_value < 0 and rot_diff > 0.1:
+                    print(f"\n✓ 反向转动 {max_change_name} → FK旋转变化 {rot_diff:.4f}")
+                    print("  提示: 请尝试反向转动同一关节，验证FK旋转变化是否反向")
+                else:
+                    print(f"\n? 验证结果不明确，请重新测试")
 
-                elif key == 'V':
-                    # 显示详细关节状态
-                    print(f"\n详细关节状态:")
-                    print("  完整关节数组 (16维):")
-                    for i in range(16):
-                        print(f"    [{i:2d}]: {joints[i]:7.2f}°")
-                    print(f"\n  提取的手臂关节 (FK使用):")
-                    for i, idx in enumerate(joint_indices):
-                        print(f"    {joint_names[i]}: {joints[idx]:.2f}°")
+                print("="*50)
 
-                elif key == 'Q':
-                    print("\n退出FK验证")
-                    break
+            elif key == 'V':
+                # 显示详细关节状态
+                print("\n详细关节状态:")
+                print("  完整关节数组 (16维):")
+                for i in range(16):
+                    print(f"    [{i:2d}]: {joints[i]:7.2f}°")
+                print(f"\n  提取的手臂关节 (FK使用):")
+                for i, idx in enumerate(joint_indices):
+                    print(f"    {joint_names[i]}: {joints[idx]:.2f}°")
 
-            time.sleep(0.1)
+            elif key == 'Q':
+                print("退出FK验证")
+                break
+
+            else:
+                print(f"未知命令: {key}")
 
     def load_coordinate_transformer(self) -> bool:
         """加载坐标变换器（基于手眼标定结果）"""
