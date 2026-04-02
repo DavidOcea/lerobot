@@ -2366,12 +2366,21 @@ class PrecisionPlaceSystem:
                 print(f"\n开始相机内参标定，使用 {len(all_charuco_corners)} 张图像...")
 
                 try:
-                    # 标定相机
+                    # OpenCV 4.12+ 移除了 calibrateCameraCharuco，需要使用 matchImagePoints + calibrateCamera
+                    all_obj_points = []
+                    all_img_points = []
+
+                    for corners, ids in zip(all_charuco_corners, all_charuco_ids):
+                        # 使用 board.matchImagePoints 获取对应的对象点和图像点
+                        obj_pts, img_pts = charuco_board.matchImagePoints(corners, ids)
+                        all_obj_points.append(obj_pts)
+                        all_img_points.append(img_pts)
+
+                    # 使用标准 calibrateCamera 进行标定
                     reprojection_error, camera_matrix, dist_coeffs, rvecs, tvecs = \
-                        cv2.aruco.calibrateCameraCharuco(
-                            all_charuco_corners,
-                            all_charuco_ids,
-                            charuco_board,
+                        cv2.calibrateCamera(
+                            all_obj_points,
+                            all_img_points,
                             image_size,
                             None,
                             None
