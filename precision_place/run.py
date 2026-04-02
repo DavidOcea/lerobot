@@ -2074,6 +2074,185 @@ class PrecisionPlaceSystem:
             calibrator.save(str(tcp_path))
             print(f"✓ 已保存到: {tcp_path}")
 
+    def verify_fk_rotation(self):
+        """
+        验证FK旋转计算是否正确
+
+        通过对比FK计算的旋转变化与实际关节运动方向，
+        检测URDF关节方向定义是否与实际机器人一致。
+        """
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        print("\n" + "="*60)
+        print("FK旋转验证")
+        print("="*60)
+        print("""
+原理：
+  通过对比FK计算的旋转变化与关节运动方向，
+  验证URDF关节方向定义是否正确。
+
+方法：
+  1. 记录初始关节状态和FK输出
+  2. 用示教器转动某个关节
+  3. 比较FK旋转变化方向与关节运动方向
+
+验证标准：
+  - 正向转动关节 → FK旋转应该正向变化
+  - 反向转动关节 → FK旋转应该反向变化
+  - 转动角度越大 → FK旋转变化越大
+""")
+
+        # 检查/初始化正运动学
+        if self.forward_kinematics is None:
+            if self.urdf_path is None:
+                print("\n需要URDF文件来计算正运动学。")
+                urdf_input = input("请输入URDF文件路径: ").strip()
+                if not urdf_input:
+                    return
+                self.urdf_path = urdf_input
+
+            if self.urdf_path and _has_fk:
+                try:
+                    self.forward_kinematics = create_fk_from_urdf(self.urdf_path, self.current_arm)
+                    print(f"✓ 正运动学已初始化")
+                    print(f"  末端坐标系: {self.forward_kinematics.end_effector_frame}")
+                    print(f"  关节名称: {self.forward_kinematics.joint_names}")
+                    print(f"  关节索引: {self.forward_kinematics.joint_indices}")
+                except Exception as e:
+                    print(f"✗ 正运动学初始化失败: {e}")
+                    return
+            else:
+                print("✗ 缺少正运动学，无法验证")
+                return
+
+        print("\n" + "-"*60)
+        print("验证步骤：")
+        print("  1. 按 [R] 记录当前位置作为参考")
+        print("  2. 用示教器转动关节（建议转动30-45度）")
+        print("  3. 按 [C] 捕获并对比变化")
+        print("  4. 按 [V] 查看详细关节变化")
+        print("  5. 按 [Q] 退出")
+        print("-"*60)
+
+        # 获取手臂关节名称
+        if self.current_arm == "right":
+            joint_names = [f"right_arm_joint_{i+1}" for i in range(6)]
+            joint_indices = list(range(7, 13))
+        else:
+            joint_names = [f"left_arm_joint_{i+1}" for i in range(6)]
+            joint_indices = list(range(0, 6))
+
+        # 状态变量
+        ref_joints = None
+        ref_rotation = None
+
+        while True:
+            joints = self.controller.get_joint_states()
+            if joints is None:
+                print("⚠ 无法获取关节状态")
+                continue
+
+            # 计算当前FK
+            try:
+                pose = self.forward_kinematics.compute(joints)
+                current_rotation = pose.rotation_matrix
+                current_pos = pose.get_position()
+
+                # 显示当前状态
+                print(f"\r当前位置: ({current_pos[0]:.3f}, {current_pos[1]:.3f}, {current_pos[2]:.3f})m  ", end="")
+
+                if ref_rotation is not None:
+                    rot_diff = np.linalg.norm(current_rotation - ref_rotation, 'fro')
+                    print(f"旋转变化: {rot_diff:.4f}  ", end="")
+
+                print("[R]记录 [C]捕获 [V]详情 [Q]退出  ", end="")
+                print(flush=True)
+
+            except Exception as e:
+                print(f"\rFK计算错误: {e}          ", end="")
+                print(flush=True)
+
+            # 等待用户输入
+            import select
+            import sys
+
+            # 非阻塞检查输入
+            if select.select([sys.stdin], [], [], 0.1)[0]:
+                key = sys.stdin.readline().strip().upper()
+
+                if key == 'R':
+                    # 记录参考位置
+                    ref_joints = joints.copy()
+                    ref_rotation = current_rotation.copy()
+                    print(f"\n✓ 已记录参考位置")
+                    # 显示关节角度
+                    print("  参考关节角度:")
+                    for i, (name, idx) in enumerate(zip(joint_names, joint_indices)):
+                        print(f"    {name}: {joints[idx]:.2f}°")
+
+                elif key == 'C':
+                    # 捕获并对比
+                    if ref_joints is None or ref_rotation is None:
+                        print("\n⚠ 请先按 [R] 记录参考位置")
+                        continue
+
+                    # 计算关节变化
+                    joint_changes = []
+                    for i, (name, idx) in enumerate(zip(joint_names, joint_indices)):
+                        change = joints[idx] - ref_joints[idx]
+                        joint_changes.append((name, change))
+
+                    # 计算旋转变化
+                    rot_diff = np.linalg.norm(current_rotation - ref_rotation, 'fro')
+
+                    print(f"\n" + "="*50)
+                    print("对比结果")
+                    print("="*50)
+                    print("关节变化:")
+                    for name, change in joint_changes:
+                        marker = "← 主要变化" if abs(change) > 5 else ""
+                        print(f"  {name}: {change:+.2f}° {marker}")
+
+                    print(f"\nFK旋转变化 (Frobenius norm): {rot_diff:.4f}")
+                    print(f"近似旋转角度: {rot_diff * 40:.1f}°")  # 粗略估算
+
+                    # 判断验证结果
+                    max_change_idx = max(range(len(joint_changes)), key=lambda i: abs(joint_changes[i][1]))
+                    max_change_name = joint_changes[max_change_idx][0]
+                    max_change_value = joint_changes[max_change_idx][1]
+
+                    if abs(max_change_value) < 5:
+                        print("\n⚠ 关节变化太小，请转动更大角度")
+                    elif rot_diff < 0.05:
+                        print("\n✗ FK旋转变化太小，可能有问题")
+                    elif max_change_value > 0 and rot_diff > 0.1:
+                        print(f"\n✓ 正向转动 {max_change_name} → FK旋转正向变化，验证通过")
+                    elif max_change_value < 0 and rot_diff > 0.1:
+                        print(f"\n✓ 反向转动 {max_change_name} → FK旋转变化 {rot_diff:.4f}")
+                        print("  提示: 请尝试反向转动同一关节，验证FK旋转变化是否反向")
+                    else:
+                        print(f"\n? 验证结果不明确，请重新测试")
+
+                    print("="*50)
+
+                elif key == 'V':
+                    # 显示详细关节状态
+                    print(f"\n详细关节状态:")
+                    print("  完整关节数组 (16维):")
+                    for i in range(16):
+                        print(f"    [{i:2d}]: {joints[i]:7.2f}°")
+                    print(f"\n  提取的手臂关节 (FK使用):")
+                    for i, idx in enumerate(joint_indices):
+                        print(f"    {joint_names[i]}: {joints[idx]:.2f}°")
+
+                elif key == 'Q':
+                    print("\n退出FK验证")
+                    break
+
+            time.sleep(0.1)
+
     def load_coordinate_transformer(self) -> bool:
         """加载坐标变换器（基于手眼标定结果）"""
         if not _has_coord_transform:
@@ -3711,6 +3890,7 @@ def main():
                 print("  T. TCP标定 (探针四点法)")
                 print("  I. TCP迭代优化 (相机辅助，推荐)")
                 print("  R. 重投影验证 (验证手眼标定精度)")
+                print("  F. FK旋转验证 (验证URDF关节方向)")
                 print("  === 传统标定 ===")
                 print("  1. 像素-毫米标定 (基础标定)")
                 print("  2. 关节灵敏度标定 (手动移动)")
@@ -3745,6 +3925,11 @@ def main():
                     if not system.controller:
                         system.connect()
                     system.tcp_iterative_refinement()
+                elif calib_choice == "F":
+                    # FK旋转验证
+                    if not system.controller:
+                        system.connect()
+                    system.verify_fk_rotation()
                 elif calib_choice == "R":
                     # 重投影验证
                     system.reprojection_verification()
