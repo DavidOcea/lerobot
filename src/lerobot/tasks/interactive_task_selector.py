@@ -161,43 +161,44 @@ class InteractiveTaskSelector:
         """Build the interactive prompt for user."""
         lines = [
             "=" * 60,
-            "INTERACTIVE TASK SELECTION",
+            "交互式任务选择",
             "=" * 60,
         ]
 
         if current_task:
             lines.extend([
-                f"Next task: {current_task.name}",
-                f"Policy: {current_task.policy_path}",
+                f"下一个任务: {current_task.name}",
+                f"策略路径: {current_task.policy_path}",
                 "",
             ])
 
         lines.extend([
-            "Options:",
-            "  1 - Execute next task in sequence",
-            "  2 - Create custom task or select existing task",
-            "  3 - Toggle automatic/interactive mode",
-            "  R - Reset robot joints to zero position (smooth reset)",
-            "  0 - Exit",
+            "选项:",
+            "  1 - 执行下一个任务",
+            "  2 - 选择或创建自定义任务",
+            "  3 - 切换自动/交互模式",
+            "  R - 复位机器人关节到零位 (平滑复位)",
+            "  0 - 退出",
             "",
         ])
 
         # Show task list with execution status
-        lines.append("Available tasks:")
+        lines.append("可用任务:")
         for i, task in enumerate(self.config_tasks):
-            current = " <- NEXT" if i == self._current_task_index else ""
+            current = " ← 下一个" if i == self._current_task_index else ""
 
             # Add execution status
             status = ""
             if task.name in self._task_execution_counts:
                 count = self._task_execution_counts[task.name]
-                status = f" (executed {count}x)"
+                status = f" (已执行 {count} 次)"
 
             lines.append(f"  {i+1}. {task.name}{status}{current}")
 
+        mode_str = "自动" if self._execution_mode.value == "automatic" else "交互"
         lines.extend([
             "",
-            f"Current mode: {self._execution_mode.value}",
+            f"当前模式: {mode_str}",
             "=" * 60,
         ])
 
@@ -305,20 +306,20 @@ class InteractiveTaskSelector:
             # Create custom task or select existing task
             # Show sub-menu for task selection
             print("\n" + "=" * 60)
-            print("TASK SELECTION")
+            print("任务选择")
             print("=" * 60)
-            print("Options:")
-            print("  1 - Select from existing tasks")
-            print("  2 - Create new custom task")
-            print("  0 - Cancel")
+            print("选项:")
+            print("  1 - 从已有任务中选择")
+            print("  2 - 创建新的自定义任务")
+            print("  0 - 取消")
             print("=" * 60)
 
             try:
-                choice = self._get_input("Select option (1/2/0): ").strip()
+                choice = self._get_input("请选择 (1/2/0): ").strip()
 
                 if choice == "1":
                     # Select from existing tasks
-                    print("\nAvailable tasks:")
+                    print("\n可用任务:")
                     task_names = {task.name.lower(): task for task in self.config_tasks}
 
                     for i, task in enumerate(self.config_tasks):
@@ -326,11 +327,11 @@ class InteractiveTaskSelector:
                         status_info = ""
                         if task.name in self._task_execution_counts:
                             count = self._task_execution_counts[task.name]
-                            status_info = f" [executed {count}x]"
-                        current = " <- NEXT" if i == self._current_task_index else ""
+                            status_info = f" [已执行 {count} 次]"
+                        current = " ← 下一个" if i == self._current_task_index else ""
                         print(f"  {i+1}. {task.name}{status_info}{current}")
 
-                    task_input = self._get_input("Enter task number or name: ").strip()
+                    task_input = self._get_input("输入任务编号或名称: ").strip()
 
                     # Try to parse as number first
                     try:
@@ -343,7 +344,7 @@ class InteractiveTaskSelector:
                                 selected_task=selected_task.name,
                             )
                         else:
-                            print(f"Invalid task number: {task_input}")
+                            print(f"无效的任务编号: {task_input}")
                             return TaskSelection(
                                 execution_mode=ExecutionMode.INTERACTIVE,
                                 selected_task=None,  # Stay in interactive mode
@@ -358,7 +359,7 @@ class InteractiveTaskSelector:
                                 selected_task=task_input,
                             )
                         else:
-                            print(f"Task '{task_input}' not found")
+                            print(f"未找到任务: '{task_input}'")
                             return TaskSelection(
                                 execution_mode=ExecutionMode.INTERACTIVE,
                                 selected_task=None,  # Stay in interactive mode
@@ -366,7 +367,7 @@ class InteractiveTaskSelector:
 
                 elif choice == "2":
                     # Create new custom task
-                    custom_name = self._get_input("Enter new task name: ").strip()
+                    custom_name = self._get_input("输入新任务名称: ").strip()
                     if custom_name:
                         logger.info(f"User creating custom task: {custom_name}")
                         return TaskSelection(
@@ -374,7 +375,7 @@ class InteractiveTaskSelector:
                             custom_task_name=custom_name,
                         )
                     else:
-                        print("Task name cannot be empty")
+                        print("任务名称不能为空")
                         return TaskSelection(
                             execution_mode=ExecutionMode.INTERACTIVE,
                             selected_task=None,  # Stay in interactive mode
@@ -388,7 +389,7 @@ class InteractiveTaskSelector:
                     )
 
                 else:
-                    print(f"Invalid choice: {choice}")
+                    print(f"无效的选择: {choice}")
                     return TaskSelection(
                         execution_mode=ExecutionMode.INTERACTIVE,
                         selected_task=None,  # Stay in interactive mode
@@ -434,6 +435,7 @@ class InteractiveTaskSelector:
 
         # Unknown input
         logger.warning(f"Unknown user input: {user_input}")
+        print(f"未知输入: {user_input}")
         return TaskSelection(
             execution_mode=ExecutionMode.INTERACTIVE,
             selected_task=None,  # Stay in interactive mode
