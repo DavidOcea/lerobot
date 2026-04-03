@@ -43,17 +43,23 @@ class PostProcessorConfig:
     # Safety limits
     max_position_delta: float = 0.5  # Maximum position change per step
 
-    # Motion-state adaptive filter (新增)
-    # 根据运动状态动态调整滤波强度，实现:
-    # - 匀速移动: 正常滤波(平滑优先)
-    # - 变速移动: 减弱滤波(响应优先)
-    # - 抓取/放置: 最弱滤波(精度优先)
+    # Motion-state adaptive filter (自适应滤波 v2)
+    # 改进：渐变Alpha + 状态滞回 + 目标稳定性判定
     enable_motion_adaptive_filter: bool = True
-    filter_alpha_uniform: float = 0.7      # 匀速状态: 正常平滑
-    filter_alpha_accelerating: float = 0.85  # 变速状态: 快速响应
-    filter_alpha_near_target: float = 0.95   # 到位状态: 高精度
-    velocity_stability_threshold: float = 0.05  # rad/s, 判定匀速的速度变化阈值
-    target_distance_threshold: float = 0.03     # rad, 判定到位的目标距离阈值
+    filter_alpha_uniform: float = 0.7       # 匀速状态: 正常平滑
+    filter_alpha_accelerating: float = 0.75  # 变速状态: 略微减弱（更保守）
+    filter_alpha_near_target: float = 0.85   # 到位状态: 中等减弱（不是0.95）
+
+    # 目标稳定性判定（用于正确识别"到位"）
+    target_stability_threshold: float = 0.01   # rad, 目标变化小于此值视为稳定
+    target_stable_count_threshold: int = 10    # 连续N次稳定才判定到位
+
+    # Alpha渐变（避免突变）
+    alpha_smooth_rate: float = 0.02  # 每周期alpha最多变化2%
+
+    # 状态滞回（防止震荡）
+    near_target_enter_threshold: float = 0.02   # 进入到位状态的阈值
+    near_target_exit_threshold: float = 0.05    # 退出到位状态的阈值
 
     def __post_init__(self):
         if self.max_velocity_per_joint is None:
@@ -108,9 +114,13 @@ class ActionPostProcessor:
         self._previous_acceleration: dict[str, float] = {}
         self._filtered_actions: dict[str, float] = {}
 
-        # Motion state tracking for adaptive filter (新增)
-        self._current_motion_state: str = "accelerating"  # uniform/accelerating/near_target
-        self._motion_state_counter: int = 0  # 状态持续计数
+        # Motion state tracking for adaptive filter v2 (改进版)
+        self._current_motion_state: str = "uniform"  # uniform/accelerating/near_target
+        self._current_alpha: float = 0.7  # 当前实际使用的alpha（渐变）
+
+        # 目标稳定性追踪（用于正确判定到位）
+        self._last_raw_targets: dict[str, float] = {}  # 上一步的原始目标
+        self._target_stable_count: int = 0  # 目标连续稳定计数
 
         # Timing
         self._last_timestamp: float | None = None
@@ -295,59 +305,108 @@ class ActionPostProcessor:
         return limited_positions
 
     def _detect_motion_state(self, action_positions: dict[str, float]) -> str:
-        """Detect current motion state for adaptive filter.
+        """Detect current motion state for adaptive filter (v2: 改进版).
+
+        改进点：
+        1. 基于目标稳定性判定到位（而非相对距离）
+        2. 状态滞回（防止震荡）
+        3. 更保守的判定逻辑
 
         Returns:
             Motion state: "uniform" (匀速), "accelerating" (变速), "near_target" (到位)
         """
-        # 初次执行，默认为变速状态
-        if self._previous_action is None or len(self._previous_velocity) == 0:
-            return "accelerating"
+        # 初次执行
+        if self._previous_action is None:
+            self._last_raw_targets = action_positions.copy()
+            return "uniform"
 
-        # 1. 检查是否接近目标（到位阶段）- 最高优先级
-        max_distance = 0
+        # === 1. 检查目标稳定性（核心改进）===
+        # 判断策略输出的目标是否稳定（连续输出相近值）
+        target_is_stable = True
+        max_target_change = 0
+
         for joint_name, target_pos in action_positions.items():
             if joint_name in self._gripper_joints:
                 continue
-            prev_pos = self._previous_action.get(joint_name, target_pos)
-            distance = abs(target_pos - prev_pos)
-            max_distance = max(max_distance, distance)
 
-        if max_distance < self.config.target_distance_threshold:
-            return "near_target"
+            last_target = self._last_raw_targets.get(joint_name, target_pos)
+            target_change = abs(target_pos - last_target)
+            max_target_change = max(max_target_change, target_change)
 
-        # 2. 检查速度变化（判定匀速 vs 变速）
-        velocity_changes = []
-        for joint_name in self._previous_velocity:
+            if target_change > self.config.target_stability_threshold:
+                target_is_stable = False
+
+        # 更新上一步目标
+        self._last_raw_targets = action_positions.copy()
+
+        # 更新稳定计数
+        if target_is_stable:
+            self._target_stable_count += 1
+        else:
+            self._target_stable_count = 0
+
+        # === 2. 状态滞回判定 ===
+        # 计算"原始目标与当前实际位置的差距"用于判定
+        max_distance_to_target = 0
+        for joint_name, target_pos in action_positions.items():
             if joint_name in self._gripper_joints:
                 continue
+            # 使用滤波后的位置作为"当前位置"的近似
+            current_pos = self._filtered_actions.get(joint_name, target_pos)
+            distance = abs(target_pos - current_pos)
+            max_distance_to_target = max(max_distance_to_target, distance)
 
-            # 计算当前目标速度
-            current_pos = self._previous_action.get(joint_name, 0)
-            target_pos = action_positions.get(joint_name, current_pos)
-            current_velocity = abs(target_pos - current_pos) / self._dt_estimate
+        # 滞回逻辑
+        current_state = self._current_motion_state
 
-            # 与上次速度比较变化幅度
-            prev_vel = abs(self._previous_velocity.get(joint_name, 0))
-            velocity_change = abs(current_velocity - prev_vel)
-            velocity_changes.append(velocity_change)
+        # 到位判定：目标稳定 + 距离小
+        if (max_distance_to_target < self.config.near_target_enter_threshold
+            and self._target_stable_count >= self.config.target_stable_count_threshold):
+            # 进入到位状态：需要目标连续稳定N次 + 距离小于进入阈值
+            return "near_target"
 
-        if velocity_changes:
-            max_change = max(velocity_changes)
-            if max_change > self.config.velocity_stability_threshold:
-                return "accelerating"  # 变速
+        # 退出到位判定：距离变大
+        if current_state == "near_target":
+            if max_distance_to_target > self.config.near_target_exit_threshold:
+                # 距离超过退出阈值，离开到位状态
+                pass  # 继续判断是uniform还是accelerating
             else:
-                return "uniform"  # 匀速
+                # 在滞回区内，保持到位状态
+                return "near_target"
 
-        return "uniform"
+        # === 3. 匀速 vs 变速判定 ===
+        if max_target_change > 0.02:  # 目标变化大
+            return "accelerating"
+        else:
+            return "uniform"
+
+    def _get_smooth_alpha(self, target_alpha: float) -> float:
+        """平滑过渡alpha，避免突变.
+
+        Args:
+            target_alpha: 目标alpha值
+
+        Returns:
+            平滑后的alpha值
+        """
+        delta = target_alpha - self._current_alpha
+        if abs(delta) > self.config.alpha_smooth_rate:
+            delta = self.config.alpha_smooth_rate * np.sign(delta)
+        self._current_alpha += delta
+        return self._current_alpha
 
     def _apply_low_pass_filter(self, action_positions: dict[str, float]) -> dict[str, float]:
-        """Apply motion-adaptive low-pass filter.
+        """Apply motion-adaptive low-pass filter (v2: 改进版).
 
-        根据运动状态动态调整滤波强度:
-        - 匀速移动 (uniform): 正常滤波 alpha=0.7, 平滑优先
-        - 变速移动 (accelerating): 减弱滤波 alpha=0.85, 响应优先
-        - 抓取/放置 (near_target): 最弱滤波 alpha=0.95, 精度优先
+        改进点：
+        1. 基于目标稳定性的状态判定
+        2. Alpha渐变（避免跳变）
+        3. 更保守的参数
+
+        状态对应滤波强度:
+        - 匀速移动 (uniform): alpha=0.7, 平滑优先
+        - 变速移动 (accelerating): alpha=0.75, 略微减弱
+        - 抓取/放置 (near_target): alpha=0.85, 中等减弱
 
         Formula: filtered = alpha * raw + (1 - alpha) * previous_filtered
         Gripper joints use alpha=1.0 to disable filtering for faster response.
@@ -363,21 +422,26 @@ class ActionPostProcessor:
         self._current_motion_state = motion_state
         self._adaptive_filter_stats[motion_state] += 1
 
-        # 根据运动状态选择滤波强度
+        # 根据运动状态选择目标alpha
         if self.config.enable_motion_adaptive_filter:
             if motion_state == "near_target":
-                alpha = self.config.filter_alpha_near_target      # 0.95, 高精度
+                target_alpha = self.config.filter_alpha_near_target     # 0.85
             elif motion_state == "accelerating":
-                alpha = self.config.filter_alpha_accelerating     # 0.85, 快速响应
+                target_alpha = self.config.filter_alpha_accelerating    # 0.75
             else:  # uniform
-                alpha = self.config.filter_alpha_uniform          # 0.7, 平滑
+                target_alpha = self.config.filter_alpha_uniform         # 0.7
         else:
-            alpha = self.config.filter_alpha
+            # 禁用自适应时，使用固定alpha
+            target_alpha = self.config.filter_alpha
+
+        # Alpha渐变（关键改进：避免突变）
+        alpha = self._get_smooth_alpha(target_alpha)
 
         # 周期性日志（每100次）
         if self._total_processed % 100 == 0:
             logger.debug(
-                f"Motion-adaptive filter: state={motion_state}, alpha={alpha:.2f}, "
+                f"Adaptive filter v2: state={motion_state}, alpha={alpha:.3f}, "
+                f"target_alpha={target_alpha:.2f}, stable_count={self._target_stable_count}, "
                 f"stats={self._adaptive_filter_stats}"
             )
 
@@ -524,9 +588,11 @@ class ActionPostProcessor:
         self._previous_acceleration.clear()
         self._filtered_actions.clear()
         self._last_timestamp = None
-        # Reset motion state tracking
-        self._current_motion_state = "accelerating"
-        self._motion_state_counter = 0
+        # Reset motion state tracking (v2)
+        self._current_motion_state = "uniform"
+        self._current_alpha = 0.7
+        self._last_raw_targets.clear()
+        self._target_stable_count = 0
         self._adaptive_filter_stats = {"uniform": 0, "accelerating": 0, "near_target": 0}
         logger.info("ActionPostProcessor reset")
 
@@ -542,9 +608,12 @@ class ActionPostProcessor:
                 if self._total_processed > 0
                 else 0
             ),
-            # Motion-adaptive filter statistics
+            # Motion-adaptive filter v2 statistics
             "current_motion_state": self._current_motion_state,
+            "current_alpha": round(self._current_alpha, 3),
+            "target_stable_count": self._target_stable_count,
             "adaptive_filter_stats": self._adaptive_filter_stats.copy(),
+            "enable_motion_adaptive_filter": self.config.enable_motion_adaptive_filter,
         }
 
     def update_config(self, **kwargs):
