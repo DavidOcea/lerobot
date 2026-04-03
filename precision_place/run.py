@@ -1976,26 +1976,26 @@ class PrecisionPlaceSystem:
             y_offset += 25
 
             if pixel_start:
-                cv2.putText(display, f"起始点: {pixel_start}", (10, y_offset),
+                cv2.putText(display, f"Start: {pixel_start}", (10, y_offset),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
                 cv2.circle(display, pixel_start, 5, (255, 255, 0), -1)
                 y_offset += 25
 
-            cv2.putText(display, f"测试移动: X+{test_movement[0]:.0f}mm", (10, y_offset),
+            cv2.putText(display, f"Move: X+{test_movement[0]:.0f}mm", (10, y_offset),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
             y_offset += 25
 
             # 显示迭代历史
             stats = refiner.get_statistics()
             if stats['iterations'] > 0:
-                cv2.putText(display, f"迭代次数: {stats['iterations']}", (10, y_offset),
+                cv2.putText(display, f"Iter: {stats['iterations']}", (10, y_offset),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
                 y_offset += 25
-                cv2.putText(display, f"当前误差: {stats['final_error_mm']:.2f}mm", (10, y_offset),
+                cv2.putText(display, f"Error: {stats['final_error_mm']:.2f}mm", (10, y_offset),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                            (0, 255, 0) if stats['final_error_mm'] < 1.0 else (0, 0, 255), 2)
 
-            cv2.putText(display, "[C]捕获起始点 [M]执行移动 [R]重置 [Q]退出", (10, display.shape[0] - 10),
+            cv2.putText(display, "[C]apture [M]ove [R]eset [Q]uit", (10, display.shape[0] - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
             cv2.imshow("TCP Iterative Refinement", display)
@@ -2048,7 +2048,7 @@ class PrecisionPlaceSystem:
                     if image2 is not None:
                         display2 = image2.copy()
                         cv2.circle(display2, pixel_start, 5, (255, 255, 0), -1)
-                        cv2.putText(display2, "移动探针后按C捕获", (10, 30),
+                        cv2.putText(display2, "Move probe, press C to capture", (10, 30),
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
                         cv2.imshow("TCP Iterative Refinement", display2)
 
