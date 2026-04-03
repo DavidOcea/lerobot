@@ -1789,15 +1789,27 @@ class PrecisionPlaceSystem:
                 success, result = self.tcp_calibrator.solve()
 
                 if success and result.valid:
-                    # 保存结果
+                    # 精度达标，自动保存
                     output_path = Path(__file__).parent / "tcp_offset.yaml"
                     self.tcp_calibrator.save(str(output_path))
                     print(f"\n✓ TCP标定成功！结果已保存到: {output_path}")
                     print(f"  TCP偏移: ({result.offset_x*1000:.2f}, {result.offset_y*1000:.2f}, {result.offset_z*1000:.2f}) mm")
                     print(f"  RMSE误差: {result.rmse_mm:.3f} mm")
                 else:
-                    print(f"\n✗ TCP标定失败或精度不足")
+                    # 精度不达标，询问是否仍要保存（可用于迭代优化的起点）
+                    print(f"\n✗ TCP标定精度不足 (RMSE: {result.rmse_mm:.2f}mm > 0.5mm)")
                     print("  建议: 检查探针是否牢固安装，姿态差异是否足够大")
+                    print(f"  当前TCP偏移: ({result.offset_x*1000:.2f}, {result.offset_y*1000:.2f}, {result.offset_z*1000:.2f}) mm")
+
+                    save_anyway = input("  是否仍保存此结果（可作为迭代优化的起点）? [Y/N]: ").strip().upper()
+                    if save_anyway == 'Y':
+                        output_path = Path(__file__).parent / "tcp_offset.yaml"
+                        # 强制设置valid=True以便保存
+                        self.tcp_calibrator.result.valid = True
+                        self.tcp_calibrator.save(str(output_path))
+                        print(f"  ✓ 已保存到: {output_path}")
+                        print("  提示: 可使用TCP迭代优化 (选项 I) 来提高精度")
+
                     retry = input("  是否重新采集? [Y/N]: ").strip().upper()
                     if retry == 'Y':
                         self.tcp_calibrator.clear_captures()
