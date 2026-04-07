@@ -201,3 +201,70 @@ class SupreRobotHardwareManager:
             # 我们的分发逻辑保证了 Eyou 的列表是完整的。
             print(f"Sending command to {instance.__class__.__name__}: {commands}")
             instance.write(commands)
+
+    # ==================== CST 力矩控制支持 ====================
+    # 用于力反馈功能
+
+    def configure_cst_mode(self, interpolation_period_ms: int = 10) -> bool:
+        """
+        配置所有电机为 CST 力矩控制模式。
+
+        Args:
+            interpolation_period_ms: 插补周期（毫秒）
+
+        Returns:
+            bool: 全部配置成功返回 True
+        """
+        print("Configuring CST mode for all hardware...")
+        success = True
+        for instance in self._hardware_instances:
+            if hasattr(instance, 'configure_cst_mode'):
+                if not instance.configure_cst_mode(interpolation_period_ms):
+                    success = False
+        return success
+
+    def configure_csp_mode(self) -> bool:
+        """
+        重新配置所有电机为 CSP 位置控制模式。
+
+        Returns:
+            bool: 全部配置成功返回 True
+        """
+        print("Reconfiguring CSP mode for all hardware...")
+        success = True
+        for instance in self._hardware_instances:
+            if hasattr(instance, 'configure_csp_mode'):
+                if not instance.configure_csp_mode():
+                    success = False
+        return success
+
+    def write_torques(self, torques: List[float], rated_torque: float = 2.0) -> None:
+        """
+        发送力矩指令到所有电机（CST 模式）。
+
+        用于力反馈功能，将 Follower 的力数据转换为 Leader 的阻尼力矩。
+
+        Args:
+            torques: 全局力矩向量，单位：Nm
+            rated_torque: 电机额定力矩，单位：Nm
+        """
+        if len(torques) != self.num_joints:
+            raise ValueError(f"Torque vector length ({len(torques)}) does not match number of joints ({self.num_joints}).")
+
+        # 分发力矩指令到各个硬件
+        hw_torques = {}
+        for instance in self._hardware_instances:
+            num_hw_joints = instance.get_joint_count()
+            hw_torques[instance] = [0.0] * num_hw_joints
+
+        # 使用映射表分发
+        for global_index, torque_value in enumerate(torques):
+            mapping = self._joint_map[global_index]
+            instance = mapping['instance']
+            hw_index = mapping['hw_index']
+            hw_torques[instance][hw_index] = torque_value
+
+        # 发送到每个硬件
+        for instance, torque_list in hw_torques.items():
+            if hasattr(instance, 'write_torques'):
+                instance.write_torques(torque_list, rated_torque)

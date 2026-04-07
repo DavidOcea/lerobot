@@ -108,6 +108,14 @@ def teleop_loop(
 ):
     display_len = max(len(key) for key in robot.action_features)
     start = time.perf_counter()
+
+    # 检查是否支持力反馈
+    force_feedback_enabled = hasattr(robot, 'get_force_feedback') and hasattr(teleop, 'send_feedback')
+    if force_feedback_enabled:
+        logging.info("Force feedback is ENABLED for this teleoperation session.")
+    else:
+        logging.info("Force feedback is NOT available (robot or teleop does not support it).")
+
     while True:
         loop_start = time.perf_counter()
         action = teleop.get_action()
@@ -116,6 +124,12 @@ def teleop_loop(
             log_rerun_data(observation, action)
 
         robot.send_action(action)
+
+        # 力反馈：从 Follower 获取力数据，发送到 Leader
+        if force_feedback_enabled:
+            force_feedback = robot.get_force_feedback()
+            teleop.send_feedback(force_feedback)
+
         dt_s = time.perf_counter() - loop_start
         print(f"loop time: {dt_s * 1e3:.6f}ms ({1 / dt_s:.0f} Hz)")
         busy_wait(1 / fps - dt_s)

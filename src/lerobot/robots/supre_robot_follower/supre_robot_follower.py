@@ -362,9 +362,35 @@ class SupreRobotFollower(Robot):
 
     @property
     def _force_ft(self) -> dict[str, type]:
-        return {f"{motor}.force": float for motor in self.observation_joint_names}   
+        return {f"{motor}.force": float for motor in self.observation_joint_names}
+
+    def get_force_feedback(self) -> dict[str, float]:
+        """
+        获取当前关节力/力矩数据，用于力反馈功能。
+
+        Returns:
+            dict[str, float]: 力数据字典，格式为 {"joint_name.force": force_value_in_Nm}
+        """
+        if not self.is_connected:
+            raise RuntimeError("Follower robot is not connected.")
+
+        hd_readings = self._hardware_manager.read()
+        forces = hd_readings[1]
+
+        force_feedback = {}
+        for i, joint_name in enumerate(self.observation_joint_names):
+            force_feedback[f"{joint_name}.force"] = forces[i]
+
+        return force_feedback   
         
     def execute_trajectory(self, goal_action: dict[str, Any], duration: float = 1.0) -> None:
+        """
+        通过线性插值，在给定的时间内平滑地将机器人移动到目标位置。
+        这是一个阻塞式方法，直到轨迹完成。
+
+        :param goal_action: 包含最终目标关节位置的字典。
+        :param duration: 完成移动所需的总时间（秒）。
+        """
         """
         通过线性插值，在给定的时间内平滑地将机器人移动到目标位置。
         这是一个阻塞式方法，直到轨迹完成。

@@ -33,7 +33,7 @@ class SupreRobotLeader(Teleoperator):
         self.config = config
         self._hardware_manager: Optional[SupreRobotHardwareManager] = None
         self._is_connected_flag = False
-        
+
         # 为了让 observation_features 和 action_features 可以在 connect() 之前被调用，
         # 我们需要提前加载关节顺序。
         config.joint_config_path = str(Path(__file__).resolve().parent/config.joint_config_file)
@@ -43,15 +43,27 @@ class SupreRobotLeader(Teleoperator):
             self._joint_order = robot_yaml_config["joint_order"]
             self.num_joints = len(self._joint_order)
             self.observation_joint_names = self._joint_order
-            
+
         except (FileNotFoundError, KeyError) as e:
             raise ValueError(f"Failed to load joint_order from '{config.joint_config_path}': {e}")
-        self.joint_direction_map = {f"{self.observation_joint_names[i]}.pos": config.joint_direction[i] for i in range(len(self.observation_joint_names))}        
+        self.joint_direction_map = {f"{self.observation_joint_names[i]}.pos": config.joint_direction[i] for i in range(len(self.observation_joint_names))}
         self.prometheus_port = getattr(config, 'prometheus_port', None)
         self.joint_position_gauge = None
         if self.prometheus_port is not None:
             # 从管理器获取共享的 Gauge 对象
             self.joint_position_gauge = prometheus_manager.get_gauge('joint_position')
+
+        # ==================== 力反馈状态 ====================
+        # 用于将 Follower 的力数据转换为 Leader 的阻尼力矩
+
+        # CST 模式状态
+        self._cst_mode_enabled = False
+
+        # 力滤波缓冲
+        self._filtered_forces: Dict[str, float] = {}
+
+        # 统计信息
+        self._feedback_count = 0
 
     @property
     def is_connected(self) -> bool:
@@ -189,8 +201,13 @@ class SupreRobotLeader(Teleoperator):
         if not self.is_connected:
             print("Robot is already disconnected.")
             return
-        
+
         print("Disconnecting from robot...")
+
+        # 如果在 CST 模式，先切回 CSP 模式
+        if self._cst_mode_enabled:
+            self._disable_cst_mode()
+
         try:
             if self._hardware_manager:
                 self._hardware_manager.deactivate()
@@ -199,6 +216,8 @@ class SupreRobotLeader(Teleoperator):
         finally:
             self._hardware_manager = None
             self._is_connected_flag = False
+            self._cst_mode_enabled = False
+            self._filtered_forces.clear()
             print("Robot disconnected.")
 
     @property
@@ -206,8 +225,108 @@ class SupreRobotLeader(Teleoperator):
         return {}
 
     def send_feedback(self, feedback: dict[str, float]) -> None:
-        # TODO(rcadene, aliberts): Implement force feedback
-        raise NotImplementedError
+        """
+        接收 Follower 的力数据，转换为阻尼力矩发送到 Leader 电机。
+
+        实现力反馈功能：当 Follower 端受力时，Leader 端产生相应的阻尼力矩，
+        让操作者在摇操时能感受到阻力，增强临场感。
+
+        Args:
+            feedback: 力反馈字典，格式为 {"joint_name.force": force_value_in_Nm}
+
+        工作流程:
+            1. 接收 Follower 的力数据
+            2. 低通滤波平滑力信号
+            3. 计算阻尼力矩 = -力 × 阻尼增益
+            4. 限制最大阻尼力矩
+            5. 发送力矩指令到 Leader 电机（CST 模式）
+        """
+        if not self.is_connected:
+            raise RuntimeError("Leader teleoperator is not connected.")
+
+        # 检查是否启用力反馈
+        if not getattr(self.config, 'enable_force_feedback', True):
+            return
+
+        # 首次调用时启用 CST 模式
+        if not self._cst_mode_enabled:
+            if not self._enable_cst_mode():
+                print("Warning: Failed to enable CST mode, force feedback disabled")
+                return
+
+        # 计算每个关节的阻尼力矩
+        torques_to_send = [0.0] * self.num_joints
+
+        damping_gain = getattr(self.config, 'damping_gain', 0.3)
+        max_damping = getattr(self.config, 'max_damping_torque', 0.5)
+        filter_alpha = getattr(self.config, 'force_filter_alpha', 0.7)
+        rated_torque = getattr(self.config, 'rated_torque', 2.0)
+
+        for i, joint_name in enumerate(self.observation_joint_names):
+            force_key = f"{joint_name}.force"
+
+            # 获取力数据
+            raw_force = feedback.get(force_key, 0.0)
+
+            # 低通滤波
+            if joint_name in self._filtered_forces:
+                filtered_force = (
+                    filter_alpha * raw_force
+                    + (1 - filter_alpha) * self._filtered_forces[joint_name]
+                )
+            else:
+                filtered_force = raw_force
+            self._filtered_forces[joint_name] = filtered_force
+
+            # 计算阻尼力矩（反向，产生抵抗感）
+            damping_torque = -filtered_force * damping_gain
+
+            # 限制最大阻尼力矩（安全保护）
+            damping_torque = max(-max_damping, min(damping_torque, max_damping))
+
+            # 应用关节方向映射
+            direction = self.joint_direction_map.get(f"{joint_name}.pos", 1)
+            damping_torque *= direction
+
+            torques_to_send[i] = damping_torque
+
+        # 发送力矩指令
+        self._hardware_manager.write_torques(torques_to_send, rated_torque)
+
+        # 统计
+        self._feedback_count += 1
+        if self._feedback_count % 100 == 0:
+            print(f"Force feedback: {self._feedback_count} cycles, max torque: {max(abs(t) for t in torques_to_send):.3f} Nm")
+
+    def _enable_cst_mode(self) -> bool:
+        """启用 CST 力矩控制模式。"""
+        print("Enabling CST (Torque) mode for force feedback...")
+        try:
+            if self._hardware_manager.configure_cst_mode(interpolation_period_ms=10):
+                self._cst_mode_enabled = True
+                print("CST mode enabled successfully.")
+                return True
+            else:
+                print("Failed to configure CST mode.")
+                return False
+        except Exception as e:
+            print(f"Error enabling CST mode: {e}")
+            return False
+
+    def _disable_cst_mode(self) -> bool:
+        """切回 CSP 位置控制模式。"""
+        print("Switching back to CSP (Position) mode...")
+        try:
+            if self._hardware_manager.configure_csp_mode():
+                self._cst_mode_enabled = False
+                print("CSP mode restored.")
+                return True
+            else:
+                print("Failed to restore CSP mode.")
+                return False
+        except Exception as e:
+            print(f"Error disabling CST mode: {e}")
+            return False
     
     @cached_property
     def action_features(self) -> dict[str, type]:

@@ -240,6 +240,89 @@ class EyouMotorHardware(HardwareInterface):
             print(f"Error during deactivation: {e}")
         print("Deactivation successful.")
 
+    # ==================== CST 力矩控制模式支持 ====================
+    # 用于力反馈功能：将 Follower 的力数据转换为 Leader 的阻尼力矩
+
+    def configure_cst_mode(self, interpolation_period_ms: int = 10) -> bool:
+        """
+        配置所有电机为 CST (Cyclic Synchronous Torque) 力矩控制模式。
+
+        用于力反馈功能，使 Leader 电机能够接收力矩指令产生阻尼感。
+
+        Args:
+            interpolation_period_ms: 插补周期（毫秒），默认10ms
+
+        Returns:
+            bool: 配置成功返回 True
+        """
+        print(f"Configuring CST mode with interpolation period {interpolation_period_ms}ms...")
+
+        try:
+            for i, motor in enumerate(self.motor_nodes_):
+                if self.hw_start_enabled_[i]:
+                    # 配置 CST 模式
+                    result = motor.configure_cst_mode(interpolation_period_ms, 0, True)
+                    if result != 0:
+                        print(f"Error: Failed to configure CST mode for joint {self.joint_names_[i]}")
+                        return False
+                    print(f"  CST mode configured for {self.joint_names_[i]}")
+
+            print("CST mode configuration successful.")
+            return True
+
+        except Exception as e:
+            print(f"Error during CST mode configuration: {e}")
+            return False
+
+    def configure_csp_mode(self) -> bool:
+        """
+        重新配置所有电机为 CSP (Cyclic Synchronous Position) 位置控制模式。
+
+        从 CST 模式切换回位置控制模式。
+
+        Returns:
+            bool: 配置成功返回 True
+        """
+        print("Reconfiguring CSP (Position) mode...")
+
+        try:
+            for i, motor in enumerate(self.motor_nodes_):
+                if self.hw_start_enabled_[i]:
+                    result = motor.configure_csp_mode(0, True)
+                    if result != 0:
+                        print(f"Error: Failed to configure CSP mode for joint {self.joint_names_[i]}")
+                        return False
+
+            print("CSP mode configuration successful.")
+            return True
+
+        except Exception as e:
+            print(f"Error during CSP mode configuration: {e}")
+            return False
+
+    def write_torques(self, torques: List[float], rated_torque: float = 2.0) -> None:
+        """
+        发送力矩指令到所有电机（CST 模式）。
+
+        Args:
+            torques: 目标力矩列表，单位：Nm
+            rated_torque: 电机额定力矩，单位：Nm，默认2.0Nm
+                         用于将 Nm 转换为千分之额定力矩
+        """
+        if len(torques) != len(self.motor_nodes_):
+            raise ValueError(f"Torque list length {len(torques)} does not match motor count {len(self.motor_nodes_)}")
+
+        for i, motor in enumerate(self.motor_nodes_):
+            if self.hw_start_enabled_[i]:
+                # 单位转换：Nm → 千分之额定力矩 (permille)
+                # 公式：torque_permille = torque_Nm / rated_torque * 1000
+                torque_permille = int(torques[i] / rated_torque * 1000)
+
+                # 发送力矩指令
+                result = motor.send_cst_target_torque(torque_permille, 0, True)
+                if result != 0:
+                    print(f"Warning: Failed to send torque command to joint {self.joint_names_[i]}")
+
     def get_joint_count(self) -> int:
         """返回硬件中的电机数量。"""
         return len(self.motor_nodes_)
