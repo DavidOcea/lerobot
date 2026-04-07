@@ -36,6 +36,27 @@ teleop:
     - 1
     - 1
     - 1
+
+  # ==================== 力反馈配置 ====================
+  # Force feedback parameters for haptic sensation during teleoperation
+
+  # Enable/disable force feedback
+  enable_force_feedback: true
+
+  # Damping gain: higher value = stronger resistance sensation
+  # Recommended range: 0.5 - 2.0
+  damping_gain: 1.0
+
+  # Maximum damping torque limit (Nm) for safety
+  # Recommended range: 1.0 - 2.0 depending on motor capacity
+  max_damping_torque: 1.5
+
+  # Motor rated torque (Nm) for torque unit conversion
+  rated_torque: 2.0
+
+  # Low-pass filter coefficient (0-1): lower = smoother but slower response
+  # Recommended range: 0.3 - 0.7
+  force_filter_alpha: 0.5
 # ===============================================
 # Robot (Follower) Configuration
 # ===============================================
