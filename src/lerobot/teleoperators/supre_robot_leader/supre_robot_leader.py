@@ -58,6 +58,7 @@ class SupreRobotLeader(Teleoperator):
 
         # CST 模式状态
         self._cst_mode_enabled = False
+        self._force_feedback_failed = False  # 标志：CST 配置是否失败过
 
         # 力滤波缓冲
         self._filtered_forces: Dict[str, float] = {}
@@ -251,8 +252,14 @@ class SupreRobotLeader(Teleoperator):
         # 首次调用时启用 CST 模式
         if not self._cst_mode_enabled:
             if not self._enable_cst_mode():
-                print("Warning: Failed to enable CST mode, force feedback disabled")
+                # 配置失败，禁用力反馈并设置标志，避免每次循环都重试
+                print("Warning: Failed to enable CST mode, force feedback disabled for this session")
+                self._force_feedback_failed = True
                 return
+
+        # 如果之前失败过，直接返回
+        if getattr(self, '_force_feedback_failed', False):
+            return
 
         # 计算每个关节的阻尼力矩
         torques_to_send = [0.0] * self.num_joints
