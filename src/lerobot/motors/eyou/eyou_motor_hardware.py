@@ -249,6 +249,9 @@ class EyouMotorHardware(HardwareInterface):
 
         用于力反馈功能，使 Leader 电机能够接收力矩指令产生阻尼感。
 
+        注意：此方法会配置所有电机，不受 start_enabled 参数影响。
+        因为 Leader 作为摇操设备需要特殊处理：启动时不使能，但力反馈时需要配置 CST。
+
         Args:
             interpolation_period_ms: 插补周期（毫秒），默认10ms
 
@@ -259,13 +262,33 @@ class EyouMotorHardware(HardwareInterface):
 
         try:
             for i, motor in enumerate(self.motor_nodes_):
-                if self.hw_start_enabled_[i]:
-                    # 配置 CST 模式
-                    result = motor.configure_cst_mode(interpolation_period_ms, 0, True)
-                    if result != 0:
-                        print(f"Error: Failed to configure CST mode for joint {self.joint_names_[i]}")
-                        return False
-                    print(f"  CST mode configured for {self.joint_names_[i]}")
+                joint_name = self.joint_names_[i]
+                print(f"Configuring CST mode for {joint_name}...")
+
+                # 1. 清除故障
+                if not motor.clear_fault():
+                    print(f"Error: Failed to clear fault for {joint_name}")
+                    return False
+
+                # 2. 配置反馈 (即使 start_enabled=false 也需要反馈来读取位置)
+                if not motor.start_auto_feedback(0, 255, 20):
+                    print(f"Warning: Failed to start auto feedback for {joint_name}")
+                if not motor.start_error_feedback_tpdo(1, 255, 60):
+                    print(f"Warning: Failed to start error feedback for {joint_name}")
+
+                # 3. 使能电机并切换到 CST 模式
+                result = motor.enable(eu_motor_py.OperateMode.CST)
+                if not result:
+                    print(f"Error: Failed to enable motor in CST mode for {joint_name}")
+                    return False
+
+                # 4. 配置 CST 模式参数
+                result = motor.configure_cst_mode(interpolation_period_ms, 0, True)
+                if result != 0:
+                    print(f"Error: Failed to configure CST mode for {joint_name}")
+                    return False
+
+                print(f"  CST mode configured for {joint_name}")
 
             print("CST mode configuration successful.")
             return True
@@ -304,6 +327,9 @@ class EyouMotorHardware(HardwareInterface):
         """
         发送力矩指令到所有电机（CST 模式）。
 
+        注意：此方法会向所有电机发送力矩指令，不受 start_enabled 参数影响。
+        因为 Leader 作为摇操设备需要特殊处理：启动时不使能，但力反馈时需要发送力矩。
+
         Args:
             torques: 目标力矩列表，单位：Nm
             rated_torque: 电机额定力矩，单位：Nm，默认2.0Nm
@@ -313,15 +339,16 @@ class EyouMotorHardware(HardwareInterface):
             raise ValueError(f"Torque list length {len(torques)} does not match motor count {len(self.motor_nodes_)}")
 
         for i, motor in enumerate(self.motor_nodes_):
-            if self.hw_start_enabled_[i]:
-                # 单位转换：Nm → 千分之额定力矩 (permille)
-                # 公式：torque_permille = torque_Nm / rated_torque * 1000
-                torque_permille = int(torques[i] / rated_torque * 1000)
+            # 不检查 start_enabled，对所有电机发送力矩
+            # Leader 作为摇操设备需要特殊处理
+            # 单位转换：Nm → 千分之额定力矩 (permille)
+            # 公式：torque_permille = torque_Nm / rated_torque * 1000
+            torque_permille = int(torques[i] / rated_torque * 1000)
 
-                # 发送力矩指令
-                result = motor.send_cst_target_torque(torque_permille, 0, True)
-                if result != 0:
-                    print(f"Warning: Failed to send torque command to joint {self.joint_names_[i]}")
+            # 发送力矩指令
+            result = motor.send_cst_target_torque(torque_permille, 0, True)
+            if result != 0:
+                print(f"Warning: Failed to send torque command to joint {self.joint_names_[i]}")
 
     def get_joint_count(self) -> int:
         """返回硬件中的电机数量。"""
