@@ -263,7 +263,7 @@ class EyouMotorHardware(HardwareInterface):
         try:
             for i, motor in enumerate(self.motor_nodes_):
                 joint_name = self.joint_names_[i]
-                print(f"Configuring CST mode for {joint_name} (node_id={motor.getNodeId()})...")
+                print(f"Configuring CST mode for {joint_name} (node_id={motor.get_node_id()})...")
 
                 # 1. 清除故障
                 print(f"  Step 1: Clearing fault...")
