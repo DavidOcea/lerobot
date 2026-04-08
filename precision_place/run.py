@@ -1093,6 +1093,10 @@ class PrecisionPlaceSystem:
 
                     print(f"  同步延迟: {sync_delay_display:.1f}ms")
 
+                    # 打印FK计算的位置（用于诊断scale）
+                    if flange_position is not None:
+                        print(f"  FK位置: ({flange_position[0]:.4f}, {flange_position[1]:.4f}, {flange_position[2]:.4f})m")
+
                     # 如果没有正运动学，使用默认值
                     if flange_position is None:
                         if self.forward_kinematics:
@@ -1147,13 +1151,39 @@ class PrecisionPlaceSystem:
                     print(f"  ⚠ 采集数量不足 ({count}/10)")
                     continue
 
+                # 运行scale诊断
+                print("\n--- Scale诊断 ---")
+                diagnosis = self.hand_eye_calibrator.diagnose_scale()
+                if "error" in diagnosis:
+                    print(f"  {diagnosis['error']}")
+                else:
+                    print(f"  FK位置均值: ({diagnosis['fk_positions_mean'][0]:.3f}, {diagnosis['fk_positions_mean'][1]:.3f}, {diagnosis['fk_positions_mean'][2]:.3f})m")
+                    print(f"  FK位置变化范围: ({diagnosis['fk_positions_range'][0]*1000:.1f}, {diagnosis['fk_positions_range'][1]*1000:.1f}, {diagnosis['fk_positions_range'][2]*1000:.1f})mm")
+                    print(f"  相机-标定板距离: {np.linalg.norm(diagnosis['cam_positions_mean'])*1000:.1f}mm")
+                    print(f"  标定板世界位置波动: {diagnosis['target_position_max_diff']*1000:.1f}mm")
+                    print(diagnosis['diagnosis'])
+                print("-----------------\n")
+
                 success, result = self.hand_eye_calibrator.calibrate()
 
                 if success and result.valid:
                     # 保存结果
                     output_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
                     self.hand_eye_calibrator.save(str(output_path))
+
+                    # 诊断信息
+                    translation_norm = np.linalg.norm(result.translation_vector)
                     print(f"\n✓ 标定成功！结果已保存")
+                    print(f"\n诊断信息:")
+                    print(f"  相机-法兰平移距离: {translation_norm*1000:.1f}mm")
+                    print(f"  实际相机距离约: 50mm")
+                    if translation_norm > 0.1:  # 100mm
+                        print(f"  ⚠ 平移距离 ({translation_norm*1000:.1f}mm) 远大于实际相机距离 (~50mm)")
+                        print(f"  这可能表明:")
+                        print(f"    1. FK计算的法兰位置scale有问题")
+                        print(f"    2. 标定板参数(square_length)与实际不匹配")
+                        print(f"    3. URDF坐标系定义有误")
+                        print(f"  建议运行FK旋转验证(F)和平移验证(T)进行诊断")
                     break
                 else:
                     print(f"\n✗ 标定失败或精度不足，请重新采集")
@@ -2189,9 +2219,10 @@ class PrecisionPlaceSystem:
         print("验证步骤：")
         print("  1. 输入 R 记录当前位置作为参考")
         print("  2. 用示教器转动关节（建议转动30-45度）")
-        print("  3. 输入 C 捕获并对比变化")
-        print("  4. 输入 V 查看详细关节变化")
-        print("  5. 输入 Q 退出")
+        print("  3. 输入 C 捕获并对比旋转变化")
+        print("  4. 输入 T 验证平移变化（诊断FK scale）")
+        print("  5. 输入 V 查看详细关节变化")
+        print("  6. 输入 Q 退出")
         print("-"*60)
 
         # 获取手臂关节名称
@@ -2298,6 +2329,53 @@ class PrecisionPlaceSystem:
                 print(f"\n  提取的手臂关节 (FK使用):")
                 for i, idx in enumerate(joint_indices):
                     print(f"    {joint_names[i]}: {joints[idx]:.2f}°")
+
+            elif key == 'T':
+                # FK平移验证（新增）
+                if ref_joints is None:
+                    print("⚠ 请先输入 R 记录参考位置")
+                    continue
+
+                # 计算关节变化
+                joint_changes_t = []
+                for i, (name, idx) in enumerate(zip(joint_names, joint_indices)):
+                    change = joints[idx] - ref_joints[idx]
+                    joint_changes_t.append((name, change))
+
+                # 计算位置变化
+                if hasattr(self, 'ref_pos') and self.ref_pos is not None:
+                    pos_diff = current_pos - self.ref_pos
+                    pos_diff_norm = np.linalg.norm(pos_diff)
+
+                    print("\n" + "="*50)
+                    print("FK平移验证")
+                    print("="*50)
+                    print(f"参考位置: ({self.ref_pos[0]:.4f}, {self.ref_pos[1]:.4f}, {self.ref_pos[2]:.4f})m")
+                    print(f"当前位置: ({current_pos[0]:.4f}, {current_pos[1]:.4f}, {current_pos[2]:.4f})m")
+                    print(f"位置变化: ({pos_diff[0]:.4f}, {pos_diff[1]:.4f}, {pos_diff[2]:.4f})m")
+                    print(f"位置变化距离: {pos_diff_norm*1000:.2f}mm")
+
+                    # 分析位置变化方向
+                    # 找出主要变化的关节
+                    max_change_idx = max(range(len(joint_changes_t)), key=lambda i: abs(joint_changes_t[i][1]))
+                    max_change_name = joint_changes_t[max_change_idx][0]
+                    max_change_value = joint_changes_t[max_change_idx][1]
+
+                    print(f"\n主要变化的关节: {max_change_name} ({max_change_value:+.2f}°)")
+
+                    # 诊断提示
+                    if pos_diff_norm > 0.5:
+                        print("⚠ 位置变化超过500mm，可能FK scale有问题")
+                    elif pos_diff_norm < 0.001:
+                        print("⚠ 位置变化小于1mm，可能FK scale太小")
+                    else:
+                        print(f"✓ 位置变化距离 {pos_diff_norm*1000:.1f}mm 在合理范围内")
+
+                    print("="*50)
+                else:
+                    self.ref_pos = current_pos.copy()
+                    print(f"✓ 已记录参考位置: ({self.ref_pos[0]:.4f}, {self.ref_pos[1]:.4f}, {self.ref_pos[2]:.4f})m")
+                    print("  请移动机器人后再次按 T 验证位置变化")
 
             elif key == 'Q':
                 print("退出FK验证")

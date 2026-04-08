@@ -336,6 +336,93 @@ class HandEyeCalibrator:
         self.R_cam2target.clear()
         self.t_cam2target.clear()
 
+    def diagnose_scale(self) -> dict:
+        """
+        诊断FK和相机位姿的scale问题
+
+        通过计算标定板在世界坐标系中的位置一致性来诊断。
+        如果标定数据正确，固定标定板在世界坐标系中的位置应该保持不变。
+
+        Returns:
+            dict: 包含诊断信息的字典
+        """
+        if len(self.R_base2gripper) < 2:
+            return {"error": "需要至少2个姿态才能诊断"}
+
+        # 计算每个姿态下标定板在世界坐标系中的位置
+        # 假设相机在法兰坐标系原点（t_cam2gripper = 0）
+        # T_base2target ≈ T_base2gripper @ T_cam2target
+
+        world_positions = []
+        for i in range(len(self.R_base2gripper)):
+            T_base2gripper = np.eye(4)
+            T_base2gripper[:3, :3] = self.R_base2gripper[i]
+            T_base2gripper[:3, 3] = self.t_base2gripper[i].flatten()
+
+            T_cam2target = np.eye(4)
+            T_cam2target[:3, :3] = self.R_cam2target[i]
+            T_cam2target[:3, 3] = self.t_cam2target[i].flatten()
+
+            # 假设相机在法兰原点，估算标定板位置
+            T_base2target_est = T_base2gripper @ T_cam2target
+            world_positions.append(T_base2target_est[:3, 3])
+
+        world_positions = np.array(world_positions)
+        mean_pos = np.mean(world_positions, axis=0)
+        std_pos = np.std(world_positions, axis=0)
+        max_pos_diff = np.max(np.abs(world_positions - mean_pos))
+
+        # 分析FK位置范围
+        fk_positions = np.array([t.flatten() for t in self.t_base2gripper])
+        fk_mean = np.mean(fk_positions, axis=0)
+        fk_range = np.max(fk_positions, axis=0) - np.min(fk_positions, axis=0)
+
+        # 分析相机位姿范围
+        cam_positions = np.array([t.flatten() for t in self.t_cam2target])
+        cam_mean = np.mean(cam_positions, axis=0)
+        cam_range = np.max(cam_positions, axis=0) - np.min(cam_positions, axis=0)
+
+        return {
+            "num_poses": len(self.R_base2gripper),
+            "target_world_positions": world_positions,
+            "target_position_mean": mean_pos,
+            "target_position_std": std_pos,
+            "target_position_max_diff": max_pos_diff,
+            "fk_positions_mean": fk_mean,
+            "fk_positions_range": fk_range,
+            "cam_positions_mean": cam_mean,
+            "cam_positions_range": cam_range,
+            "diagnosis": self._generate_scale_diagnosis(std_pos, fk_range, cam_mean)
+        }
+
+    def _generate_scale_diagnosis(self, target_std, fk_range, cam_mean) -> str:
+        """生成scale诊断结论"""
+        max_std = np.max(target_std)
+
+        diagnosis_lines = []
+
+        if max_std > 0.1:  # 100mm
+            diagnosis_lines.append(f"⚠ 标定板位置波动过大: {max_std*1000:.1f}mm")
+            diagnosis_lines.append("  这表明标定数据存在scale问题")
+        else:
+            diagnosis_lines.append(f"✓ 标定板位置波动较小: {max_std*1000:.1f}mm")
+
+        # 检查FK位置范围
+        if np.max(fk_range) < 0.01:  # 10mm
+            diagnosis_lines.append("⚠ FK位置变化太小，姿态差异不足")
+        elif np.max(fk_range) > 0.5:  # 500mm
+            diagnosis_lines.append(f"FK位置变化较大: {np.max(fk_range)*1000:.1f}mm")
+
+        # 检查相机到标定板距离
+        cam_dist = np.linalg.norm(cam_mean)
+        if cam_dist > 1.0:  # 1米
+            diagnosis_lines.append(f"⚠ 相机到标定板距离过大: {cam_dist*1000:.1f}mm")
+            diagnosis_lines.append("  可能原因: 标定板square_length参数与实际不匹配")
+        elif cam_dist < 0.1:  # 100mm
+            diagnosis_lines.append(f"⚠ 相机到标定板距离过小: {cam_dist*1000:.1f}mm")
+
+        return "\n".join(diagnosis_lines)
+
     def calibrate(self, method: int = cv2.CALIB_HAND_EYE_TSAI) -> Tuple[bool, CalibrationResult]:
         """
         执行手眼标定
@@ -425,10 +512,10 @@ class HandEyeCalibrator:
         """
         计算重投影误差 (RMSE)
 
-        这是一个简化的验证：检查标定板在不同姿态下的投影一致性。
-        真正的重投影验证需要独立的验证点。
+        通过检查标定板在世界坐标系中的位置一致性来验证标定质量。
+        如果标定正确，固定标定板在世界坐标系中的位置应该保持不变。
         """
-        errors = []
+        world_positions = []
 
         for i in range(len(self.R_base2gripper)):
             # 计算标定板在世界坐标系中的位置
@@ -452,11 +539,23 @@ class HandEyeCalibrator:
             P_gripper = T_gripper2cam @ P_cam
             P_world = T_base2gripper @ P_gripper
 
-            # 简化：只检查投影一致性
-            # 这里不做完整的重投影验证，只是检查数据的一致性
+            world_positions.append(P_world[:3])
 
-        # 返回简化估计
-        return 0.5  # TODO: 实现真正的重投影误差计算
+        if len(world_positions) < 2:
+            return 0.5  # 无法计算，返回默认值
+
+        # 计算世界位置的一致性（标准差作为误差指标）
+        world_positions = np.array(world_positions)
+        mean_pos = np.mean(world_positions, axis=0)
+        std_pos = np.std(world_positions, axis=0)
+        max_std = np.max(std_pos)
+
+        # 将位置标准差转换为等效像素误差（使用相机内参估算）
+        # 假设平均距离约500mm，焦距约500像素，则1mm ≈ 1像素
+        # 这是一个粗略估算，真正的像素误差需要投影计算
+        rmse_equivalent = max_std * 1000  # 转换为mm，近似作为像素误差
+
+        return rmse_equivalent
 
     def save(self, filepath: str) -> bool:
         """
