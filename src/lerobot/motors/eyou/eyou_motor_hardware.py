@@ -263,32 +263,36 @@ class EyouMotorHardware(HardwareInterface):
         try:
             for i, motor in enumerate(self.motor_nodes_):
                 joint_name = self.joint_names_[i]
-                print(f"Configuring CST mode for {joint_name}...")
+                print(f"Configuring CST mode for {joint_name} (node_id={motor.getNodeId()})...")
 
                 # 1. 清除故障
+                print(f"  Step 1: Clearing fault...")
                 if not motor.clear_fault():
                     print(f"Error: Failed to clear fault for {joint_name}")
                     return False
 
                 # 2. 配置反馈 (即使 start_enabled=false 也需要反馈来读取位置)
+                print(f"  Step 2: Configuring feedback...")
                 if not motor.start_auto_feedback(0, 255, 20):
                     print(f"Warning: Failed to start auto feedback for {joint_name}")
                 if not motor.start_error_feedback_tpdo(1, 255, 60):
                     print(f"Warning: Failed to start error feedback for {joint_name}")
 
                 # 3. 使能电机并切换到 CST 模式
+                print(f"  Step 3: Enabling motor in CST mode...")
                 result = motor.enable(eu_motor_py.OperateMode.CST)
                 if not result:
                     print(f"Error: Failed to enable motor in CST mode for {joint_name}")
                     return False
 
                 # 4. 配置 CST 模式参数
+                print(f"  Step 4: Configuring CST PDO...")
                 result = motor.configure_cst_mode(interpolation_period_ms, 0, True)
                 if result != 0:
-                    print(f"Error: Failed to configure CST mode for {joint_name}")
+                    print(f"Error: configure_cst_mode returned {result} for {joint_name}")
                     return False
 
-                print(f"  CST mode configured for {joint_name}")
+                print(f"  CST mode configured successfully for {joint_name}")
 
             print("CST mode configuration successful.")
             return True

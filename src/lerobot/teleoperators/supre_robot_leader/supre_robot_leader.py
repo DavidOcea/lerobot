@@ -249,17 +249,17 @@ class SupreRobotLeader(Teleoperator):
         if not getattr(self.config, 'enable_force_feedback', True):
             return
 
+        # 如果之前失败过，直接返回（避免每次循环都重试）
+        if self._force_feedback_failed:
+            return
+
         # 首次调用时启用 CST 模式
         if not self._cst_mode_enabled:
             if not self._enable_cst_mode():
-                # 配置失败，禁用力反馈并设置标志，避免每次循环都重试
+                # 配置失败，禁用力反馈并设置标志
                 print("Warning: Failed to enable CST mode, force feedback disabled for this session")
                 self._force_feedback_failed = True
                 return
-
-        # 如果之前失败过，直接返回
-        if getattr(self, '_force_feedback_failed', False):
-            return
 
         # 计算每个关节的阻尼力矩
         torques_to_send = [0.0] * self.num_joints
