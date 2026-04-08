@@ -1187,6 +1187,16 @@ class PrecisionPlaceSystem:
                     break
                 else:
                     print(f"\n✗ 标定失败或精度不足，请重新采集")
+                    # 清空键盘缓冲区，等待用户确认
+                    print("  按任意键继续采集，或按Q退出...")
+                    while True:
+                        wait_key = cv2.waitKey(100) & 0xFF
+                        if wait_key == ord('q') or wait_key == ord('Q'):
+                            print("退出手眼标定")
+                            cv2.destroyWindow("Hand-Eye Calibration")
+                            return
+                        elif wait_key != 255:  # 有按键按下
+                            break
 
             elif key == ord('q') or key == ord('Q'):
                 print("退出手眼标定")
@@ -2262,7 +2272,7 @@ class PrecisionPlaceSystem:
 
             # 获取用户输入
             try:
-                key = input("输入命令 [R/C/V/Q]: ").strip().upper()
+                key = input("输入命令 [R/C/T/V/Q]: ").strip().upper()
             except EOFError:
                 break
 
