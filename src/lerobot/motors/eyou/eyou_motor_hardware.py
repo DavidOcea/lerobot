@@ -288,8 +288,8 @@ class EyouMotorHardware(HardwareInterface):
                 # 4. 配置 CST 模式参数
                 print(f"  Step 4: Configuring CST PDO...")
                 result = motor.configure_cst_mode(interpolation_period_ms, 0, True)
-                if result != 0:
-                    print(f"Error: configure_cst_mode returned {result} for {joint_name}")
+                if not result:  # 返回 bool，False 表示失败
+                    print(f"Error: configure_cst_mode failed for {joint_name}")
                     return False
 
                 print(f"  CST mode configured successfully for {joint_name}")
