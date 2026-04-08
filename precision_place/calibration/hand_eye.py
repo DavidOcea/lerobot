@@ -382,6 +382,21 @@ class HandEyeCalibrator:
         cam_mean = np.mean(cam_positions, axis=0)
         cam_range = np.max(cam_positions, axis=0) - np.min(cam_positions, axis=0)
 
+        # 分析FK旋转变化（关键！）
+        rotation_changes = []
+        for i in range(1, len(self.R_base2gripper)):
+            # 计算相邻姿态间的旋转差异
+            R_diff = self.R_base2gripper[i].T @ self.R_base2gripper[i-1]
+            angle_diff = np.arccos(np.clip((np.trace(R_diff) - 1) / 2, -1, 1))
+            rotation_changes.append(np.degrees(angle_diff))
+
+        # 分析相机观察标定板的旋转变化
+        cam_rotation_changes = []
+        for i in range(1, len(self.R_cam2target)):
+            R_diff = self.R_cam2target[i].T @ self.R_cam2target[i-1]
+            angle_diff = np.arccos(np.clip((np.trace(R_diff) - 1) / 2, -1, 1))
+            cam_rotation_changes.append(np.degrees(angle_diff))
+
         return {
             "num_poses": len(self.R_base2gripper),
             "target_world_positions": world_positions,
@@ -392,20 +407,40 @@ class HandEyeCalibrator:
             "fk_positions_range": fk_range,
             "cam_positions_mean": cam_mean,
             "cam_positions_range": cam_range,
-            "diagnosis": self._generate_scale_diagnosis(std_pos, fk_range, cam_mean)
+            "fk_rotation_changes": rotation_changes,
+            "fk_rotation_mean": np.mean(rotation_changes) if rotation_changes else 0,
+            "fk_rotation_max": np.max(rotation_changes) if rotation_changes else 0,
+            "cam_rotation_changes": cam_rotation_changes,
+            "cam_rotation_mean": np.mean(cam_rotation_changes) if cam_rotation_changes else 0,
+            "square_length_m": self.square_length,
+            "diagnosis": self._generate_scale_diagnosis(std_pos, fk_range, cam_mean, rotation_changes)
         }
 
-    def _generate_scale_diagnosis(self, target_std, fk_range, cam_mean) -> str:
+    def _generate_scale_diagnosis(self, target_std, fk_range, cam_mean, rotation_changes=None) -> str:
         """生成scale诊断结论"""
         max_std = np.max(target_std)
 
         diagnosis_lines = []
 
+        # 检查标定板位置波动
         if max_std > 0.1:  # 100mm
             diagnosis_lines.append(f"⚠ 标定板位置波动过大: {max_std*1000:.1f}mm")
             diagnosis_lines.append("  这表明标定数据存在scale问题")
         else:
             diagnosis_lines.append(f"✓ 标定板位置波动较小: {max_std*1000:.1f}mm")
+
+        # 检查FK旋转变化（重要！手眼标定需要足够的旋转变化）
+        if rotation_changes:
+            mean_rot = np.mean(rotation_changes)
+            max_rot = np.max(rotation_changes)
+            if mean_rot < 10:  # 平均旋转变化小于10度
+                diagnosis_lines.append(f"⚠ FK旋转变化太小: 平均{mean_rot:.1f}°，最大{max_rot:.1f}°")
+                diagnosis_lines.append("  手眼标定需要足够大的旋转变化！")
+                diagnosis_lines.append("  建议: 大幅转动关节，使相邻姿态旋转差异>15°")
+            elif mean_rot > 30:
+                diagnosis_lines.append(f"✓ FK旋转变化充足: 平均{mean_rot:.1f}°，最大{max_rot:.1f}°")
+            else:
+                diagnosis_lines.append(f"FK旋转变化: 平均{mean_rot:.1f}°，最大{max_rot:.1f}°")
 
         # 检查FK位置范围
         if np.max(fk_range) < 0.01:  # 10mm
@@ -420,6 +455,14 @@ class HandEyeCalibrator:
             diagnosis_lines.append("  可能原因: 标定板square_length参数与实际不匹配")
         elif cam_dist < 0.1:  # 100mm
             diagnosis_lines.append(f"⚠ 相机到标定板距离过小: {cam_dist*1000:.1f}mm")
+
+        # 添加排查建议
+        if max_std > 0.1:
+            diagnosis_lines.append("")
+            diagnosis_lines.append("排查建议:")
+            diagnosis_lines.append(f"  1. 确认标定板格子边长是否为 {self.square_length*1000:.0f}mm")
+            diagnosis_lines.append("  2. 运行FK验证(F)检查FK scale是否正确")
+            diagnosis_lines.append("  3. 检查URDF坐标系定义是否与实际机器人一致")
 
         return "\n".join(diagnosis_lines)
 

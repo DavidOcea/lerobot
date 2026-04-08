@@ -939,9 +939,35 @@ class PrecisionPlaceSystem:
             dist_coeffs = np.zeros(5)
 
         # 创建标定器
+        # 询问标定板参数
+        print("\n标定板参数:")
+        print("  默认: 5x7格子, 格子边长30mm, 标记边长22mm")
+        print("  请确认您的标定板尺寸是否匹配！")
+        square_input = input("  格子边长(mm) [默认30]: ").strip()
+        if square_input:
+            try:
+                square_length = float(square_input) / 1000.0  # 转换为米
+            except ValueError:
+                square_length = 0.03
+        else:
+            square_length = 0.03
+
+        marker_input = input("  标记边长(mm) [默认22]: ").strip()
+        if marker_input:
+            try:
+                marker_length = float(marker_input) / 1000.0  # 转换为米
+            except ValueError:
+                marker_length = 0.022
+        else:
+            marker_length = 0.022
+
+        print(f"  使用: 格子边长={square_length*1000:.1f}mm, 标记边长={marker_length*1000:.1f}mm")
+
         self.hand_eye_calibrator = HandEyeCalibrator(
             camera_matrix=camera_matrix,
-            dist_coeffs=dist_coeffs
+            dist_coeffs=dist_coeffs,
+            square_length=square_length,
+            marker_length=marker_length
         )
 
         # 设置调试目录
@@ -1159,8 +1185,11 @@ class PrecisionPlaceSystem:
                 else:
                     print(f"  FK位置均值: ({diagnosis['fk_positions_mean'][0]:.3f}, {diagnosis['fk_positions_mean'][1]:.3f}, {diagnosis['fk_positions_mean'][2]:.3f})m")
                     print(f"  FK位置变化范围: ({diagnosis['fk_positions_range'][0]*1000:.1f}, {diagnosis['fk_positions_range'][1]*1000:.1f}, {diagnosis['fk_positions_range'][2]*1000:.1f})mm")
+                    if 'fk_rotation_mean' in diagnosis:
+                        print(f"  FK旋转变化: 平均{diagnosis['fk_rotation_mean']:.1f}°, 最大{diagnosis['fk_rotation_max']:.1f}°")
                     print(f"  相机-标定板距离: {np.linalg.norm(diagnosis['cam_positions_mean'])*1000:.1f}mm")
                     print(f"  标定板世界位置波动: {diagnosis['target_position_max_diff']*1000:.1f}mm")
+                    print(f"  标定板格子边长设置: {diagnosis.get('square_length_m', 0.03)*1000:.0f}mm")
                     print(diagnosis['diagnosis'])
                 print("-----------------\n")
 
