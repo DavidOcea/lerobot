@@ -20,8 +20,6 @@ joint_order:
   - trunk_joint_2
 
 # 定义所有硬件接口的实例
-# Leader 作为摇操设备，start_enabled 设为 false，不在启动时自动使能电机
-# 这样用户可以自由转动摇操臂
 hardware_interfaces:
   # 左臂电机控制器
   - name: arm_motors
@@ -32,19 +30,19 @@ hardware_interfaces:
       can_device_index: 0
       can_baud_rate: "1M"
       joints:
-        - { name: left_arm_joint_1, parameters: { node_id: 22, start_enabled: false } }
-        - { name: left_arm_joint_2, parameters: { node_id: 21, start_enabled: false } }
-        - { name: left_arm_joint_3, parameters: { node_id: 23, start_enabled: false } }
-        - { name: left_arm_joint_4, parameters: { node_id: 24, start_enabled: false } }
-        - { name: left_arm_joint_5, parameters: { node_id: 25, start_enabled: false } }
-        - { name: left_arm_joint_6, parameters: { node_id: 26, start_enabled: false } }
-        - { name: left_arm_joint_7, parameters: { node_id: 27, start_enabled: false } }
-        - { name: right_arm_joint_1, parameters: { node_id: 12, start_enabled: false } }
-        - { name: right_arm_joint_2, parameters: { node_id: 11, start_enabled: false } }
-        - { name: right_arm_joint_3, parameters: { node_id: 13, start_enabled: false } }
-        - { name: right_arm_joint_4, parameters: { node_id: 14, start_enabled: false } }
-        - { name: right_arm_joint_5, parameters: { node_id: 15, start_enabled: false } }
-        - { name: right_arm_joint_6, parameters: { node_id: 16, start_enabled: false } }
-        - { name: right_arm_joint_7, parameters: { node_id: 17, start_enabled: false } }
-        - { name: trunk_joint_1, parameters: { node_id: 1, start_enabled: false } }
-        - { name: trunk_joint_2, parameters: { node_id: 2, start_enabled: false } }
+        - { name: left_arm_joint_1, parameters: { node_id: 21 ,start_enabled: false } }
+        - { name: left_arm_joint_2, parameters: { node_id: 22 ,start_enabled: false } }
+        - { name: left_arm_joint_3, parameters: { node_id: 23 ,start_enabled: false } }
+        - { name: left_arm_joint_4, parameters: { node_id: 24 ,start_enabled: false } }
+        - { name: left_arm_joint_5, parameters: { node_id: 25 ,start_enabled: false } }
+        - { name: left_arm_joint_6, parameters: { node_id: 26 ,start_enabled: false } }
+        - { name: left_arm_joint_7, parameters: { node_id: 27 ,start_enabled: false } }
+        - { name: right_arm_joint_1, parameters: { node_id: 11 ,start_enabled: false } }
+        - { name: right_arm_joint_2, parameters: { node_id: 12 ,start_enabled: false } }
+        - { name: right_arm_joint_3, parameters: { node_id: 13 ,start_enabled: false } }
+        - { name: right_arm_joint_4, parameters: { node_id: 14 ,start_enabled: false } }
+        - { name: right_arm_joint_5, parameters: { node_id: 15 ,start_enabled: false } }
+        - { name: right_arm_joint_6, parameters: { node_id: 16 ,start_enabled: false } }
+        - { name: right_arm_joint_7, parameters: { node_id: 17 ,start_enabled: false } }
+        - { name: trunk_joint_1, parameters: { node_id: 1 ,start_enabled: false } }
+        - { name: trunk_joint_2, parameters: { node_id: 2 ,start_enabled: false } }
