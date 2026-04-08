@@ -264,6 +264,11 @@ class SupreRobotLeader(Teleoperator):
             print(f"Warning: Failed to read velocities: {e}")
             return
 
+        # 调试：打印速度信息（每100次循环打印一次）
+        if self._feedback_count % 100 == 0:
+            max_vel = max(abs(v) for v in velocities) if velocities else 0
+            print(f"DEBUG: Max velocity: {max_vel:.2f} °/s, deadband: {velocity_deadband} °/s")
+
         # 2. 获取配置参数
         damping_gain = getattr(self.config, 'damping_gain', 0.5)
         max_damping = getattr(self.config, 'max_damping_torque', 0.3)

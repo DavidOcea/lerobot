@@ -43,13 +43,13 @@ teleop:
   enable_force_feedback: true
 
   # 阻尼参数
-  damping_gain: 0.5               # 阻尼增益
-  max_damping_torque: 0.3         # 最大力矩限制 (Nm) - 安全起见保持较小
+  damping_gain: 1.0               # 阻尼增益（增大）
+  max_damping_torque: 0.5         # 最大力矩限制 (Nm)（增大）
 
   # 安全参数
-  velocity_deadband: 2.0          # 速度死区 (°/s) - 静止时不发力矩
-  max_velocity_threshold: 100.0   # 最大速度阈值 (°/s) - 超过则切断
-  velocity_scale: 30.0            # 速度调制系数
+  velocity_deadband: 0.5          # 速度死区 (°/s) - 降低以便更容易触发
+  max_velocity_threshold: 200.0   # 最大速度阈值 (°/s) - 放宽
+  velocity_scale: 50.0            # 速度调制系数
 # ===============================================
 # Robot (Follower) Configuration
 # ===============================================
