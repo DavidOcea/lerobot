@@ -413,8 +413,39 @@ class HandEyeCalibrator:
             "cam_rotation_changes": cam_rotation_changes,
             "cam_rotation_mean": np.mean(cam_rotation_changes) if cam_rotation_changes else 0,
             "square_length_m": self.square_length,
-            "diagnosis": self._generate_scale_diagnosis(std_pos, fk_range, cam_mean, rotation_changes)
+            "diagnosis": self._generate_scale_diagnosis(std_pos, fk_range, cam_mean, rotation_changes),
+            "cam_pose_scale_diagnosis": self._analyze_cam_pose_scale(cam_mean, cam_positions)
         }
+
+    def _analyze_cam_pose_scale(self, cam_mean, cam_positions) -> str:
+        """分析相机位姿scale是否合理"""
+        lines = []
+
+        # 相机到标定板的平均距离
+        cam_dist = np.linalg.norm(cam_mean)
+
+        # 检查距离是否在合理范围
+        if cam_dist < 0.1:  # 100mm
+            lines.append(f"⚠ 相机-标定板距离过小: {cam_dist*1000:.0f}mm")
+            lines.append("  可能原因: 标定板square_length设置比实际大")
+        elif cam_dist > 0.8:  # 800mm
+            lines.append(f"⚠ 相机-标定板距离过大: {cam_dist*1000:.0f}mm")
+            lines.append("  可能原因: 标定板square_length设置比实际小")
+        else:
+            lines.append(f"相机-标定板距离: {cam_dist*1000:.0f}mm (合理范围)")
+
+        # 计算相机位置的变化范围
+        if len(cam_positions) > 1:
+            cam_positions_arr = np.array(cam_positions)
+            cam_pos_range = np.max(cam_positions_arr, axis=0) - np.min(cam_positions_arr, axis=0)
+            max_cam_range = np.max(cam_pos_range)
+            lines.append(f"相机位置变化范围: {max_cam_range*1000:.0f}mm")
+
+            # 如果相机位置变化很大，但标定板是固定的，这不应该发生太多
+            if max_cam_range > 0.1:  # 100mm
+                lines.append("  (相机位置变化较大是正常的，因为相机随机械臂移动)")
+
+        return "\n".join(lines) if lines else ""
 
     def _generate_scale_diagnosis(self, target_std, fk_range, cam_mean, rotation_changes=None) -> str:
         """生成scale诊断结论"""

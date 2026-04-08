@@ -1191,6 +1191,8 @@ class PrecisionPlaceSystem:
                     print(f"  标定板世界位置波动: {diagnosis['target_position_max_diff']*1000:.1f}mm")
                     print(f"  标定板格子边长设置: {diagnosis.get('square_length_m', 0.03)*1000:.0f}mm")
                     print(diagnosis['diagnosis'])
+                    if 'cam_pose_scale_diagnosis' in diagnosis and diagnosis['cam_pose_scale_diagnosis']:
+                        print(f"\n{diagnosis['cam_pose_scale_diagnosis']}")
                 print("-----------------\n")
 
                 success, result = self.hand_eye_calibrator.calibrate()
