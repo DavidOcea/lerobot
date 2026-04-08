@@ -227,50 +227,77 @@ class SupreRobotLeader(Teleoperator):
 
     def send_feedback(self, feedback: dict[str, float]) -> None:
         """
-        接收 Follower 的力数据，转换为阻尼力矩发送到 Leader 电机。
+        安全的力反馈：只有在用户移动时才提供阻力。
 
-        实现力反馈功能：当 Follower 端受力时，Leader 端产生相应的阻尼力矩，
-        让操作者在摇操时能感受到阻力，增强临场感。
+        核心安全原则：
+        1. 静止时力矩为零 → 电机不会自己动
+        2. 速度过快切断力矩 → 防止失控
+        3. 力矩有限制 → 即使出错也不会产生危险运动
 
         Args:
             feedback: 力反馈字典，格式为 {"joint_name.force": force_value_in_Nm}
-
-        工作流程:
-            1. 接收 Follower 的力数据
-            2. 低通滤波平滑力信号
-            3. 计算阻尼力矩 = -力 × 阻尼增益
-            4. 限制最大阻尼力矩
-            5. 发送力矩指令到 Leader 电机（CST 模式）
         """
         if not self.is_connected:
             raise RuntimeError("Leader teleoperator is not connected.")
 
         # 检查是否启用力反馈
-        if not getattr(self.config, 'enable_force_feedback', True):
+        if not getattr(self.config, 'enable_force_feedback', False):
             return
 
-        # 如果之前失败过，直接返回（避免每次循环都重试）
+        # 如果之前失败过，直接返回
         if self._force_feedback_failed:
             return
 
         # 首次调用时启用 CST 模式
         if not self._cst_mode_enabled:
             if not self._enable_cst_mode():
-                # 配置失败，禁用力反馈并设置标志
                 print("Warning: Failed to enable CST mode, force feedback disabled for this session")
                 self._force_feedback_failed = True
                 return
 
-        # 计算每个关节的阻尼力矩
-        torques_to_send = [0.0] * self.num_joints
+        # ===== 安全力反馈核心逻辑 =====
 
-        damping_gain = getattr(self.config, 'damping_gain', 0.3)
-        max_damping = getattr(self.config, 'max_damping_torque', 0.5)
-        filter_alpha = getattr(self.config, 'force_filter_alpha', 0.7)
+        # 1. 读取 Leader 当前速度（用于安全检查）
+        try:
+            velocities = self._hardware_manager.read_velocities()
+        except Exception as e:
+            print(f"Warning: Failed to read velocities: {e}")
+            return
+
+        # 2. 获取配置参数
+        damping_gain = getattr(self.config, 'damping_gain', 0.5)
+        max_damping = getattr(self.config, 'max_damping_torque', 0.3)
+        filter_alpha = getattr(self.config, 'force_filter_alpha', 0.5)
         rated_torque = getattr(self.config, 'rated_torque', 2.0)
+        velocity_deadband = getattr(self.config, 'velocity_deadband', 2.0)
+        max_velocity_threshold = getattr(self.config, 'max_velocity_threshold', 100.0)
+        velocity_scale = getattr(self.config, 'velocity_scale', 30.0)
+        torque_safety_margin = getattr(self.config, 'torque_safety_margin', 0.1)
+
+        # 3. 计算每个关节的阻尼力矩
+        torques_to_send = [0.0] * self.num_joints
+        safety_cut_count = 0
+        active_joint_count = 0
 
         for i, joint_name in enumerate(self.observation_joint_names):
+            velocity = abs(velocities[i]) if i < len(velocities) else 0.0
             force_key = f"{joint_name}.force"
+
+            # ===== 安全检查 =====
+
+            # 检查1: 速度过快，切断力矩
+            if velocity > max_velocity_threshold:
+                torques_to_send[i] = 0.0
+                safety_cut_count += 1
+                continue
+
+            # 检查2: 静止时不发力矩（核心安全机制！）
+            if velocity < velocity_deadband:
+                torques_to_send[i] = 0.0
+                continue
+
+            # 用户正在移动，计算阻尼力矩
+            active_joint_count += 1
 
             # 获取力数据
             raw_force = feedback.get(force_key, 0.0)
@@ -288,22 +315,40 @@ class SupreRobotLeader(Teleoperator):
             # 计算阻尼力矩（反向，产生抵抗感）
             damping_torque = -filtered_force * damping_gain
 
-            # 限制最大阻尼力矩（安全保护）
+            # 速度调制：速度越快阻力越强（但有限制）
+            velocity_factor = min(velocity / velocity_scale, 1.0)
+            damping_torque *= velocity_factor
+
+            # 限制最大阻尼力矩
             damping_torque = max(-max_damping, min(damping_torque, max_damping))
 
             # 应用关节方向映射
             direction = self.joint_direction_map.get(f"{joint_name}.pos", 1)
             damping_torque *= direction
 
+            # 安全余量
+            if damping_torque > 0:
+                damping_torque = max(0, damping_torque - torque_safety_margin)
+            else:
+                damping_torque = min(0, damping_torque + torque_safety_margin)
+
             torques_to_send[i] = damping_torque
 
-        # 发送力矩指令
-        self._hardware_manager.write_torques(torques_to_send, rated_torque)
+        # 4. 发送力矩指令
+        try:
+            self._hardware_manager.write_torques(torques_to_send, rated_torque)
+        except Exception as e:
+            print(f"Warning: Failed to write torques: {e}")
+            return
 
-        # 统计
+        # 5. 统计与日志
         self._feedback_count += 1
         if self._feedback_count % 100 == 0:
-            print(f"Force feedback: {self._feedback_count} cycles, max torque: {max(abs(t) for t in torques_to_send):.3f} Nm")
+            max_torque = max(abs(t) for t in torques_to_send) if torques_to_send else 0
+            print(f"Force feedback: {self._feedback_count} cycles, "
+                  f"active joints: {active_joint_count}, "
+                  f"max torque: {max_torque:.3f} Nm, "
+                  f"safety cuts: {safety_cut_count}")
 
     def _enable_cst_mode(self) -> bool:
         """启用 CST 力矩控制模式。"""

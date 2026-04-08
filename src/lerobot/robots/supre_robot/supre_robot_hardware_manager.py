@@ -137,21 +137,26 @@ class SupreRobotHardwareManager:
         """
         # 1. 从每个硬件读取数据
         hw_results = {inst: inst.read() for inst in self._hardware_instances}
-        print(f"Results from hardware:{hw_results}")
+        hw_velocities = {inst: inst.read_velocities() if hasattr(inst, 'read_velocities') else [] for inst in self._hardware_instances}
+        # print(f"Results from hardware:{hw_results}")  # 减少日志输出
         # 2. 使用映射表填充全局状态向量
         for global_index in range(self.num_joints):
             mapping = self._joint_map[global_index]
             instance = mapping['instance']
             hw_index = mapping['hw_index']
-            
+
             result = hw_results[instance]
 
             # 根据硬件类型适配不同的返回值
             if isinstance(instance, EyouMotorHardware):
                 # EyouMotorHardware.read() -> Tuple[List[float], List[float]]
                 self.positions[global_index] = result[hw_index][0]
-                self.velocities[global_index] = 0.0
                 self.forces[global_index] = result[hw_index][1]
+                # 读取速度
+                if hw_velocities[instance]:
+                    self.velocities[global_index] = hw_velocities[instance][hw_index]
+                else:
+                    self.velocities[global_index] = 0.0
 
             elif isinstance(instance, JodellGripperHardware):
                 # JodellGripperHardware.read() -> list[float | None]
@@ -164,10 +169,19 @@ class SupreRobotHardwareManager:
                 pos = result[hw_index]
                 force = result[hw_index][1]
                 self.velocities[global_index] = 0.0
-                self.positions[global_index] = pos if pos is not None else self.positions[global_index] # 保持旧值如果读取失败                
+                self.positions[global_index] = pos if pos is not None else self.positions[global_index] # 保持旧值如果读取失败
                 self.forces[global_index] = force if force is not None else self.forces[global_index]
-       
+
         return (list(self.positions),list(self.forces))
+
+    def read_velocities(self) -> List[float]:
+        """
+        返回所有关节的速度数据。
+
+        Returns:
+            List[float]: 速度列表 (°/s)
+        """
+        return list(self.velocities)
     def write(self, command_positions: List[float]):
         """
         接收全局指令向量，并分发到各个硬件。
