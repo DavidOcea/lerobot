@@ -257,7 +257,14 @@ class SupreRobotLeader(Teleoperator):
 
         # ===== 安全力反馈核心逻辑 =====
 
-        # 1. 读取 Leader 当前速度（用于安全检查）
+        # 1. 先读取硬件状态（必须先调用 read() 更新速度数据）
+        try:
+            self._hardware_manager.read()
+        except Exception as e:
+            print(f"Warning: Failed to read hardware state: {e}")
+            return
+
+        # 2. 读取 Leader 当前速度（用于安全检查）
         try:
             velocities = self._hardware_manager.read_velocities()
         except Exception as e:

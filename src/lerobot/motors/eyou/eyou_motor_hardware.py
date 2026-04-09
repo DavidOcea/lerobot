@@ -350,17 +350,25 @@ class EyouMotorHardware(HardwareInterface):
         if len(torques) != len(self.motor_nodes_):
             raise ValueError(f"Torque list length {len(torques)} does not match motor count {len(self.motor_nodes_)}")
 
+        any_nonzero_torque = False
         for i, motor in enumerate(self.motor_nodes_):
-            # 不检查 start_enabled，对所有电机发送力矩
-            # Leader 作为摇操设备需要特殊处理
             # 单位转换：Nm → 千分之额定力矩 (permille)
             # 公式：torque_permille = torque_Nm / rated_torque * 1000
             torque_permille = int(torques[i] / rated_torque * 1000)
 
-            # 发送力矩指令
-            result = motor.send_cst_target_torque(torque_permille, 0, True)
-            if result != 0:
-                print(f"Warning: Failed to send torque command to joint {self.joint_names_[i]}")
+            # 发送力矩指令（第三个参数 False 表示不自动SYNC）
+            result = motor.send_cst_target_torque(torque_permille, 0, False)
+
+            if torques[i] != 0.0:
+                any_nonzero_torque = True
+                # 只打印非零力矩的调试信息
+                print(f"DEBUG: Joint {self.joint_names_[i]}, torque={torques[i]:.3f}Nm, permille={torque_permille}, result={result}")
+
+        # 发送SYNC信号（CST模式需要SYNC才能生效）
+        if any_nonzero_torque:
+            for motor in self.motor_nodes_:
+                motor.send_sync()
+                break  # 只需要发送一次SYNC，所有电机共享CAN总线
 
     def get_joint_count(self) -> int:
         """返回硬件中的电机数量。"""
