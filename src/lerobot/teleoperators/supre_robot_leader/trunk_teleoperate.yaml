@@ -39,17 +39,16 @@ teleop:
     - -1     # trunk_joint_2
 
   # ==================== 力反馈配置（抖动提示模式）====================
-  # 启用力反馈
-  enable_force_feedback: true
+  # ⚠️ 警告：力反馈功能可能导致电机自己转动，非常危险！
+  # 建议先禁用，确认基本遥操作功能正常后再考虑启用
+  enable_force_feedback: false  # 禁用力反馈
 
-  # 抖动提示参数
-  force_threshold: 0.3           # 触发抖动的力阈值 (Nm) - Follower受力超过此值时触发
-  vibration_amplitude: 0.15      # 抖动幅度 (Nm) - 控制抖动强度
-  vibration_duration: 0.3        # 抖动持续时间 (s) - 每次抖动持续多久
-  vibration_frequency: 20.0      # 抖动频率 (Hz) - 每秒抖动次数
-  force_debounce_count: 3        # 防抖计数 - 连续检测到超限多少次才触发
-
-  # 电机参数
+  # 以下参数在 enable_force_feedback=false 时不起作用
+  force_threshold: 0.3           # 触发抖动的力阈值 (Nm)
+  vibration_amplitude: 0.15      # 抖动幅度 (Nm)
+  vibration_duration: 0.3        # 抖动持续时间 (s)
+  vibration_frequency: 20.0      # 抖动频率 (Hz)
+  force_debounce_count: 3        # 防抖计数
   rated_torque: 2.0              # 电机额定力矩 (Nm)
 # ===============================================
 # Robot (Follower) Configuration
