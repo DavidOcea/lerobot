@@ -313,10 +313,10 @@ class SupreRobotLeader(Teleoperator):
                     del self._filtered_forces[joint_name]
                 continue
 
-            # 用户正在移动，允许力反馈
+            # 用户正在移动，提供阻尼
             active_joint_count += 1
 
-            # 获取 Follower 的力数据（这才是阻尼的真正来源）
+            # 获取 Follower 的力数据
             raw_force = feedback.get(force_key, 0.0)
 
             # 简单低通滤波
@@ -329,12 +329,24 @@ class SupreRobotLeader(Teleoperator):
                 filtered_force = raw_force
             self._filtered_forces[joint_name] = filtered_force
 
-            # 核心逻辑：
-            # - 速度只决定"是否发力矩"（安全开关）
-            # - 力数据决定"阻尼的大小和方向"
-            # - filtered_force > 0 表示 Follower 正向受力，应该给 Leader 正向阻尼
-            # - filtered_force < 0 表示 Follower 反向受力，应该给 Leader 反向阻尼
-            damping_torque = filtered_force * damping_gain
+            # ========================================
+            # 核心安全逻辑：真正的阻尼
+            # ========================================
+            # 阻尼定义：始终与运动方向相反，永远不会主动驱动电机
+            #
+            # 用户正向移动 (velocity > 0) → 阻尼力矩 < 0 (阻止正向移动)
+            # 用户反向移动 (velocity < 0) → 阻尼力矩 > 0 (阻止反向移动)
+            #
+            # Follower 力数据决定阻尼的"大小"，速度方向决定阻尼的"方向"
+            # ========================================
+
+            # 速度方向（确定阻尼方向）
+            velocity_sign = 1.0 if velocity > 0 else -1.0
+
+            # 阻尼力矩 = -速度方向 × 力大小 × 增益
+            # 负号确保阻尼始终与运动方向相反
+            damping_magnitude = abs(filtered_force) * damping_gain
+            damping_torque = -velocity_sign * damping_magnitude
 
             # 限制最大阻尼力矩
             damping_torque = max(-max_damping, min(damping_torque, max_damping))
