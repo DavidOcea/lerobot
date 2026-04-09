@@ -273,6 +273,12 @@ def record_loop(
         # so action actually sent is saved in the dataset.
         sent_action = robot.send_action(action)
 
+        # 力反馈：检查阻力并播放蜂鸣提示
+        if teleop is not None and isinstance(teleop, Teleoperator):
+            if hasattr(robot, 'get_force_feedback') and hasattr(teleop, 'send_feedback'):
+                force_feedback = robot.get_force_feedback()
+                teleop.send_feedback(force_feedback)
+
         if dataset is not None:
             #print(f"sent_action: {sent_action}")
             #print(f"dataset.features: {dataset.features}")
