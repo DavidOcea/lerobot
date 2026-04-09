@@ -38,18 +38,19 @@ teleop:
     - 1      # trunk_joint_1
     - -1     # trunk_joint_2
 
-  # ==================== 力反馈配置（抖动提示模式）====================
-  # ⚠️ 警告：力反馈功能可能导致电机自己转动，非常危险！
-  # 建议先禁用，确认基本遥操作功能正常后再考虑启用
-  enable_force_feedback: false  # 禁用力反馈
+  # ==================== 力反馈配置（声音提示模式）====================
+  # 当 Follower 遇到阻力时，播放声音提示用户
+  # 阻力越大，声音越急促
+  enable_force_feedback: true
 
-  # 以下参数在 enable_force_feedback=false 时不起作用
-  force_threshold: 0.3           # 触发抖动的力阈值 (Nm)
-  vibration_amplitude: 0.15      # 抖动幅度 (Nm)
-  vibration_duration: 0.3        # 抖动持续时间 (s)
-  vibration_frequency: 20.0      # 抖动频率 (Hz)
-  force_debounce_count: 3        # 防抖计数
-  rated_torque: 2.0              # 电机额定力矩 (Nm)
+  # 力检测参数
+  force_threshold: 0.3           # 触发声音的力阈值 (Nm)
+  force_debounce_count: 3        # 防抖计数（连续检测到超限多少次才触发）
+
+  # 声音参数
+  min_beep_interval: 0.1         # 最小蜂鸣间隔 (s) - 阻力最大时的声音频率
+  max_beep_interval: 1.0         # 最大蜂鸣间隔 (s) - 刚超过阈值时的声音频率
+  max_force_for_sound: 1.0       # 最大力参考值 (Nm) - 用于计算声音频率
 # ===============================================
 # Robot (Follower) Configuration
 # ===============================================

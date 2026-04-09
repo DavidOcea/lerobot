@@ -54,18 +54,12 @@ class SupreRobotLeader(Teleoperator):
             self.joint_position_gauge = prometheus_manager.get_gauge('joint_position')
 
         # ==================== 力反馈状态 ====================
-        # 抖动提示模式：当 Follower 遇到阻力时，Leader 抖动提示
+        # 声音提示模式：当 Follower 遇到阻力时，播放声音提示用户
+        # 阻力越大，声音越急促
 
-        # CST 模式状态
-        self._cst_mode_enabled = False
-        self._force_feedback_failed = False  # 标志：CST 配置是否失败过
-
-        # 抖动状态
-        self._vibration_active = False       # 是否正在抖动
-        self._vibration_start_time = 0.0     # 抖动开始时间
-        self._vibration_phase = 0            # 抖动相位
-        self._last_force_check_time = 0.0    # 上次检测时间
-        self._force_exceed_count = 0         # 力超限计数（用于防抖）
+        # 声音状态
+        self._last_sound_time = 0.0           # 上次播放声音的时间
+        self._force_exceed_count = 0          # 力超限计数（用于防抖）
 
         # 统计信息
         self._feedback_count = 0
@@ -209,10 +203,6 @@ class SupreRobotLeader(Teleoperator):
 
         print("Disconnecting from robot...")
 
-        # 如果在 CST 模式，先切回 CSP 模式
-        if self._cst_mode_enabled:
-            self._disable_cst_mode()
-
         try:
             if self._hardware_manager:
                 self._hardware_manager.deactivate()
@@ -221,8 +211,6 @@ class SupreRobotLeader(Teleoperator):
         finally:
             self._hardware_manager = None
             self._is_connected_flag = False
-            self._cst_mode_enabled = False
-            self._filtered_forces.clear()
             print("Robot disconnected.")
 
     @property
@@ -231,44 +219,36 @@ class SupreRobotLeader(Teleoperator):
 
     def send_feedback(self, feedback: dict[str, float]) -> None:
         """
-        抖动提示模式：当 Follower 遇到较大阻力时，Leader 产生短促抖动提示用户。
+        声音提示模式：当 Follower 遇到阻力时，播放声音提示用户。
 
-        这种方式比持续阻尼更安全、更直观：
-        - 用户明确感知到"遇到阻力了"
-        - 不会产生"泥鳅"般的不稳定感
+        阻力越大，声音越急促（间隔越短）。
+        这种方式比力矩反馈更安全：
+        - 不会让电机自己转动
+        - 用户能明确感知阻力大小
         - 防止过度操作导致电机堵转
 
         Args:
             feedback: 力反馈字典，格式为 {"joint_name.force": force_value_in_Nm}
         """
         if not self.is_connected:
-            raise RuntimeError("Leader teleoperator is not connected.")
+            return
 
         # 检查是否启用力反馈
         if not getattr(self.config, 'enable_force_feedback', False):
             return
 
-        # 如果之前失败过，直接返回
-        if self._force_feedback_failed:
-            return
-
-        # 首次调用时启用 CST 模式
-        if not self._cst_mode_enabled:
-            if not self._enable_cst_mode():
-                print("Warning: Failed to enable CST mode, force feedback disabled for this session")
-                self._force_feedback_failed = True
-                return
-
         import time
+        import subprocess
         current_time = time.perf_counter()
 
         # ===== 配置参数 =====
-        force_threshold = getattr(self.config, 'force_threshold', 0.3)      # 触发抖动的力阈值 (Nm)
-        vibration_amplitude = getattr(self.config, 'vibration_amplitude', 0.2)  # 抖动幅度 (Nm)
-        vibration_duration = getattr(self.config, 'vibration_duration', 0.5)    # 抖动持续时间 (s)
-        vibration_frequency = getattr(self.config, 'vibration_frequency', 15.0) # 抖动频率 (Hz)
+        force_threshold = getattr(self.config, 'force_threshold', 0.3)      # 触发声音的力阈值 (Nm)
         force_debounce_count = getattr(self.config, 'force_debounce_count', 3)  # 防抖计数
-        rated_torque = getattr(self.config, 'rated_torque', 2.0)
+
+        # 声音参数
+        min_beep_interval = getattr(self.config, 'min_beep_interval', 0.1)   # 最小蜂鸣间隔 (s) - 最大阻力
+        max_beep_interval = getattr(self.config, 'max_beep_interval', 1.0)   # 最大蜂鸣间隔 (s) - 最小阻力
+        max_force_for_sound = getattr(self.config, 'max_force_for_sound', 1.0)  # 最大力参考值 (Nm)
 
         # ===== 1. 检测 Follower 是否遇到阻力 =====
         max_force = 0.0
@@ -286,92 +266,52 @@ class SupreRobotLeader(Teleoperator):
         else:
             self._force_exceed_count = 0
 
-        # ===== 2. 触发抖动 =====
-        if self._force_exceed_count >= force_debounce_count and not self._vibration_active:
-            self._vibration_active = True
-            self._vibration_start_time = current_time
-            self._vibration_phase = 0
-            print(f"[VIBRATION] Triggered! Max force: {max_force:.3f} Nm at {max_force_joint}")
+        # ===== 2. 播放声音提示 =====
+        if self._force_exceed_count >= force_debounce_count:
+            # 根据力的大小计算蜂鸣间隔
+            # 力越大，间隔越短（声音越急促）
+            force_ratio = min(max_force / max_force_for_sound, 1.0)  # 归一化到 0-1
+            beep_interval = max_beep_interval - force_ratio * (max_beep_interval - min_beep_interval)
 
-        # ===== 3. 执行抖动 =====
-        if self._vibration_active:
-            elapsed = current_time - self._vibration_start_time
+            # 检查是否到了播放时间
+            if current_time - self._last_sound_time >= beep_interval:
+                self._last_sound_time = current_time
 
-            if elapsed < vibration_duration:
-                # 生成抖动信号：正弦波脉冲
-                # 使用 sin 产生正负交替的力矩
-                phase = 2 * 3.14159 * vibration_frequency * elapsed
-                vibration_value = vibration_amplitude * math.sin(phase)
-
-                # 发送到所有关节
-                torques_to_send = [vibration_value] * self.num_joints
-
-                # 应用关节方向映射
-                for i, joint_name in enumerate(self.observation_joint_names):
-                    direction = self.joint_direction_map.get(f"{joint_name}.pos", 1)
-                    torques_to_send[i] *= direction
-
+                # 使用系统蜂鸣命令（Linux）
                 try:
-                    self._hardware_manager.write_torques(torques_to_send, rated_torque)
+                    # 方法1: 使用 beep 命令（需要安装 beep 包）
+                    # beep -f 1000 -l 50 -n -f 1500 -l 50
+
+                    # 方法2: 使用 aplay 播放系统提示音
+                    # subprocess.run(['aplay', '-q', '/usr/share/sounds/speech-dispatcher/test.wav'],
+                    #                capture_output=True, timeout=0.5)
+
+                    # 方法3: 使用 echo 到 /dev/pts/0 发送终端蜂鸣
+                    # print('\a', end='', flush=True)
+
+                    # 方法4: 使用系统命令播放蜂鸣（最通用）
+                    # 在 Linux 上，使用 paplay 或 aplay
+                    subprocess.run(['paplay', '/usr/share/sounds/freedesktop/stereo/message.oga'],
+                                   capture_output=True, timeout=0.5)
                 except Exception as e:
-                    print(f"Warning: Failed to send vibration: {e}")
+                    # 如果上面的方法都失败，使用简单的终端蜂鸣
+                    try:
+                        print('\a', end='', flush=True)  # 终端蜂鸣
+                    except:
+                        pass
 
-                # 每50次循环打印一次调试信息
-                self._vibration_phase += 1
-                if self._vibration_phase % 50 == 0:
-                    print(f"[VIBRATION] Elapsed: {elapsed:.2f}s, value: {vibration_value:.3f} Nm")
-            else:
-                # 抖动结束
-                self._vibration_active = False
-                self._force_exceed_count = 0
-                print("[VIBRATION] Ended")
+                # 打印调试信息
+                print(f"[ALERT] Force: {max_force:.2f} Nm at {max_force_joint}, interval: {beep_interval:.2f}s")
 
-                # 发送零力矩
-                try:
-                    self._hardware_manager.write_torques([0.0] * self.num_joints, rated_torque)
-                except Exception as e:
-                    print(f"Warning: Failed to clear torques: {e}")
-
-        # ===== 4. 统计与调试 =====
+        # ===== 3. 统计与调试 =====
         self._feedback_count += 1
-        if self._feedback_count % 100 == 0:
-            print(f"Force check: max_force={max_force:.3f} Nm, threshold={force_threshold} Nm, "
-                  f"vibration_active={self._vibration_active}")
+        if self._feedback_count % 100 == 0 and max_force > force_threshold:
+            print(f"Force check: max_force={max_force:.3f} Nm, threshold={force_threshold} Nm")
 
-    def _enable_cst_mode(self) -> bool:
-        """启用 CST 力矩控制模式。"""
-        print("Enabling CST (Torque) mode for force feedback...")
-        try:
-            if self._hardware_manager.configure_cst_mode(interpolation_period_ms=10):
-                self._cst_mode_enabled = True
-                print("CST mode enabled successfully.")
-                return True
-            else:
-                print("Failed to configure CST mode.")
-                return False
-        except Exception as e:
-            print(f"Error enabling CST mode: {e}")
-            return False
-
-    def _disable_cst_mode(self) -> bool:
-        """切回 CSP 位置控制模式。"""
-        print("Switching back to CSP (Position) mode...")
-        try:
-            if self._hardware_manager.configure_csp_mode():
-                self._cst_mode_enabled = False
-                print("CSP mode restored.")
-                return True
-            else:
-                print("Failed to restore CSP mode.")
-                return False
-        except Exception as e:
-            print(f"Error disabling CST mode: {e}")
-            return False
-    
     @cached_property
     def action_features(self) -> dict[str, type]:
-        return self._motors_ft    
-    
+        return self._motors_ft
+
     @property
     def _motors_ft(self) -> dict[str, type]:
         return {f"{motor}.pos": float for motor in self.observation_joint_names}    
