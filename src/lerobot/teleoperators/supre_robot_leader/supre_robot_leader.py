@@ -292,20 +292,27 @@ class SupreRobotLeader(Teleoperator):
         active_joint_count = 0
 
         for i, joint_name in enumerate(self.observation_joint_names):
-            velocity = abs(velocities[i]) if i < len(velocities) else 0.0
+            velocity = velocities[i] if i < len(velocities) else 0.0  # 带符号的速度
+            velocity_abs = abs(velocity)
             force_key = f"{joint_name}.force"
 
             # ===== 安全检查 =====
 
-            # 检查1: 速度过快，切断力矩
-            if velocity > max_velocity_threshold:
+            # 检查1: 速度过快，切断力矩并清除滤波器
+            if velocity_abs > max_velocity_threshold:
                 torques_to_send[i] = 0.0
                 safety_cut_count += 1
+                # 清除滤波器状态，防止下次启动时残留
+                if joint_name in self._filtered_forces:
+                    del self._filtered_forces[joint_name]
                 continue
 
             # 检查2: 静止时不发力矩（核心安全机制！）
-            if velocity < velocity_deadband:
+            if velocity_abs < velocity_deadband:
                 torques_to_send[i] = 0.0
+                # 关键优化：清除滤波器状态，防止松手时残留力矩导致反转
+                if joint_name in self._filtered_forces:
+                    del self._filtered_forces[joint_name]
                 continue
 
             # 用户正在移动，计算阻尼力矩
@@ -314,22 +321,22 @@ class SupreRobotLeader(Teleoperator):
             # 获取力数据
             raw_force = feedback.get(force_key, 0.0)
 
-            # 低通滤波
+            # 改进的低通滤波：使用更快的响应
+            # 滤波系数随速度变化：速度越快响应越快
+            adaptive_alpha = min(1.0, filter_alpha + velocity_abs / 100.0)
             if joint_name in self._filtered_forces:
                 filtered_force = (
-                    filter_alpha * raw_force
-                    + (1 - filter_alpha) * self._filtered_forces[joint_name]
+                    adaptive_alpha * raw_force
+                    + (1 - adaptive_alpha) * self._filtered_forces[joint_name]
                 )
             else:
                 filtered_force = raw_force
             self._filtered_forces[joint_name] = filtered_force
 
-            # 计算阻尼力矩（反向，产生抵抗感）
-            damping_torque = -filtered_force * damping_gain
-
-            # 速度调制：速度越快阻力越强（但有限制）
-            velocity_factor = min(velocity / velocity_scale, 1.0)
-            damping_torque *= velocity_factor
+            # 计算阻尼力矩：方向与运动方向相反，产生抵抗感
+            # 使用速度的符号来决定阻尼方向
+            velocity_sign = 1.0 if velocity >= 0 else -1.0
+            damping_torque = -filtered_force * damping_gain * velocity_sign
 
             # 限制最大阻尼力矩
             damping_torque = max(-max_damping, min(damping_torque, max_damping))
@@ -338,7 +345,7 @@ class SupreRobotLeader(Teleoperator):
             direction = self.joint_direction_map.get(f"{joint_name}.pos", 1)
             damping_torque *= direction
 
-            # 安全余量
+            # 安全余量（减小以改善响应）
             if damping_torque > 0:
                 damping_torque = max(0, damping_torque - torque_safety_margin)
             else:
