@@ -22,7 +22,7 @@ class EyouMotorHardware(HardwareInterface):
         self.feedback_manager_: Optional[eu_motor_py.MotorFeedbackManager] = None
         self.motor_nodes_: List[eu_motor_py.EuMotorNode] = []
         self.joint_names_: List[str] = []
-        
+
         # --- 恢复内部状态和指令存储 ---
         self.hw_states_positions_: List[float] = []
         self.hw_states_velocities_: List[float] = []
@@ -30,7 +30,11 @@ class EyouMotorHardware(HardwareInterface):
 
         self.hw_commands_positions_: List[float] = []
         self.hw_start_enabled_: List[bool] = []
-        
+
+        # --- 软件速度计算（因为硬件反馈速度始终为0）---
+        self._prev_positions_: List[float] = []
+        self._prev_time_: float = 0.0
+
         self._config: Dict[str, Any] = {}
         self._last_log_time = time.monotonic()
         self._max_write_duration_us = 0.0
@@ -67,6 +71,10 @@ class EyouMotorHardware(HardwareInterface):
 
             self.hw_commands_positions_ = [0.0] * num_joints
             self.hw_start_enabled_ = [True] * num_joints # 默认全部启用
+
+            # 软件速度计算初始化
+            self._prev_positions_ = [0.0] * num_joints
+            self._prev_time_ = 0.0
 
             # 初始化CAN总线
             self.can_manager_ = eu_motor_py.CanNetworkManager()
@@ -175,26 +183,30 @@ class EyouMotorHardware(HardwareInterface):
 
         :return: (new_positions, new_velocities) 元组。
         """
+        current_time = time.perf_counter()
+        dt = current_time - self._prev_time_ if self._prev_time_ > 0 else 0.001
+
         for i, motor in enumerate(self.motor_nodes_):
             feedback = motor.get_latest_feedback()
 
-            # 调试：打印第一个关节的详细反馈信息
-            if i == 0:
-                if hasattr(self, '_read_count'):
-                    self._read_count += 1
-                else:
-                    self._read_count = 0
-                if self._read_count % 100 == 0:
-                    print(f"DEBUG read: joint={self.joint_names_[i]}, "
-                          f"pos={feedback.position_deg:.2f}, "
-                          f"vel={feedback.velocity_dps:.2f}, "
-                          f"torque={feedback.torque_milli:.0f}, "
-                          f"update_time={feedback.last_update_time}")
-
             if feedback.last_update_time > datetime.timedelta(0):
-                self.hw_states_positions_[i] = feedback.position_deg
-                self.hw_states_velocities_[i] = feedback.velocity_dps
+                new_position = feedback.position_deg
+
+                # 软件计算速度（因为硬件反馈速度始终为0）
+                if dt > 0.0001:  # 避免除以0
+                    velocity = (new_position - self._prev_positions_[i]) / dt
+                else:
+                    velocity = 0.0
+
+                self.hw_states_positions_[i] = new_position
+                self.hw_states_velocities_[i] = velocity
                 self.hw_states_torques_[i] = float(feedback.torque_milli)/1000.0
+
+                # 更新上次位置
+                self._prev_positions_[i] = new_position
+
+        # 更新上次时间
+        self._prev_time_ = current_time
 
         # 返回内部状态的拷贝，防止外部代码意外修改
         return list(zip(self.hw_states_positions_, self.hw_states_torques_))
@@ -205,15 +217,6 @@ class EyouMotorHardware(HardwareInterface):
 
         :return: 速度列表 (°/s)
         """
-        # 调试：打印速度数据
-        if hasattr(self, '_vel_read_count'):
-            self._vel_read_count += 1
-        else:
-            self._vel_read_count = 0
-
-        if self._vel_read_count % 100 == 0:
-            print(f"DEBUG read_velocities: {[f'{v:.2f}' for v in self.hw_states_velocities_]}")
-
         return list(self.hw_states_velocities_)
     def busy_wait(self, wait_time_s):
         end_time = time.perf_counter() + wait_time_s
