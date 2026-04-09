@@ -264,12 +264,7 @@ class SupreRobotLeader(Teleoperator):
             print(f"Warning: Failed to read velocities: {e}")
             return
 
-        # 调试：打印速度信息（每100次循环打印一次）
-        if self._feedback_count % 100 == 0:
-            max_vel = max(abs(v) for v in velocities) if velocities else 0
-            print(f"DEBUG: Max velocity: {max_vel:.2f} °/s, deadband: {velocity_deadband} °/s")
-
-        # 2. 获取配置参数
+        # 2. 获取配置参数（必须在使用前定义）
         damping_gain = getattr(self.config, 'damping_gain', 0.5)
         max_damping = getattr(self.config, 'max_damping_torque', 0.3)
         filter_alpha = getattr(self.config, 'force_filter_alpha', 0.5)
@@ -278,6 +273,11 @@ class SupreRobotLeader(Teleoperator):
         max_velocity_threshold = getattr(self.config, 'max_velocity_threshold', 100.0)
         velocity_scale = getattr(self.config, 'velocity_scale', 30.0)
         torque_safety_margin = getattr(self.config, 'torque_safety_margin', 0.1)
+
+        # 调试：打印速度信息（每100次循环打印一次）
+        if self._feedback_count % 100 == 0:
+            max_vel = max(abs(v) for v in velocities) if velocities else 0
+            print(f"DEBUG: Max velocity: {max_vel:.2f} °/s, deadband: {velocity_deadband} °/s")
 
         # 3. 计算每个关节的阻尼力矩
         torques_to_send = [0.0] * self.num_joints
