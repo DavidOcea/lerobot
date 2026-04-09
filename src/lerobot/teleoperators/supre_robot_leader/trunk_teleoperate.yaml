@@ -38,18 +38,19 @@ teleop:
     - 1      # trunk_joint_1
     - -1     # trunk_joint_2
 
-  # ==================== 力反馈配置（安全版本）====================
-  # 启用力反馈（只有用户移动时才提供阻力）
+  # ==================== 力反馈配置（抖动提示模式）====================
+  # 启用力反馈
   enable_force_feedback: true
 
-  # 阻尼参数
-  damping_gain: 1.0               # 阻尼增益（增大）
-  max_damping_torque: 0.5         # 最大力矩限制 (Nm)（增大）
+  # 抖动提示参数
+  force_threshold: 0.3           # 触发抖动的力阈值 (Nm) - Follower受力超过此值时触发
+  vibration_amplitude: 0.15      # 抖动幅度 (Nm) - 控制抖动强度
+  vibration_duration: 0.3        # 抖动持续时间 (s) - 每次抖动持续多久
+  vibration_frequency: 20.0      # 抖动频率 (Hz) - 每秒抖动次数
+  force_debounce_count: 3        # 防抖计数 - 连续检测到超限多少次才触发
 
-  # 安全参数
-  velocity_deadband: 0.5          # 速度死区 (°/s) - 降低以便更容易触发
-  max_velocity_threshold: 200.0   # 最大速度阈值 (°/s) - 放宽
-  velocity_scale: 50.0            # 速度调制系数
+  # 电机参数
+  rated_torque: 2.0              # 电机额定力矩 (Nm)
 # ===============================================
 # Robot (Follower) Configuration
 # ===============================================

@@ -54,14 +54,18 @@ class SupreRobotLeader(Teleoperator):
             self.joint_position_gauge = prometheus_manager.get_gauge('joint_position')
 
         # ==================== 力反馈状态 ====================
-        # 用于将 Follower 的力数据转换为 Leader 的阻尼力矩
+        # 抖动提示模式：当 Follower 遇到阻力时，Leader 抖动提示
 
         # CST 模式状态
         self._cst_mode_enabled = False
         self._force_feedback_failed = False  # 标志：CST 配置是否失败过
 
-        # 力滤波缓冲
-        self._filtered_forces: Dict[str, float] = {}
+        # 抖动状态
+        self._vibration_active = False       # 是否正在抖动
+        self._vibration_start_time = 0.0     # 抖动开始时间
+        self._vibration_phase = 0            # 抖动相位
+        self._last_force_check_time = 0.0    # 上次检测时间
+        self._force_exceed_count = 0         # 力超限计数（用于防抖）
 
         # 统计信息
         self._feedback_count = 0
@@ -227,12 +231,12 @@ class SupreRobotLeader(Teleoperator):
 
     def send_feedback(self, feedback: dict[str, float]) -> None:
         """
-        安全的力反馈：只有在用户移动时才提供阻力。
+        抖动提示模式：当 Follower 遇到较大阻力时，Leader 产生短促抖动提示用户。
 
-        核心安全原则：
-        1. 静止时力矩为零 → 电机不会自己动
-        2. 速度过快切断力矩 → 防止失控
-        3. 力矩有限制 → 即使出错也不会产生危险运动
+        这种方式比持续阻尼更安全、更直观：
+        - 用户明确感知到"遇到阻力了"
+        - 不会产生"泥鳅"般的不稳定感
+        - 防止过度操作导致电机堵转
 
         Args:
             feedback: 力反馈字典，格式为 {"joint_name.force": force_value_in_Nm}
@@ -255,123 +259,84 @@ class SupreRobotLeader(Teleoperator):
                 self._force_feedback_failed = True
                 return
 
-        # ===== 安全力反馈核心逻辑 =====
+        import time
+        current_time = time.perf_counter()
 
-        # 1. 先读取硬件状态（必须先调用 read() 更新速度数据）
-        try:
-            self._hardware_manager.read()
-        except Exception as e:
-            print(f"Warning: Failed to read hardware state: {e}")
-            return
-
-        # 2. 读取 Leader 当前速度（用于安全检查）
-        try:
-            velocities = self._hardware_manager.read_velocities()
-        except Exception as e:
-            print(f"Warning: Failed to read velocities: {e}")
-            return
-
-        # 2. 获取配置参数（必须在使用前定义）
-        damping_gain = getattr(self.config, 'damping_gain', 0.5)
-        max_damping = getattr(self.config, 'max_damping_torque', 0.3)
-        filter_alpha = getattr(self.config, 'force_filter_alpha', 0.5)
+        # ===== 配置参数 =====
+        force_threshold = getattr(self.config, 'force_threshold', 0.3)      # 触发抖动的力阈值 (Nm)
+        vibration_amplitude = getattr(self.config, 'vibration_amplitude', 0.2)  # 抖动幅度 (Nm)
+        vibration_duration = getattr(self.config, 'vibration_duration', 0.5)    # 抖动持续时间 (s)
+        vibration_frequency = getattr(self.config, 'vibration_frequency', 15.0) # 抖动频率 (Hz)
+        force_debounce_count = getattr(self.config, 'force_debounce_count', 3)  # 防抖计数
         rated_torque = getattr(self.config, 'rated_torque', 2.0)
-        velocity_deadband = getattr(self.config, 'velocity_deadband', 2.0)
-        max_velocity_threshold = getattr(self.config, 'max_velocity_threshold', 100.0)
-        velocity_scale = getattr(self.config, 'velocity_scale', 30.0)
-        torque_safety_margin = getattr(self.config, 'torque_safety_margin', 0.1)
 
-        # 调试：打印速度信息（每100次循环打印一次）
-        if self._feedback_count % 100 == 0:
-            max_vel = max(abs(v) for v in velocities) if velocities else 0
-            print(f"DEBUG: Max velocity: {max_vel:.2f} °/s, deadband: {velocity_deadband} °/s")
+        # ===== 1. 检测 Follower 是否遇到阻力 =====
+        max_force = 0.0
+        max_force_joint = ""
+        for key, value in feedback.items():
+            if key.endswith('.force'):
+                force_abs = abs(value)
+                if force_abs > max_force:
+                    max_force = force_abs
+                    max_force_joint = key
 
-        # 3. 计算每个关节的阻尼力矩
-        torques_to_send = [0.0] * self.num_joints
-        safety_cut_count = 0
-        active_joint_count = 0
+        # 防抖处理：连续多次检测到超限才触发
+        if max_force > force_threshold:
+            self._force_exceed_count += 1
+        else:
+            self._force_exceed_count = 0
 
-        for i, joint_name in enumerate(self.observation_joint_names):
-            velocity = velocities[i] if i < len(velocities) else 0.0
-            velocity_abs = abs(velocity)
-            force_key = f"{joint_name}.force"
+        # ===== 2. 触发抖动 =====
+        if self._force_exceed_count >= force_debounce_count and not self._vibration_active:
+            self._vibration_active = True
+            self._vibration_start_time = current_time
+            self._vibration_phase = 0
+            print(f"[VIBRATION] Triggered! Max force: {max_force:.3f} Nm at {max_force_joint}")
 
-            # ===== 安全检查：速度只作为触发条件 =====
+        # ===== 3. 执行抖动 =====
+        if self._vibration_active:
+            elapsed = current_time - self._vibration_start_time
 
-            # 检查1: 速度过快，切断力矩
-            if velocity_abs > max_velocity_threshold:
-                torques_to_send[i] = 0.0
-                safety_cut_count += 1
-                if joint_name in self._filtered_forces:
-                    del self._filtered_forces[joint_name]
-                continue
+            if elapsed < vibration_duration:
+                # 生成抖动信号：正弦波脉冲
+                # 使用 sin 产生正负交替的力矩
+                phase = 2 * 3.14159 * vibration_frequency * elapsed
+                vibration_value = vibration_amplitude * math.sin(phase)
 
-            # 检查2: 静止时不发力矩（核心安全机制！）
-            if velocity_abs < velocity_deadband:
-                torques_to_send[i] = 0.0
-                if joint_name in self._filtered_forces:
-                    del self._filtered_forces[joint_name]
-                continue
+                # 发送到所有关节
+                torques_to_send = [vibration_value] * self.num_joints
 
-            # 用户正在移动，提供阻尼
-            active_joint_count += 1
+                # 应用关节方向映射
+                for i, joint_name in enumerate(self.observation_joint_names):
+                    direction = self.joint_direction_map.get(f"{joint_name}.pos", 1)
+                    torques_to_send[i] *= direction
 
-            # 获取 Follower 的力数据
-            raw_force = feedback.get(force_key, 0.0)
+                try:
+                    self._hardware_manager.write_torques(torques_to_send, rated_torque)
+                except Exception as e:
+                    print(f"Warning: Failed to send vibration: {e}")
 
-            # 简单低通滤波
-            if joint_name in self._filtered_forces:
-                filtered_force = (
-                    filter_alpha * raw_force
-                    + (1 - filter_alpha) * self._filtered_forces[joint_name]
-                )
+                # 每50次循环打印一次调试信息
+                self._vibration_phase += 1
+                if self._vibration_phase % 50 == 0:
+                    print(f"[VIBRATION] Elapsed: {elapsed:.2f}s, value: {vibration_value:.3f} Nm")
             else:
-                filtered_force = raw_force
-            self._filtered_forces[joint_name] = filtered_force
+                # 抖动结束
+                self._vibration_active = False
+                self._force_exceed_count = 0
+                print("[VIBRATION] Ended")
 
-            # ========================================
-            # 核心安全逻辑：真正的阻尼
-            # ========================================
-            # 阻尼定义：始终与运动方向相反，永远不会主动驱动电机
-            #
-            # 用户正向移动 (velocity > 0) → 阻尼力矩 < 0 (阻止正向移动)
-            # 用户反向移动 (velocity < 0) → 阻尼力矩 > 0 (阻止反向移动)
-            #
-            # Follower 力数据决定阻尼的"大小"，速度方向决定阻尼的"方向"
-            # ========================================
+                # 发送零力矩
+                try:
+                    self._hardware_manager.write_torques([0.0] * self.num_joints, rated_torque)
+                except Exception as e:
+                    print(f"Warning: Failed to clear torques: {e}")
 
-            # 速度方向（确定阻尼方向）
-            velocity_sign = 1.0 if velocity > 0 else -1.0
-
-            # 阻尼力矩 = -速度方向 × 力大小 × 增益
-            # 负号确保阻尼始终与运动方向相反
-            damping_magnitude = abs(filtered_force) * damping_gain
-            damping_torque = -velocity_sign * damping_magnitude
-
-            # 限制最大阻尼力矩
-            damping_torque = max(-max_damping, min(damping_torque, max_damping))
-
-            # 应用关节方向映射
-            direction = self.joint_direction_map.get(f"{joint_name}.pos", 1)
-            damping_torque *= direction
-
-            torques_to_send[i] = damping_torque
-
-        # 4. 发送力矩指令
-        try:
-            self._hardware_manager.write_torques(torques_to_send, rated_torque)
-        except Exception as e:
-            print(f"Warning: Failed to write torques: {e}")
-            return
-
-        # 5. 统计与日志
+        # ===== 4. 统计与调试 =====
         self._feedback_count += 1
         if self._feedback_count % 100 == 0:
-            max_torque = max(abs(t) for t in torques_to_send) if torques_to_send else 0
-            print(f"Force feedback: {self._feedback_count} cycles, "
-                  f"active joints: {active_joint_count}, "
-                  f"max torque: {max_torque:.3f} Nm, "
-                  f"safety cuts: {safety_cut_count}")
+            print(f"Force check: max_force={max_force:.3f} Nm, threshold={force_threshold} Nm, "
+                  f"vibration_active={self._vibration_active}")
 
     def _enable_cst_mode(self) -> bool:
         """启用 CST 力矩控制模式。"""
