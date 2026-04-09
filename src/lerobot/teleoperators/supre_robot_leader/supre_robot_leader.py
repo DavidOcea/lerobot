@@ -277,26 +277,18 @@ class SupreRobotLeader(Teleoperator):
             if current_time - self._last_sound_time >= beep_interval:
                 self._last_sound_time = current_time
 
-                # 使用系统蜂鸣命令（Linux）
+                # 使用异步方式播放声音，避免阻塞控制循环
                 try:
-                    # 方法1: 使用 beep 命令（需要安装 beep 包）
-                    # beep -f 1000 -l 50 -n -f 1500 -l 50
-
-                    # 方法2: 使用 aplay 播放系统提示音
-                    # subprocess.run(['aplay', '-q', '/usr/share/sounds/speech-dispatcher/test.wav'],
-                    #                capture_output=True, timeout=0.5)
-
-                    # 方法3: 使用 echo 到 /dev/pts/0 发送终端蜂鸣
-                    # print('\a', end='', flush=True)
-
-                    # 方法4: 使用系统命令播放蜂鸣（最通用）
-                    # 在 Linux 上，使用 paplay 或 aplay
-                    subprocess.run(['paplay', '/usr/share/sounds/freedesktop/stereo/message.oga'],
-                                   capture_output=True, timeout=0.5)
+                    # Popen 是非阻塞的，会在后台播放声音
+                    subprocess.Popen(
+                        ['paplay', '/usr/share/sounds/freedesktop/stereo/message.oga'],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
                 except Exception as e:
-                    # 如果上面的方法都失败，使用简单的终端蜂鸣
+                    # 如果 paplay 失败，使用终端蜂鸣（也是非阻塞的）
                     try:
-                        print('\a', end='', flush=True)  # 终端蜂鸣
+                        print('\a', end='', flush=True)
                     except:
                         pass
 
