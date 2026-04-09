@@ -172,17 +172,30 @@ class EyouMotorHardware(HardwareInterface):
     def read(self) -> List[Tuple[Optional[float], Optional[float]]]:
         """
         更新内部状态并返回一份新的状态拷贝。
-        
+
         :return: (new_positions, new_velocities) 元组。
         """
         for i, motor in enumerate(self.motor_nodes_):
             feedback = motor.get_latest_feedback()
-            
+
+            # 调试：打印第一个关节的详细反馈信息
+            if i == 0:
+                if hasattr(self, '_read_count'):
+                    self._read_count += 1
+                else:
+                    self._read_count = 0
+                if self._read_count % 100 == 0:
+                    print(f"DEBUG read: joint={self.joint_names_[i]}, "
+                          f"pos={feedback.position_deg:.2f}, "
+                          f"vel={feedback.velocity_dps:.2f}, "
+                          f"torque={feedback.torque_milli:.0f}, "
+                          f"update_time={feedback.last_update_time}")
+
             if feedback.last_update_time > datetime.timedelta(0):
                 self.hw_states_positions_[i] = feedback.position_deg
                 self.hw_states_velocities_[i] = feedback.velocity_dps
                 self.hw_states_torques_[i] = float(feedback.torque_milli)/1000.0
-        
+
         # 返回内部状态的拷贝，防止外部代码意外修改
         return list(zip(self.hw_states_positions_, self.hw_states_torques_))
 
@@ -192,6 +205,15 @@ class EyouMotorHardware(HardwareInterface):
 
         :return: 速度列表 (°/s)
         """
+        # 调试：打印速度数据
+        if hasattr(self, '_vel_read_count'):
+            self._vel_read_count += 1
+        else:
+            self._vel_read_count = 0
+
+        if self._vel_read_count % 100 == 0:
+            print(f"DEBUG read_velocities: {[f'{v:.2f}' for v in self.hw_states_velocities_]}")
+
         return list(self.hw_states_velocities_)
     def busy_wait(self, wait_time_s):
         end_time = time.perf_counter() + wait_time_s
