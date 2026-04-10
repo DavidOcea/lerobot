@@ -228,6 +228,7 @@ def record_loop(
     start_episode_t = time.perf_counter()
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
+        frame_timestamp = time.perf_counter() - start_episode_t  # 记录帧的实际时间戳
 
         if events["exit_early"]:
             events["exit_early"] = False
@@ -284,7 +285,7 @@ def record_loop(
             #print(f"dataset.features: {dataset.features}")
             action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
             frame = {**observation_frame, **action_frame}
-            dataset.add_frame(frame, task=single_task)
+            dataset.add_frame(frame, task=single_task, timestamp=frame_timestamp)  # 使用实际时间戳
 
         if display_data:
             log_rerun_data(observation, action)
