@@ -123,6 +123,15 @@ class ArmConfig:
     camera_flip: Dict[str, Tuple[bool, bool]] = field(default_factory=dict)
 
 
+# ==================== 硬件开关配置 ====================
+# 临时禁用某些硬件功能（如夹爪拆除时）
+# 修改此处即可，无需改动其他代码
+
+GRIPPER_ENABLED = False  # 夹爪已拆除时设为 False
+
+# ================================================
+
+
 # 手臂配置 - 7关节标定 (joint_1~6 + trunk_1)
 # 重要: 如果两个腕部相机安装方向相反，需要配置camera_flip
 # 当相机旋转180度安装时，X和Y方向都会翻转，需要设为(True, True)
@@ -2491,24 +2500,25 @@ class PrecisionPlaceController:
             print(f"[DEBUG] get_joint_states failed: current_joints={current_joints}")
             return False
 
-        # 保存夹爪初始位置，在移动过程中保持不变
-        gripper_initial_pos = current_joints[self.arm_config.gripper_idx]
-        gripper_target_pos = target_joints[self.arm_config.gripper_idx]
+        # 保存夹爪初始位置（仅当夹爪启用时）
+        if GRIPPER_ENABLED:
+            gripper_initial_pos = current_joints[self.arm_config.gripper_idx]
 
         # DEBUG: 打印目标关节值
         print(f"[DEBUG] 开始平滑移动:")
         print(f"  current_joints[7] (right_arm_joint_1) = {current_joints[7]:.4f}")
         print(f"  target_joints[7] = {target_joints[7]:.4f}")
         print(f"  delta = {target_joints[7] - current_joints[7]:.4f}")
-        print(f"  arm_config.gripper_idx = {self.arm_config.gripper_idx}")
+        print(f"  GRIPPER_ENABLED = {GRIPPER_ENABLED}")
 
         for step in range(1, steps + 1):
             alpha = step / steps
             alpha = alpha * alpha * (3 - 2 * alpha)  # ease-in-out
 
             interp = current_joints * (1 - alpha) + target_joints * alpha
-            # 保持夹爪在初始位置（不被插值改变）
-            interp[self.arm_config.gripper_idx] = gripper_initial_pos
+            # 保持夹爪在初始位置（仅当夹爪启用时）
+            if GRIPPER_ENABLED:
+                interp[self.arm_config.gripper_idx] = gripper_initial_pos
 
             # DEBUG: 打印每步的插值值
             if step <= 3 or step == steps:
@@ -3902,6 +3912,10 @@ class PrecisionPlaceController:
 
     def open_gripper(self):
         """打开夹爪"""
+        if not GRIPPER_ENABLED:
+            print("⚠ 夹爪已禁用 (GRIPPER_ENABLED=False)")
+            return False
+
         if self.passive_mode:
             print("✗ 被动模式下无法控制夹爪")
             return False
@@ -3922,6 +3936,10 @@ class PrecisionPlaceController:
 
     def close_gripper(self, position: float = None):
         """闭合夹爪"""
+        if not GRIPPER_ENABLED:
+            print("⚠ 夹爪已禁用 (GRIPPER_ENABLED=False)")
+            return False
+
         if self.passive_mode:
             print("✗ 被动模式下无法控制夹爪")
             return False

@@ -55,6 +55,15 @@ class ArmConfig:
     camera_flip: Dict[str, Tuple[bool, bool]] = field(default_factory=dict)
 
 
+# ==================== 硬件开关配置 ====================
+# 临时禁用某些硬件功能（如夹爪拆除时）
+# 修改此处即可，无需改动其他代码
+
+GRIPPER_ENABLED = False  # 夹爪已拆除时设为 False
+
+# ================================================
+
+
 # 手臂配置 - 7关节标定
 # 注意：相机索引取决于实际连接的USB端口
 # 使用 ls /dev/video* 或 v4l2-ctl --list-devices 查看
