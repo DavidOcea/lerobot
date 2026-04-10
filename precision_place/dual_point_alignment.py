@@ -126,32 +126,29 @@ class ArmConfig:
 # 手臂配置 - 7关节标定 (joint_1~6 + trunk_1)
 # 重要: 如果两个腕部相机安装方向相反，需要配置camera_flip
 # 当相机旋转180度安装时，X和Y方向都会翻转，需要设为(True, True)
+# 当前配置 (2024-04): 拆掉了两个副相机
 ARM_CONFIGS = {
     'right': ArmConfig(
         name='right',
         camera_name='right_wrist',
-        camera_index=6,
-        camera2_name='right_wrist2',
-        camera2_index=8,
+        camera_index=4,  # 右手相机索引
+        camera2_name='',  # 已拆除
+        camera2_index=-1,  # 已拆除
         primary_joints=[7, 8, 9, 10, 11, 12, 14],  # right_arm_joint_1~6 + trunk_joint_1
         gripper_idx=13,
         gripper_open=0.0,
         gripper_close=50.0,
         dh_params=None,  # 待用户提供
-        # 相机方向翻转配置:
-        # 格式: (x_flip, y_flip) - True表示该相机方向与标定相机相反
-        # 两个相机安装方向相反时，需要为副相机设置翻转
         camera_flip={
             'right_wrist': (False, False),    # 主相机作为参考方向
-            'right_wrist2': (True, True),     # 副相机安装方向相反，需要翻转X和Y
         }
     ),
     'left': ArmConfig(
         name='left',
         camera_name='left_wrist',
-        camera_index=2,
-        camera2_name='left_wrist2',
-        camera2_index=4,
+        camera_index=2,  # 左手相机索引
+        camera2_name='',  # 已拆除
+        camera2_index=-1,  # 已拆除
         primary_joints=[0, 1, 2, 3, 4, 5, 14],  # left_arm_joint_1~6 + trunk_joint_1
         gripper_idx=6,
         gripper_open=0.0,
@@ -159,7 +156,6 @@ ARM_CONFIGS = {
         dh_params=None,  # 待用户提供
         camera_flip={
             'left_wrist': (False, False),     # 主相机作为参考方向
-            'left_wrist2': (True, True),      # 副相机安装方向相反，需要翻转X和Y
         }
     )
 }

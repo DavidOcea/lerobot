@@ -1,16 +1,17 @@
 # 精准放置配置
-# 注意: 此文件仅为遗留配置，当前活跃代码使用 config.py
+# 注意: 此文件仅为遗留配置，当前活跃代码使用 models/calibration_data.py 中的 ARM_CONFIGS
 # 保留此文件是为了兼容 _archived 目录中的旧代码
 
 # 相机
+# 当前配置 (2024-04): 拆掉了两个相机
+# - 右手相机: 索引4
+# - 左手相机: 索引2
 cameras:
   indices:
     head: 0
     left_wrist: 2
-    left_wrist2: 4
-    right_wrist: 6
-    right_wrist2: 8
-  primary: right_wrist  # 索引6 (与 config.py 保持一致)
+    right_wrist: 4
+  primary: right_wrist  # 索引4
 
 # 标记颜色
 markers:

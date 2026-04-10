@@ -101,12 +101,13 @@ except ImportError:
 
 # ==================== 配置 ====================
 
+# 相机索引配置
+# 注意: 实际索引取决于USB连接顺序，使用 ls /dev/video* 查看
+# 当前配置 (2024-04): 拆掉了两个副相机
 CAMERA_INDICES = {
     'head': 0,
     'left_wrist': 2,
-    'left_wrist2': 4,
-    'right_wrist': 6,
-    'right_wrist2': 8
+    'right_wrist': 4
 }
 
 WORKPIECE_COLOR = "green"

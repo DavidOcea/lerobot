@@ -56,35 +56,35 @@ class ArmConfig:
 
 
 # 手臂配置 - 7关节标定
+# 注意：相机索引取决于实际连接的USB端口
+# 使用 ls /dev/video* 或 v4l2-ctl --list-devices 查看
 ARM_CONFIGS = {
     'right': ArmConfig(
         name='right',
         camera_name='right_wrist',
-        camera_index=6,
-        camera2_name='right_wrist2',
-        camera2_index=8,
+        camera_index=4,  # 右手相机索引
+        camera2_name='',  # 已拆除
+        camera2_index=-1,  # 已拆除
         primary_joints=[7, 8, 9, 10, 11, 12, 14],
         gripper_idx=13,
         gripper_open=0.0,
         gripper_close=50.0,
         camera_flip={
             'right_wrist': (False, False),
-            'right_wrist2': (True, True),
         }
     ),
     'left': ArmConfig(
         name='left',
         camera_name='left_wrist',
-        camera_index=2,
-        camera2_name='left_wrist2',
-        camera2_index=4,
+        camera_index=2,  # 左手相机索引
+        camera2_name='',  # 已拆除
+        camera2_index=-1,  # 已拆除
         primary_joints=[0, 1, 2, 3, 4, 5, 14],
         gripper_idx=6,
         gripper_open=0.0,
         gripper_close=50.0,
         camera_flip={
             'left_wrist': (False, False),
-            'left_wrist2': (True, True),
         }
     )
 }

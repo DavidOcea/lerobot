@@ -9,7 +9,8 @@ Z轴精确控制模块
 5. 自动标定支持
 
 工作距离: 8mm - 208mm
-相机配置: right_wrist (索引6) + right_wrist2 (索引8)
+相机配置: right_wrist (索引4), left_wrist (索引2)
+注意: 副相机已拆除，双目功能暂不可用
 """
 
 import cv2

@@ -12,8 +12,8 @@ Precision Place - 毫米级精准放置模块
     - 旋转对齐 (三标记姿态估计)
 
 配置:
-    - 主用相机: right_wrist (索引6)
-    - 副相机: right_wrist2 (索引8)
+    - 右手相机: right_wrist (索引4)
+    - 左手相机: left_wrist (索引2)
     - 工件标记: 绿色
     - 卡槽标记: 红色
     - XY精度: ±1mm (手眼标定方法)
