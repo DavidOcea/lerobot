@@ -89,6 +89,24 @@ from lerobot.utils.utils import (
 
 
 @dataclass
+class LeaderAdjustConfig:
+    """Leader微调配置（状态机设计，滞回机制）"""
+
+    enable: bool = True
+
+    # 触发参数
+    trigger_threshold_deg: float = 5.0  # 触发阈值：5度（Leader变化超过此值进入微调状态）
+    trigger_alpha: float = 0.3          # 触发后修正系数
+
+    # 退出参数（滞回设计，防止频繁进出）
+    exit_threshold_deg: float = 1.0     # 退出阈值：1度（Leader变化小于此值开始计数退出）
+    exit_frame_count: int = 5           # 连续N帧变化<1度才退出
+
+    # 微调期间参数
+    adjust_alpha: float = 0.3           # 微调修正系数（follower = leader_delta * alpha）
+
+
+@dataclass
 class KeyAdjustConfig:
     """键盘微调配置（平滑精细控制）"""
 
@@ -135,10 +153,8 @@ class ReplayRecordConfig:
     noise_std: float = 0.02  # Standard deviation for action noise (rad)
     noise_seed: int | None = None  # Random seed for reproducibility
 
-    # Leader intervention parameters (混合模式)
-    leader_adjust_enabled: bool = True
-    leader_threshold: float = 0.5  # Leader movement threshold (rad) to trigger intervention
-    leader_alpha: float = 0.3  # Correction coefficient for Leader delta
+    # Leader intervention parameters (状态机设计，滞回机制)
+    leader_adjust: LeaderAdjustConfig = LeaderAdjustConfig()
 
     # Keyboard adjustment parameters（平滑精细控制）
     key_adjust: KeyAdjustConfig = KeyAdjustConfig()
@@ -199,6 +215,108 @@ def add_noise_to_action(action: dict[str, float], noise_std: float, rng: np.rand
     return noisy_action
 
 
+class LeaderAdjustStateMachine:
+    """Leader微调状态机（滞回设计）。
+
+    状态：
+    - idle: 等待触发
+    - adjusting: 微调状态（Leader连续影响Follower）
+
+    流程：
+    1. 等待Leader变化 > 5度 → 进入微调状态
+    2. 重置基准位置，从此刻起计算delta
+    3. 微调期间：follower += alpha * (leader_pos - trigger_baseline)
+    4. 连续5帧变化 < 1度 → 退出微调状态
+    """
+
+    def __init__(self, cfg: LeaderAdjustConfig):
+        self.cfg = cfg
+        self.state = "idle"
+        self.trigger_baseline: dict[str, float] | None = None  # 触发时的Leader位置基准
+        self.prev_leader_pos: dict[str, float] | None = None   # 上一帧Leader位置（用于计算变化量）
+        self.exit_frame_count = 0  # 退出计数
+
+    def deg_to_rad(self, deg: float) -> float:
+        """度转弧度"""
+        return deg * np.pi / 180.0
+
+    def rad_to_deg(self, rad: float) -> float:
+        """弧度转度"""
+        return rad * 180.0 / np.pi
+
+    def process(
+        self,
+        leader_obs: dict[str, float],
+        final_action: dict[str, float],
+    ) -> str:
+        """处理Leader输入，返回当前状态。
+
+        Args:
+            leader_obs: Leader observation (包含 .pos 的关节位置)
+            final_action: 待修改的动作字典
+
+        Returns:
+            当前状态: "idle" 或 "adjusting"
+        """
+        # 提取Leader位置
+        leader_pos = {k: v for k, v in leader_obs.items() if k.endswith(".pos")}
+
+        # === 计算变化量 ===
+        if self.prev_leader_pos is not None:
+            frame_delta = {}
+            max_delta_rad = 0.0
+            for key, value in leader_pos.items():
+                delta_rad = value - self.prev_leader_pos.get(key, value)
+                frame_delta[key.replace(".pos", "")] = delta_rad
+                max_delta_rad = max(max_delta_rad, abs(delta_rad))
+
+            max_delta_deg = self.rad_to_deg(max_delta_rad)
+        else:
+            frame_delta = {}
+            max_delta_deg = 0.0
+
+        # === 状态机逻辑 ===
+        if self.state == "idle":
+            # 等待状态：检测是否触发
+            if max_delta_deg > self.cfg.trigger_threshold_deg:
+                # 触发：进入微调状态
+                self.state = "adjusting"
+                self.trigger_baseline = leader_pos.copy()  # 记录触发基准
+                self.exit_frame_count = 0
+                logging.info(f"Leader微调触发: 变化量={max_delta_deg:.1f}度")
+
+        elif self.state == "adjusting":
+            # 微调状态：计算相对于触发基准的偏移
+            if self.trigger_baseline is not None:
+                for joint_key, leader_value in leader_pos.items():
+                    joint_name = joint_key.replace(".pos", "")
+                    baseline = self.trigger_baseline.get(joint_key, leader_value)
+                    delta_rad = leader_value - baseline  # 相对触发点的偏移
+
+                    action_key = f"{joint_name}.pos"
+                    if action_key in final_action:
+                        # 应用修正
+                        final_action[action_key] += self.cfg.adjust_alpha * delta_rad
+
+            # 检测退出：变化量小于阈值
+            if max_delta_deg < self.cfg.exit_threshold_deg:
+                self.exit_frame_count += 1
+                if self.exit_frame_count >= self.cfg.exit_frame_count:
+                    # 连续N帧变化小，退出微调
+                    self.state = "idle"
+                    self.trigger_baseline = None
+                    self.exit_frame_count = 0
+                    logging.info(f"Leader微调退出: 连续{self.cfg.exit_frame_count}帧变化<{self.cfg.exit_threshold_deg}度")
+            else:
+                # 变化大，重置退出计数
+                self.exit_frame_count = 0
+
+        # === 更新上一帧位置 ===
+        self.prev_leader_pos = leader_pos.copy()
+
+        return self.state
+
+
 def replay_record_loop(
     robot: Robot,
     dataset: LeRobotDataset,
@@ -228,8 +346,10 @@ def replay_record_loop(
     """
     rng = np.random.default_rng(cfg.noise_seed)
 
-    # Leader intervention tracking
-    prev_leader_pos: dict[str, float] | None = None
+    # Leader微调状态机（滞回设计）
+    leader_state_machine: LeaderAdjustStateMachine | None = None
+    if teleop is not None and cfg.leader_adjust.enable:
+        leader_state_machine = LeaderAdjustStateMachine(cfg.leader_adjust)
 
     # 键盘调整累积器（平滑控制）
     key_adjust_accumulator: dict[str, float] = {}
@@ -240,6 +360,8 @@ def replay_record_loop(
 
     logging.info(f"Replay_record started with noise_std={cfg.noise_std}")
     logging.info(f"Key adjust mode: {cfg.key_adjust.arm_control_mode}, step={cfg.key_adjust.step_per_frame} deg/frame")
+    if leader_state_machine:
+        logging.info(f"Leader adjust: trigger={cfg.leader_adjust.trigger_threshold_deg}度, exit={cfg.leader_adjust.exit_threshold_deg}度/{cfg.leader_adjust.exit_frame_count}帧")
 
     for idx in range(dataset.num_frames):
         # === 1. 记录实际时间戳 ===
@@ -256,30 +378,11 @@ def replay_record_loop(
         noisy_action = add_noise_to_action(base_action, cfg.noise_std, rng)
         final_action = noisy_action.copy()
 
-        # === 4. Leader介入检测（混合模式）===
-        if teleop is not None and cfg.leader_adjust_enabled:
+        # === 4. Leader微调（状态机设计）===
+        if leader_state_machine is not None:
             leader_obs = teleop.get_observation()
-            leader_pos = {k: v for k, v in leader_obs.items() if k.endswith(".pos")}
-
-            if prev_leader_pos is not None:
-                # 计算变化量
-                leader_delta = {}
-                max_delta = 0.0
-                for key, value in leader_pos.items():
-                    delta = value - prev_leader_pos.get(key, value)
-                    leader_delta[key.replace(".pos", "")] = delta
-                    max_delta = max(max_delta, abs(delta))
-
-                # 只有变化量超过阈值才介入
-                if max_delta > cfg.leader_threshold:
-                    logging.debug(f"Leader介入: max_delta={max_delta:.3f} rad")
-                    # 应用修正
-                    for joint_key, delta in leader_delta.items():
-                        action_key = f"{joint_key}.pos"
-                        if action_key in final_action:
-                            final_action[action_key] += cfg.leader_alpha * delta
-
-            prev_leader_pos = leader_pos.copy()
+            state = leader_state_machine.process(leader_obs, final_action)
+            # 状态会显示在日志中
 
         # === 5. 按键平滑微调 ===
         if cfg.key_adjust.enable:
