@@ -153,9 +153,9 @@ class DatasetRecordConfig:
     # Timestamp mode: True = actual timestamp (perf_counter), False = frame_index/fps (ideal)
     use_actual_timestamp: bool = True
     # Timestamp tolerance in seconds for sync check.
-    # For actual timestamps, use larger tolerance (0.01) due to control loop jitter.
+    # For actual timestamps, use larger tolerance (0.03) due to control loop jitter.
     # For ideal timestamps, use strict tolerance (1e-4).
-    tolerance_s: float | None = None  # None = auto: 0.01 if actual, 1e-4 if ideal
+    tolerance_s: float | None = None  # None = auto: 0.03 if actual, 1e-4 if ideal
 
     def __post_init__(self):
         if self.single_task is None:
@@ -340,7 +340,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
         sanity_check_dataset_name(cfg.dataset.repo_id, cfg.policy)
         # 根据时间戳模式自动设置容差
         if cfg.dataset.tolerance_s is None:
-            tolerance_s = 0.01 if cfg.dataset.use_actual_timestamp else 1e-4
+            tolerance_s = 0.03 if cfg.dataset.use_actual_timestamp else 1e-4
         else:
             tolerance_s = cfg.dataset.tolerance_s
         dataset = LeRobotDataset.create(
