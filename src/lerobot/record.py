@@ -150,6 +150,8 @@ class DatasetRecordConfig:
     # Too many threads might cause unstable teleoperation fps due to main thread being blocked.
     # Not enough threads might cause low camera fps.
     num_image_writer_threads_per_camera: int = 4
+    # Timestamp mode: True = actual timestamp (perf_counter), False = frame_index/fps (ideal)
+    use_actual_timestamp: bool = True
 
     def __post_init__(self):
         if self.single_task is None:
@@ -199,6 +201,7 @@ def record_loop(
     control_time_s: int | None = None,
     single_task: str | None = None,
     display_data: bool = False,
+    use_actual_timestamp: bool = True,  # True=实际时间戳, False=frame_index/fps
 ):
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
@@ -225,10 +228,15 @@ def record_loop(
         policy.reset()
 
     timestamp = 0
+    frame_index = 0  # 用于旧模式的时间戳计算
     start_episode_t = time.perf_counter()
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
-        frame_timestamp = time.perf_counter() - start_episode_t  # 记录帧的实际时间戳
+        # 根据配置选择时间戳计算方式
+        if use_actual_timestamp:
+            frame_timestamp = time.perf_counter() - start_episode_t  # 实际时间戳
+        else:
+            frame_timestamp = frame_index / fps  # 理想时间戳（原方案）
 
         if events["exit_early"]:
             events["exit_early"] = False
@@ -285,7 +293,7 @@ def record_loop(
             #print(f"dataset.features: {dataset.features}")
             action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
             frame = {**observation_frame, **action_frame}
-            dataset.add_frame(frame, task=single_task, timestamp=frame_timestamp)  # 使用实际时间戳
+            dataset.add_frame(frame, task=single_task, timestamp=frame_timestamp)  # 根据配置的时间戳
 
         if display_data:
             log_rerun_data(observation, action)
@@ -294,6 +302,7 @@ def record_loop(
         busy_wait(1 / fps - dt_s)
         print(f"sleep time: {1/fps - dt_s}")
         timestamp = time.perf_counter() - start_episode_t
+        frame_index += 1  # 帧计数（用于旧模式时间戳）
 
 
 @parser.wrap()
@@ -358,6 +367,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
             control_time_s=cfg.dataset.episode_time_s,
             single_task=cfg.dataset.single_task,
             display_data=cfg.display_data,
+            use_actual_timestamp=cfg.dataset.use_actual_timestamp,
         )
 
         # Execute a few seconds without recording to give time to manually reset the environment
@@ -374,6 +384,7 @@ def record(cfg: RecordConfig) -> LeRobotDataset:
                 control_time_s=cfg.dataset.reset_time_s,
                 single_task=cfg.dataset.single_task,
                 display_data=cfg.display_data,
+                use_actual_timestamp=cfg.dataset.use_actual_timestamp,
             )
 
         if events["rerecord_episode"]:
