@@ -689,6 +689,11 @@ def replay(cfg: ReplayConfig):
 
         # 创建新数据集
         dataset_features = dataset.features
+
+        # 相机配置：根据相机数量动态计算（与 record.py 一致）
+        num_cameras = len(robot.cameras) if hasattr(robot, 'cameras') and robot.cameras else 1
+        image_writer_threads = 4 * num_cameras  # 每个相机4个线程
+
         new_dataset = LeRobotDataset.create(
             repo_id=replay_cfg.record_repo_id,
             fps=fps,
@@ -698,8 +703,10 @@ def replay(cfg: ReplayConfig):
             use_videos=True,
             tolerance_s=replay_cfg.tolerance_s,
             image_writer_processes=0,
-            image_writer_threads=4,
+            image_writer_threads=image_writer_threads,
         )
+
+        logging.info(f"Dataset created with {num_cameras} cameras, {image_writer_threads} image writer threads")
 
         # 初始化键盘监听
         listener, events = init_keyboard_listener()
