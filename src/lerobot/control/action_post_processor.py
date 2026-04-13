@@ -45,7 +45,7 @@ class PostProcessorConfig:
 
     # Motion-state adaptive filter (自适应滤波 v2)
     # 改进：渐变Alpha + 状态滞回 + 目标稳定性判定
-    enable_motion_adaptive_filter: bool = True
+    enable_motion_adaptive_filter: bool = False  # 禁用自适应，使用固定 alpha=0.7
     filter_alpha_uniform: float = 0.7       # 匀速状态: 正常平滑
     filter_alpha_accelerating: float = 0.75  # 变速状态: 略微减弱（更保守）
     filter_alpha_near_target: float = 0.85   # 到位状态: 中等减弱（不是0.95）
