@@ -77,6 +77,8 @@ class DatasetReplayConfig:
     root: str | Path | None = None
     # Limit the frames per second. By default, uses the policy fps.
     fps: int = 30
+    # Number of replay loops. 0 = infinite loop.
+    num_loops: int = 1
 
 
 @dataclass
@@ -95,14 +97,18 @@ def replay(cfg: ReplayConfig):
     robot = make_robot_from_config(cfg.robot)
     dataset = LeRobotDataset(cfg.dataset.repo_id, root=cfg.dataset.root, episodes=[cfg.dataset.episode])
     actions = dataset.hf_dataset.select_columns("action")
+    fps = dataset.fps if hasattr(dataset, 'fps') else cfg.dataset.fps
     robot.connect()
 
-    log_say("Replaying episode", cfg.play_sounds, blocking=True)
-    while True:
-        start_time = time.perf_counter()
-        for idx in range(dataset.num_frames):
-            start_episode_t = time.perf_counter()
+    loop_count = 0
+    max_loops = cfg.dataset.num_loops if cfg.dataset.num_loops > 0 else float('inf')
 
+    log_say("Replaying episode", cfg.play_sounds, blocking=True)
+
+    while loop_count < max_loops:
+        start_episode_t = time.perf_counter()  # 只在episode开始时设置一次
+
+        for idx in range(dataset.num_frames):
             action_array = actions[idx]["action"]
             action = {}
             for i, name in enumerate(dataset.features["action"]["names"]):
@@ -111,12 +117,14 @@ def replay(cfg: ReplayConfig):
             robot.send_action(action)
 
             dt_s = time.perf_counter() - start_episode_t
-            busy_wait(1 / dataset.fps - dt_s)
-            
-            dur_time = time.perf_counter() - start_time
-            print("ssfdfsfsf:", dur_time)
-            if dur_time > 85:
-                break
+            # 计算期望时间：当前帧索引对应的理想时间
+            expected_time = idx / fps
+            wait_time = expected_time - dt_s
+            if wait_time > 0:
+                busy_wait(wait_time)
+
+        loop_count += 1
+        logging.info(f"Replay loop {loop_count} completed")
 
     robot.disconnect()
 
