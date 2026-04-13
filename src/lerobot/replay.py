@@ -89,6 +89,33 @@ from lerobot.utils.utils import (
 
 
 @dataclass
+class KeyAdjustConfig:
+    """键盘微调配置（平滑精细控制）"""
+
+    enable: bool = True
+
+    # 平滑参数（精细控制）
+    step_per_frame: float = 0.1      # 每帧调整幅度（度）
+    max_adjustment: float = 5.0      # 单次按键最大累积调整量（度）
+
+    # 双臂控制模式：left / right / both
+    arm_control_mode: str = "both"
+
+    # 按键映射
+    # W/X: 双臂joint_1 正/反（同向）
+    # A/D: 双臂joint_3 正/反（相对方向）
+    # Q/E: 腰部 trunk 正/反
+    # K: 切换控制模式
+    keys_joint_1_positive: str = "w"
+    keys_joint_1_negative: str = "x"
+    keys_joint_3_positive: str = "a"
+    keys_joint_3_negative: str = "d"
+    keys_trunk_positive: str = "q"
+    keys_trunk_negative: str = "e"
+    key_mode_toggle: str = "k"
+
+
+@dataclass
 class ReplayRecordConfig:
     """Configuration for replay with recording (data augmentation)."""
 
@@ -113,9 +140,8 @@ class ReplayRecordConfig:
     leader_threshold: float = 0.5  # Leader movement threshold (rad) to trigger intervention
     leader_alpha: float = 0.3  # Correction coefficient for Leader delta
 
-    # Keyboard adjustment parameters
-    key_adjust_enabled: bool = True
-    key_adjust_step: float = 1.0  # Step size for keyboard adjustment (rad)
+    # Keyboard adjustment parameters（平滑精细控制）
+    key_adjust: KeyAdjustConfig = KeyAdjustConfig()
 
     # Timestamp tolerance for recorded dataset
     tolerance_s: float = 0.03  # Same as record.py for actual timestamps
@@ -205,11 +231,15 @@ def replay_record_loop(
     # Leader intervention tracking
     prev_leader_pos: dict[str, float] | None = None
 
+    # 键盘调整累积器（平滑控制）
+    key_adjust_accumulator: dict[str, float] = {}
+
     # Episode recording state
     episode_start = time.perf_counter()
     frame_index = 0
 
     logging.info(f"Replay_record started with noise_std={cfg.noise_std}")
+    logging.info(f"Key adjust mode: {cfg.key_adjust.arm_control_mode}, step={cfg.key_adjust.step_per_frame} deg/frame")
 
     for idx in range(dataset.num_frames):
         # === 1. 记录实际时间戳 ===
@@ -251,16 +281,14 @@ def replay_record_loop(
 
             prev_leader_pos = leader_pos.copy()
 
-        # === 5. 按键介入检测 ===
-        if cfg.key_adjust_enabled:
-            # 检测按键调整（通过events）
-            if events.get("key_adjust_joint_1_up"):
-                final_action["left_arm_joint_1.pos"] += cfg.key_adjust_step
-                events["key_adjust_joint_1_up"] = False
-            if events.get("key_adjust_joint_1_down"):
-                final_action["left_arm_joint_1.pos"] -= cfg.key_adjust_step
-                events["key_adjust_joint_1_down"] = False
-            # 可扩展更多按键...
+        # === 5. 按键平滑微调 ===
+        if cfg.key_adjust.enable:
+            apply_key_adjustment_smooth(
+                final_action=final_action,
+                events=events,
+                key_cfg=cfg.key_adjust,
+                accumulator=key_adjust_accumulator,
+            )
 
         # === 6. 获取observation ===
         observation = robot.get_observation()
@@ -318,39 +346,211 @@ def replay_record_loop(
     return True
 
 
-def init_replay_record_keyboard_listener(events: dict) -> Any:
+def init_replay_record_keyboard_listener(events: dict, key_cfg: KeyAdjustConfig) -> Any:
     """Initialize keyboard listener for replay_record mode.
 
-    Keys:
-        - S: Mark episode as SUCCESS and save
-        - F: Mark episode as FAIL and discard
-        - ESC: Stop replay_record
-        - Arrow keys: Joint adjustment (optional)
+    支持按住持续调整（平滑精细控制）：
+    - S: 标记成功，保存
+    - F: 标记失败，丢弃
+    - ESC: 停止 replay_record
+    - W/X: 双臂 joint_1 正/反（同向）
+    - A/D: 双臂 joint_3 正/反（相对）
+    - Q/E: 腰部 trunk 正/反
+    - K: 切换控制模式 (left/right/both)
     """
     from pynput import keyboard
 
+    def get_char(key) -> str | None:
+        """获取按键字符"""
+        try:
+            if hasattr(key, 'char') and key.char:
+                return key.char.lower()
+            return None
+        except:
+            return None
+
+    def next_mode(current: str) -> str:
+        """切换控制模式"""
+        modes = ["both", "left", "right"]
+        idx = modes.index(current) if current in modes else 0
+        return modes[(idx + 1) % len(modes)]
+
     def on_press(key):
         try:
-            if key == keyboard.KeyCode.from_char('s') or key == keyboard.KeyCode.from_char('S'):
+            char = get_char(key)
+
+            # === 成功/失败按键（单次触发）===
+            if char == 's':
                 print("S key pressed. Marking as SUCCESS...")
                 events["mark_success"] = True
-            elif key == keyboard.KeyCode.from_char('f') or key == keyboard.KeyCode.from_char('F'):
+            elif char == 'f':
                 print("F key pressed. Marking as FAIL...")
                 events["mark_fail"] = True
             elif key == keyboard.Key.esc:
                 print("ESC key pressed. Stopping replay_record...")
                 events["stop_replay_record"] = True
-                events["mark_fail"] = True  # Discard current episode
-            elif key == keyboard.Key.up:
-                events["key_adjust_joint_1_up"] = True
-            elif key == keyboard.Key.down:
-                events["key_adjust_joint_1_down"] = True
+                events["mark_fail"] = True
+
+            # === 控制模式切换 ===
+            elif char == key_cfg.key_mode_toggle:
+                current_mode = events.get("arm_control_mode", key_cfg.arm_control_mode)
+                new_mode = next_mode(current_mode)
+                events["arm_control_mode"] = new_mode
+                print(f"Arm control mode switched: {current_mode} -> {new_mode}")
+
+            # === 微调按键（按住持续）===
+            elif char == key_cfg.keys_joint_1_positive:  # W
+                events["joint_1_positive_held"] = True
+            elif char == key_cfg.keys_joint_1_negative:  # X
+                events["joint_1_negative_held"] = True
+            elif char == key_cfg.keys_joint_3_positive:  # A
+                events["joint_3_positive_held"] = True
+            elif char == key_cfg.keys_joint_3_negative:  # D
+                events["joint_3_negative_held"] = True
+            elif char == key_cfg.keys_trunk_positive:    # Q
+                events["trunk_positive_held"] = True
+            elif char == key_cfg.keys_trunk_negative:    # E
+                events["trunk_negative_held"] = True
+
         except Exception as e:
             print(f"Error handling key press: {e}")
 
-    listener = keyboard.Listener(on_press=on_press)
+    def on_release(key):
+        """按键释放：停止调整"""
+        try:
+            char = get_char(key)
+
+            # === 微调按键释放 ===
+            if char == key_cfg.keys_joint_1_positive:
+                events["joint_1_positive_held"] = False
+            elif char == key_cfg.keys_joint_1_negative:
+                events["joint_1_negative_held"] = False
+            elif char == key_cfg.keys_joint_3_positive:
+                events["joint_3_positive_held"] = False
+            elif char == key_cfg.keys_joint_3_negative:
+                events["joint_3_negative_held"] = False
+            elif char == key_cfg.keys_trunk_positive:
+                events["trunk_positive_held"] = False
+            elif char == key_cfg.keys_trunk_negative:
+                events["trunk_negative_held"] = False
+
+        except Exception as e:
+            print(f"Error handling key release: {e}")
+
+    listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
     return listener
+
+
+def apply_key_adjustment_smooth(
+    final_action: dict,
+    events: dict,
+    key_cfg: KeyAdjustConfig,
+    accumulator: dict[str, float],
+) -> None:
+    """应用平滑精细的键盘微调。
+
+    特点：
+    - 每帧渐进调整 0.1度（而非跳变）
+    - 按住持续调整，释放停止
+    - 最大累积调整量 5度
+
+    Args:
+        final_action: 动作字典
+        events: 按键事件
+        key_cfg: 键盘配置
+        accumulator: 累积调整量字典
+    """
+    mode = events.get("arm_control_mode", key_cfg.arm_control_mode)
+    step = key_cfg.step_per_frame
+    max_adj = key_cfg.max_adjustment
+
+    # === 双臂 joint_1（同向）===
+    if events.get("joint_1_positive_held"):  # W键
+        if mode == "both":
+            acc_left = accumulator.get("left_arm_joint_1", 0)
+            acc_right = accumulator.get("right_arm_joint_1", 0)
+            if abs(acc_left) < max_adj:
+                accumulator["left_arm_joint_1"] = acc_left + step
+            if abs(acc_right) < max_adj:
+                accumulator["right_arm_joint_1"] = acc_right + step
+        elif mode == "left":
+            acc = accumulator.get("left_arm_joint_1", 0)
+            if abs(acc) < max_adj:
+                accumulator["left_arm_joint_1"] = acc + step
+        elif mode == "right":
+            acc = accumulator.get("right_arm_joint_1", 0)
+            if abs(acc) < max_adj:
+                accumulator["right_arm_joint_1"] = acc + step
+
+    if events.get("joint_1_negative_held"):  # X键
+        if mode == "both":
+            acc_left = accumulator.get("left_arm_joint_1", 0)
+            acc_right = accumulator.get("right_arm_joint_1", 0)
+            if abs(acc_left) < max_adj:
+                accumulator["left_arm_joint_1"] = acc_left - step
+            if abs(acc_right) < max_adj:
+                accumulator["right_arm_joint_1"] = acc_right - step
+        elif mode == "left":
+            acc = accumulator.get("left_arm_joint_1", 0)
+            if abs(acc) < max_adj:
+                accumulator["left_arm_joint_1"] = acc - step
+        elif mode == "right":
+            acc = accumulator.get("right_arm_joint_1", 0)
+            if abs(acc) < max_adj:
+                accumulator["right_arm_joint_1"] = acc - step
+
+    # === 双臂 joint_3（相对方向）===
+    if events.get("joint_3_positive_held"):  # A键
+        if mode == "both":
+            acc_left = accumulator.get("left_arm_joint_3", 0)
+            acc_right = accumulator.get("right_arm_joint_3", 0)
+            if abs(acc_left) < max_adj:
+                accumulator["left_arm_joint_3"] = acc_left + step
+            if abs(acc_right) < max_adj:
+                accumulator["right_arm_joint_3"] = acc_right - step  # 相对方向
+        elif mode == "left":
+            acc = accumulator.get("left_arm_joint_3", 0)
+            if abs(acc) < max_adj:
+                accumulator["left_arm_joint_3"] = acc + step
+        elif mode == "right":
+            acc = accumulator.get("right_arm_joint_3", 0)
+            if abs(acc) < max_adj:
+                accumulator["right_arm_joint_3"] = acc - step
+
+    if events.get("joint_3_negative_held"):  # D键
+        if mode == "both":
+            acc_left = accumulator.get("left_arm_joint_3", 0)
+            acc_right = accumulator.get("right_arm_joint_3", 0)
+            if abs(acc_left) < max_adj:
+                accumulator["left_arm_joint_3"] = acc_left - step
+            if abs(acc_right) < max_adj:
+                accumulator["right_arm_joint_3"] = acc_right + step  # 相对方向
+        elif mode == "left":
+            acc = accumulator.get("left_arm_joint_3", 0)
+            if abs(acc) < max_adj:
+                accumulator["left_arm_joint_3"] = acc - step
+        elif mode == "right":
+            acc = accumulator.get("right_arm_joint_3", 0)
+            if abs(acc) < max_adj:
+                accumulator["right_arm_joint_3"] = acc + step
+
+    # === 腰部 trunk ===
+    if events.get("trunk_positive_held"):  # Q键
+        acc = accumulator.get("trunk_joint_1", 0)
+        if abs(acc) < max_adj:
+            accumulator["trunk_joint_1"] = acc + step
+
+    if events.get("trunk_negative_held"):  # E键
+        acc = accumulator.get("trunk_joint_1", 0)
+        if abs(acc) < max_adj:
+            accumulator["trunk_joint_1"] = acc - step
+
+    # === 应用累积调整量到动作 ===
+    for joint_key, adjust in accumulator.items():
+        action_key = f"{joint_key}.pos"
+        if action_key in final_action:
+            final_action[action_key] += adjust
 
 
 @draccus.wrap()
@@ -403,11 +603,13 @@ def replay(cfg: ReplayConfig):
         events["mark_success"] = False
         events["mark_fail"] = False
         events["stop_replay_record"] = False
+        events["arm_control_mode"] = replay_cfg.key_adjust.arm_control_mode  # 初始化控制模式
 
-        # 添加 replay_record 专用按键监听
-        replay_listener = init_replay_record_keyboard_listener(events)
+        # 添加 replay_record 专用按键监听（平滑精细控制）
+        replay_listener = init_replay_record_keyboard_listener(events, replay_cfg.key_adjust)
 
-        log_say("Replay with recording started. Press S=save, F=discard", cfg.play_sounds, blocking=True)
+        log_say("Replay with recording started. S=save, F=discard, K=mode toggle", cfg.play_sounds, blocking=True)
+        logging.info("Key adjust controls: W/X=joint1, A/D=joint3, Q/E=trunk, K=mode")
 
         episode_count = 0
         while not events["stop_replay_record"]:
