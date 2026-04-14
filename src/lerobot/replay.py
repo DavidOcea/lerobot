@@ -668,9 +668,20 @@ def replay(cfg: ReplayConfig):
     logging.info(pformat(asdict(cfg)))
 
     robot = make_robot_from_config(cfg.robot)
-    dataset = LeRobotDataset(cfg.dataset.repo_id, root=cfg.dataset.root, episodes=[cfg.dataset.episode])
+
+    # 加载源数据集：使用宽松的 tolerance_s 以兼容 perf_counter 录制的数据
+    # 源数据可能使用 tolerance_s=0.03 录制，加载时需要匹配
+    source_tolerance_s = cfg.dataset.replay_record.tolerance_s if cfg.dataset.replay_record.enable else 1e-4
+    dataset = LeRobotDataset(
+        cfg.dataset.repo_id,
+        root=cfg.dataset.root,
+        episodes=[cfg.dataset.episode],
+        tolerance_s=source_tolerance_s,  # 使用与新录制一致的容差
+    )
     actions = dataset.hf_dataset.select_columns("action")
     fps = dataset.fps if hasattr(dataset, 'fps') else cfg.dataset.fps
+
+    logging.info(f"Source dataset loaded with tolerance_s={source_tolerance_s}")
 
     # === 连接设备 ===
     robot.connect()
