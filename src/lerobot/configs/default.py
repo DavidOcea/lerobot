@@ -37,6 +37,10 @@ class DatasetConfig:
     revision: str | None = None
     use_imagenet_stats: bool = True
     video_backend: str = field(default_factory=get_safe_default_codec)
+    # Timestamp tolerance in seconds for delta_timestamps validation.
+    # Use 0.03 for datasets recorded with actual timestamps (perf_counter).
+    # Use 1e-4 for datasets recorded with ideal timestamps (frame_index/fps).
+    tolerance_s: float = 1e-4
 
 
 @dataclass
