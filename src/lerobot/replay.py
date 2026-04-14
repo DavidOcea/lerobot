@@ -78,7 +78,13 @@ from lerobot.robots import (  # noqa: F401
 from lerobot.teleoperators import (  # noqa: F401
     Teleoperator,
     TeleoperatorConfig,
+    bi_so100_leader,
+    koch_leader,
     make_teleoperator_from_config,
+    so100_leader,
+    so101_leader,
+    ros2_leader,
+    supre_robot_leader,  # noqa: F401
 )
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.control_utils import init_keyboard_listener
