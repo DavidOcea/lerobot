@@ -87,7 +87,7 @@ from lerobot.teleoperators import (  # noqa: F401
     supre_robot_leader,  # noqa: F401
 )
 from lerobot.utils.robot_utils import busy_wait
-from lerobot.utils.control_utils import init_keyboard_listener
+from lerobot.utils.control_utils import init_keyboard_listener, is_headless
 from lerobot.utils.utils import (
     init_logging,
     log_say,
@@ -467,6 +467,14 @@ def init_replay_record_keyboard_listener(events: dict, key_cfg: KeyAdjustConfig)
     - Q/E: 腰部 trunk 正/反
     - K: 切换控制模式 (left/right/both)
     """
+    # 检查是否在 headless 环境
+    if is_headless():
+        logging.warning(
+            "Headless environment detected. Keyboard inputs for replay_record mode will not be available. "
+            "You can still use Leader intervention, but keyboard fine-adjustment will be disabled."
+        )
+        return None
+
     from pynput import keyboard
 
     def get_char(key) -> str | None:
