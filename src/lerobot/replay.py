@@ -165,8 +165,11 @@ class ReplayRecordConfig:
     # Keyboard adjustment parameters（平滑精细控制）
     key_adjust: KeyAdjustConfig = KeyAdjustConfig()
 
-    # Timestamp tolerance for recorded dataset
-    tolerance_s: float = 0.03  # Same as record.py for actual timestamps
+    # Timestamp mode: False = ideal timestamp (frame_index/fps, default), True = actual timestamp (perf_counter)
+    use_actual_timestamp: bool = False
+
+    # Timestamp tolerance for recorded dataset (auto-set based on timestamp mode if None)
+    tolerance_s: float | None = None  # None = auto: 0.03 if actual, 1e-4 if ideal
 
     # Success/fail keys
     success_key_timeout: float = 5.0  # Seconds to wait for success key after episode ends
@@ -333,6 +336,7 @@ def replay_record_loop(
     fps: int,
     cfg: ReplayRecordConfig,
     single_task: str,
+    use_actual_timestamp: bool = False,  # False=ideal timestamp (default), True=actual timestamp
 ) -> bool:
     """Execute replay with recording, allowing user intervention.
 
@@ -346,6 +350,7 @@ def replay_record_loop(
         fps: Frames per second.
         cfg: ReplayRecordConfig.
         single_task: Task description.
+        use_actual_timestamp: Timestamp mode. False=ideal (frame_index/fps), True=actual (perf_counter).
 
     Returns:
         True if episode was saved successfully, False if discarded.
@@ -364,15 +369,23 @@ def replay_record_loop(
     episode_start = time.perf_counter()
     frame_index = 0
 
-    logging.info(f"Replay_record started with noise_std={cfg.noise_std}")
+    timestamp_mode = "actual" if use_actual_timestamp else "ideal"
+    logging.info(f"Replay_record started with noise_std={cfg.noise_std}, timestamp_mode={timestamp_mode}")
     logging.info(f"Key adjust mode: {cfg.key_adjust.arm_control_mode}, step={cfg.key_adjust.step_per_frame} deg/frame")
     if leader_state_machine:
         logging.info(f"Leader adjust: trigger={cfg.leader_adjust.trigger_threshold_deg}度, exit={cfg.leader_adjust.exit_threshold_deg}度/{cfg.leader_adjust.exit_frame_count}帧")
 
     for idx in range(dataset.num_frames):
-        # === 1. 记录实际时间戳 ===
-        actual_timestamp = time.perf_counter() - episode_start
         loop_start = time.perf_counter()
+
+        # === 1. 根据配置计算时间戳 ===
+        if use_actual_timestamp:
+            actual_timestamp = time.perf_counter() - episode_start  # 真实时间戳
+            # 限制 timestamp 不超出当前帧数对应的时长，防止超出视频范围
+            max_timestamp = frame_index / fps
+            actual_timestamp = min(actual_timestamp, max_timestamp)
+        else:
+            actual_timestamp = frame_index / fps  # 理想时间戳（默认）
 
         # === 2. 获取原始动作 ===
         action_array = actions[idx]["action"]
@@ -722,6 +735,12 @@ def replay(cfg: ReplayConfig):
         num_cameras = len(robot.cameras) if hasattr(robot, 'cameras') and robot.cameras else 0
         image_writer_threads = 4 * num_cameras  # 每个相机4个线程（无相机则为0）
 
+        # 根据时间戳模式自动设置容差
+        if replay_cfg.tolerance_s is None:
+            tolerance_s = 0.03 if replay_cfg.use_actual_timestamp else 1e-4
+        else:
+            tolerance_s = replay_cfg.tolerance_s
+
         new_dataset = LeRobotDataset.create(
             repo_id=replay_cfg.record_repo_id,
             fps=fps,
@@ -729,12 +748,12 @@ def replay(cfg: ReplayConfig):
             robot_type=robot.name,
             features=dataset_features,
             use_videos=True,
-            tolerance_s=replay_cfg.tolerance_s,
+            tolerance_s=tolerance_s,
             image_writer_processes=0,
             image_writer_threads=image_writer_threads,
         )
 
-        logging.info(f"Dataset created with {num_cameras} cameras, {image_writer_threads} image writer threads")
+        logging.info(f"Dataset created with {num_cameras} cameras, {image_writer_threads} image writer threads, tolerance_s={tolerance_s}")
 
         # 初始化键盘监听
         listener, events = init_keyboard_listener()
@@ -762,6 +781,7 @@ def replay(cfg: ReplayConfig):
                 fps=fps,
                 cfg=replay_cfg,
                 single_task=replay_cfg.record_task,
+                use_actual_timestamp=replay_cfg.use_actual_timestamp,
             )
 
             if success:

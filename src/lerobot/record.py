@@ -150,8 +150,8 @@ class DatasetRecordConfig:
     # Too many threads might cause unstable teleoperation fps due to main thread being blocked.
     # Not enough threads might cause low camera fps.
     num_image_writer_threads_per_camera: int = 4
-    # Timestamp mode: True = actual timestamp (perf_counter), False = frame_index/fps (ideal)
-    use_actual_timestamp: bool = True
+    # Timestamp mode: False = ideal timestamp (frame_index/fps, default), True = actual timestamp (perf_counter)
+    use_actual_timestamp: bool = False
     # Timestamp tolerance in seconds for sync check.
     # For actual timestamps, use larger tolerance (0.03) due to control loop jitter.
     # For ideal timestamps, use strict tolerance (1e-4).
@@ -205,7 +205,7 @@ def record_loop(
     control_time_s: int | None = None,
     single_task: str | None = None,
     display_data: bool = False,
-    use_actual_timestamp: bool = True,  # True=实际时间戳, False=frame_index/fps
+    use_actual_timestamp: bool = False,  # False=ideal timestamp (default), True=actual timestamp
 ):
     if dataset is not None and dataset.fps != fps:
         raise ValueError(f"The dataset fps should be equal to requested fps ({dataset.fps} != {fps}).")
