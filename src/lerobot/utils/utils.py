@@ -117,6 +117,23 @@ def init_logging(
     console_level: str = "INFO",
     file_level: str = "DEBUG",
 ):
+    """初始化日志系统。
+
+    环境变量支持：
+    - LOGLEVEL: 设置全局日志级别（DEBUG/INFO/WARNING/ERROR）
+      例如：export LOGLEVEL=DEBUG 会输出所有 debug 日志
+
+    Args:
+        log_file: 日志文件路径（可选）
+        display_pid: 是否显示进程ID
+        console_level: 控制台日志级别（默认INFO）
+        file_level: 文件日志级别（默认DEBUG）
+    """
+    # 环境变量覆盖：LOGLEVEL 可强制设置日志级别
+    env_level = os.environ.get("LOGLEVEL", None)
+    if env_level is not None:
+        console_level = env_level.upper()
+
     def custom_format(record: logging.LogRecord) -> str:
         dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         fnameline = f"{record.pathname}:{record.lineno}"
@@ -151,6 +168,10 @@ def init_logging(
         file_handler.setFormatter(formatter)
         file_handler.setLevel(file_level.upper())
         logger.addHandler(file_handler)
+
+    # 输出当前日志级别信息
+    if env_level is not None:
+        logging.info(f"Log level set from environment: LOGLEVEL={env_level}")
 
 
 def format_big_number(num, precision=0):
