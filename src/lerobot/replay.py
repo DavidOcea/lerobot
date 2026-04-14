@@ -62,7 +62,7 @@ from typing import Any
 import draccus
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.utils import build_dataset_frame
+from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
 from lerobot.robots import (  # noqa: F401
     Robot,
     RobotConfig,
@@ -712,12 +712,15 @@ def replay(cfg: ReplayConfig):
         if replay_cfg.record_task is None:
             raise ValueError("record_task is required when enable_replay_record=True")
 
-        # 创建新数据集
-        dataset_features = dataset.features
+        # 创建新数据集：使用当前 robot 的实际 features（而非源数据集的 features）
+        # 这样可以兼容：当前环境没有摄像头但源数据集有图像的情况
+        action_features = hw_to_dataset_features(robot.action_features, "action", True)
+        obs_features = hw_to_dataset_features(robot.observation_features, "observation", True)
+        dataset_features = {**action_features, **obs_features}
 
         # 相机配置：根据相机数量动态计算（与 record.py 一致）
-        num_cameras = len(robot.cameras) if hasattr(robot, 'cameras') and robot.cameras else 1
-        image_writer_threads = 4 * num_cameras  # 每个相机4个线程
+        num_cameras = len(robot.cameras) if hasattr(robot, 'cameras') and robot.cameras else 0
+        image_writer_threads = 4 * num_cameras  # 每个相机4个线程（无相机则为0）
 
         new_dataset = LeRobotDataset.create(
             repo_id=replay_cfg.record_repo_id,
