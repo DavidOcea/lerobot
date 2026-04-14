@@ -225,7 +225,7 @@ def add_noise_to_action(action: dict[str, float], noise_std: float, rng: np.rand
 
 
 class LeaderAdjustStateMachine:
-    """Leader微调状态机（滞回设计）。
+    """Leader微调状态机（滞回设计，累积器模式）。
 
     状态：
     - idle: 等待触发
@@ -234,8 +234,11 @@ class LeaderAdjustStateMachine:
     流程：
     1. 等待Leader变化 > 5度 → 进入微调状态
     2. 重置基准位置，从此刻起计算delta
-    3. 微调期间：follower += alpha * (leader_pos - trigger_baseline)
-    4. 连续5帧变化 < 1度 → 退出微调状态
+    3. 微调期间：将修正量保存到累积器（而非每帧临时修正）
+    4. 连续5帧变化 < 1度 → 退出微调状态，但累积器保持不变（不跳跃）
+    5. 累积器每帧都会应用，退出后修正量保持
+
+    关键改进：退出时累积器不清零，避免目标位置跳跃
     """
 
     def __init__(self, cfg: LeaderAdjustConfig):
@@ -244,6 +247,7 @@ class LeaderAdjustStateMachine:
         self.trigger_baseline: dict[str, float] | None = None  # 触发时的Leader位置基准
         self.prev_leader_pos: dict[str, float] | None = None   # 上一帧Leader位置（用于计算变化量）
         self.exit_frame_count = 0  # 退出计数
+        self.accumulator: dict[str, float] = {}  # 累积修正量（退出时保持）
 
     def deg_to_rad(self, deg: float) -> float:
         """度转弧度"""
@@ -256,16 +260,14 @@ class LeaderAdjustStateMachine:
     def process(
         self,
         leader_obs: dict[str, float],
-        final_action: dict[str, float],
-    ) -> str:
-        """处理Leader输入，返回当前状态。
+    ) -> dict[str, float]:
+        """处理Leader输入，返回累积修正量。
 
         Args:
             leader_obs: Leader observation (包含 .pos 的关节位置)
-            final_action: 待修改的动作字典
 
         Returns:
-            当前状态: "idle" 或 "adjusting"
+            累积修正量字典（用于应用到 final_action）
         """
         # 提取Leader位置
         leader_pos = {k: v for k, v in leader_obs.items() if k.endswith(".pos")}
@@ -295,17 +297,15 @@ class LeaderAdjustStateMachine:
                 logging.info(f"Leader微调触发: 变化量={max_delta_deg:.1f}度")
 
         elif self.state == "adjusting":
-            # 微调状态：计算相对于触发基准的偏移
+            # 微调状态：计算相对于触发基准的偏移，保存到累积器
             if self.trigger_baseline is not None:
                 for joint_key, leader_value in leader_pos.items():
                     joint_name = joint_key.replace(".pos", "")
                     baseline = self.trigger_baseline.get(joint_key, leader_value)
                     delta_rad = leader_value - baseline  # 相对触发点的偏移
 
-                    action_key = f"{joint_name}.pos"
-                    if action_key in final_action:
-                        # 应用修正
-                        final_action[action_key] += self.cfg.adjust_alpha * delta_rad
+                    # 保存到累积器（而非直接修改 final_action）
+                    self.accumulator[joint_name] = self.cfg.adjust_alpha * delta_rad
 
             # 检测退出：变化量小于阈值
             if max_delta_deg < self.cfg.exit_threshold_deg:
@@ -315,7 +315,8 @@ class LeaderAdjustStateMachine:
                     self.state = "idle"
                     self.trigger_baseline = None
                     self.exit_frame_count = 0
-                    logging.info(f"Leader微调退出: 连续{self.cfg.exit_frame_count}帧变化<{self.cfg.exit_threshold_deg}度")
+                    # 注意：累积器不清零，修正量保持
+                    logging.info(f"Leader微调退出: 连续{self.cfg.exit_frame_count}帧变化<{self.cfg.exit_threshold_deg}度, 累积修正保持")
             else:
                 # 变化大，重置退出计数
                 self.exit_frame_count = 0
@@ -323,7 +324,8 @@ class LeaderAdjustStateMachine:
         # === 更新上一帧位置 ===
         self.prev_leader_pos = leader_pos.copy()
 
-        return self.state
+        # 返回累积修正量（调用方负责应用）
+        return self.accumulator.copy()
 
 
 def replay_record_loop(
@@ -397,11 +399,15 @@ def replay_record_loop(
         noisy_action = add_noise_to_action(base_action, cfg.noise_std, rng)
         final_action = noisy_action.copy()
 
-        # === 4. Leader微调（状态机设计）===
+        # === 4. Leader微调（累积器模式，退出时不跳跃）===
         if leader_state_machine is not None:
             leader_obs = teleop.get_action()  # 使用 get_action 获取 Leader 位置
-            state = leader_state_machine.process(leader_obs, final_action)
-            # 状态会显示在日志中
+            leader_adjustments = leader_state_machine.process(leader_obs)
+            # 应用累积修正量到 final_action
+            for joint_name, adjust in leader_adjustments.items():
+                action_key = f"{joint_name}.pos"
+                if action_key in final_action:
+                    final_action[action_key] += adjust
 
         # === 5. 按键平滑微调 ===
         if cfg.key_adjust.enable:
@@ -537,15 +543,22 @@ def init_replay_record_keyboard_listener(events: dict, key_cfg: KeyAdjustConfig)
             # === 微调按键（按住持续）===
             elif char == key_cfg.keys_joint_1_positive:  # W
                 events["joint_1_positive_held"] = True
+                logging.info(f"[Key] W pressed: joint_1 positive held=True")
             elif char == key_cfg.keys_joint_1_negative:  # X
                 events["joint_1_negative_held"] = True
+                logging.info(f"[Key] X pressed: joint_1 negative held=True")
             elif char == key_cfg.keys_joint_3_positive:  # A
                 events["joint_3_positive_held"] = True
+                logging.info(f"[Key] A pressed: joint_3 positive held=True")
             elif char == key_cfg.keys_joint_3_negative:  # D
                 events["joint_3_negative_held"] = True
+                logging.info(f"[Key] D pressed: joint_3 negative held=True")
             elif char == key_cfg.keys_trunk_positive:    # Q
                 events["trunk_positive_held"] = True
+                logging.info(f"[Key] Q pressed: trunk positive held=True")
             elif char == key_cfg.keys_trunk_negative:    # E
+                events["trunk_negative_held"] = True
+                logging.info(f"[Key] E pressed: trunk negative held=True")
                 events["trunk_negative_held"] = True
 
         except Exception as e:
@@ -559,16 +572,22 @@ def init_replay_record_keyboard_listener(events: dict, key_cfg: KeyAdjustConfig)
             # === 微调按键释放 ===
             if char == key_cfg.keys_joint_1_positive:
                 events["joint_1_positive_held"] = False
+                logging.info(f"[Key] W released: joint_1 positive held=False")
             elif char == key_cfg.keys_joint_1_negative:
                 events["joint_1_negative_held"] = False
+                logging.info(f"[Key] X released: joint_1 negative held=False")
             elif char == key_cfg.keys_joint_3_positive:
                 events["joint_3_positive_held"] = False
+                logging.info(f"[Key] A released: joint_3 positive held=False")
             elif char == key_cfg.keys_joint_3_negative:
                 events["joint_3_negative_held"] = False
+                logging.info(f"[Key] D released: joint_3 negative held=False")
             elif char == key_cfg.keys_trunk_positive:
                 events["trunk_positive_held"] = False
+                logging.info(f"[Key] Q released: trunk positive held=False")
             elif char == key_cfg.keys_trunk_negative:
                 events["trunk_negative_held"] = False
+                logging.info(f"[Key] E released: trunk negative held=False")
 
         except Exception as e:
             print(f"Error handling key release: {e}")
@@ -601,92 +620,138 @@ def apply_key_adjustment_smooth(
     step = key_cfg.step_per_frame
     max_adj = key_cfg.max_adjustment
 
+    # 打印当前状态（仅在有按键事件时）
+    any_held = any([
+        events.get("joint_1_positive_held"),
+        events.get("joint_1_negative_held"),
+        events.get("joint_3_positive_held"),
+        events.get("joint_3_negative_held"),
+        events.get("trunk_positive_held"),
+        events.get("trunk_negative_held"),
+    ])
+
     # === 双臂 joint_1（同向）===
     if events.get("joint_1_positive_held"):  # W键
         if mode == "both":
             acc_left = accumulator.get("left_arm_joint_1", 0)
             acc_right = accumulator.get("right_arm_joint_1", 0)
+            left_updated = False
+            right_updated = False
             if abs(acc_left) < max_adj:
                 accumulator["left_arm_joint_1"] = acc_left + step
+                left_updated = True
             if abs(acc_right) < max_adj:
                 accumulator["right_arm_joint_1"] = acc_right + step
+                right_updated = True
+            logging.info(f"[KeyAdjust] W+both: left={left_updated}({acc_left:.2f}->{accumulator.get('left_arm_joint_1', 0):.2f}), right={right_updated}({acc_right:.2f}->{accumulator.get('right_arm_joint_1', 0):.2f})")
         elif mode == "left":
             acc = accumulator.get("left_arm_joint_1", 0)
             if abs(acc) < max_adj:
                 accumulator["left_arm_joint_1"] = acc + step
+                logging.info(f"[KeyAdjust] W+left: left_arm_joint_1 {acc:.2f}->{accumulator['left_arm_joint_1']:.2f}")
         elif mode == "right":
             acc = accumulator.get("right_arm_joint_1", 0)
             if abs(acc) < max_adj:
                 accumulator["right_arm_joint_1"] = acc + step
+                logging.info(f"[KeyAdjust] W+right: right_arm_joint_1 {acc:.2f}->{accumulator['right_arm_joint_1']:.2f}")
 
     if events.get("joint_1_negative_held"):  # X键
         if mode == "both":
             acc_left = accumulator.get("left_arm_joint_1", 0)
             acc_right = accumulator.get("right_arm_joint_1", 0)
+            left_updated = False
+            right_updated = False
             if abs(acc_left) < max_adj:
                 accumulator["left_arm_joint_1"] = acc_left - step
+                left_updated = True
             if abs(acc_right) < max_adj:
                 accumulator["right_arm_joint_1"] = acc_right - step
+                right_updated = True
+            logging.info(f"[KeyAdjust] X+both: left={left_updated}({acc_left:.2f}->{accumulator.get('left_arm_joint_1', 0):.2f}), right={right_updated}({acc_right:.2f}->{accumulator.get('right_arm_joint_1', 0):.2f})")
         elif mode == "left":
             acc = accumulator.get("left_arm_joint_1", 0)
             if abs(acc) < max_adj:
                 accumulator["left_arm_joint_1"] = acc - step
+                logging.info(f"[KeyAdjust] X+left: left_arm_joint_1 {acc:.2f}->{accumulator['left_arm_joint_1']:.2f}")
         elif mode == "right":
             acc = accumulator.get("right_arm_joint_1", 0)
             if abs(acc) < max_adj:
                 accumulator["right_arm_joint_1"] = acc - step
+                logging.info(f"[KeyAdjust] X+right: right_arm_joint_1 {acc:.2f}->{accumulator['right_arm_joint_1']:.2f}")
 
     # === 双臂 joint_3（相对方向）===
     if events.get("joint_3_positive_held"):  # A键
         if mode == "both":
             acc_left = accumulator.get("left_arm_joint_3", 0)
             acc_right = accumulator.get("right_arm_joint_3", 0)
+            left_updated = False
+            right_updated = False
             if abs(acc_left) < max_adj:
                 accumulator["left_arm_joint_3"] = acc_left + step
+                left_updated = True
             if abs(acc_right) < max_adj:
                 accumulator["right_arm_joint_3"] = acc_right - step  # 相对方向
+                right_updated = True
+            logging.info(f"[KeyAdjust] A+both: left={left_updated}({acc_left:.2f}->{accumulator.get('left_arm_joint_3', 0):.2f}), right={right_updated}({acc_right:.2f}->{accumulator.get('right_arm_joint_3', 0):.2f})")
         elif mode == "left":
             acc = accumulator.get("left_arm_joint_3", 0)
             if abs(acc) < max_adj:
                 accumulator["left_arm_joint_3"] = acc + step
+                logging.info(f"[KeyAdjust] A+left: left_arm_joint_3 {acc:.2f}->{accumulator['left_arm_joint_3']:.2f}")
         elif mode == "right":
             acc = accumulator.get("right_arm_joint_3", 0)
             if abs(acc) < max_adj:
                 accumulator["right_arm_joint_3"] = acc - step
+                logging.info(f"[KeyAdjust] A+right: right_arm_joint_3 {acc:.2f}->{accumulator['right_arm_joint_3']:.2f}")
 
     if events.get("joint_3_negative_held"):  # D键
         if mode == "both":
             acc_left = accumulator.get("left_arm_joint_3", 0)
             acc_right = accumulator.get("right_arm_joint_3", 0)
+            left_updated = False
+            right_updated = False
             if abs(acc_left) < max_adj:
                 accumulator["left_arm_joint_3"] = acc_left - step
+                left_updated = True
             if abs(acc_right) < max_adj:
                 accumulator["right_arm_joint_3"] = acc_right + step  # 相对方向
+                right_updated = True
+            logging.info(f"[KeyAdjust] D+both: left={left_updated}({acc_left:.2f}->{accumulator.get('left_arm_joint_3', 0):.2f}), right={right_updated}({acc_right:.2f}->{accumulator.get('right_arm_joint_3', 0):.2f})")
         elif mode == "left":
             acc = accumulator.get("left_arm_joint_3", 0)
             if abs(acc) < max_adj:
                 accumulator["left_arm_joint_3"] = acc - step
+                logging.info(f"[KeyAdjust] D+left: left_arm_joint_3 {acc:.2f}->{accumulator['left_arm_joint_3']:.2f}")
         elif mode == "right":
             acc = accumulator.get("right_arm_joint_3", 0)
             if abs(acc) < max_adj:
                 accumulator["right_arm_joint_3"] = acc + step
+                logging.info(f"[KeyAdjust] D+right: right_arm_joint_3 {acc:.2f}->{accumulator['right_arm_joint_3']:.2f}")
 
     # === 腰部 trunk ===
     if events.get("trunk_positive_held"):  # Q键
         acc = accumulator.get("trunk_joint_1", 0)
         if abs(acc) < max_adj:
             accumulator["trunk_joint_1"] = acc + step
+            logging.info(f"[KeyAdjust] Q: trunk_joint_1 {acc:.2f}->{accumulator['trunk_joint_1']:.2f}")
 
     if events.get("trunk_negative_held"):  # E键
         acc = accumulator.get("trunk_joint_1", 0)
         if abs(acc) < max_adj:
             accumulator["trunk_joint_1"] = acc - step
+            logging.info(f"[KeyAdjust] E: trunk_joint_1 {acc:.2f}->{accumulator['trunk_joint_1']:.2f}")
 
     # === 应用累积调整量到动作 ===
+    applied_joints = []
     for joint_key, adjust in accumulator.items():
         action_key = f"{joint_key}.pos"
         if action_key in final_action:
             final_action[action_key] += adjust
+            if abs(adjust) > 0.01:  # 只记录有意义的调整
+                applied_joints.append(f"{joint_key}:{adjust:.2f}")
+
+    if applied_joints and any_held:
+        logging.info(f"[KeyAdjust] Applied: {', '.join(applied_joints)}")
 
 
 @draccus.wrap()
