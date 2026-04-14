@@ -236,20 +236,31 @@ def decode_video_frames_torchcodec(
     query_ts = torch.tensor(timestamps)
     loaded_ts = torch.tensor(loaded_ts)
 
-    # compute distances between each query timestamp and loaded timestamps
-    dist = torch.cdist(query_ts[:, None], loaded_ts[:, None], p=1)
-    min_, argmin_ = dist.min(1)
+    # Tolerance check: compare query timestamp with loaded frame pts
+    # For ideal timestamp datasets (decode_fps=None), pts should match timestamp
+    # For actual timestamp datasets (decode_fps provided), pts != timestamp (expected)
+    #   - frame_index is correctly calculated using decode_fps
+    #   - video pts is based on encoding fps (e.g., 30)
+    #   - pts and timestamp difference is expected, so skip the check
+    if decode_fps is None:
+        # Ideal timestamp: check pts matches timestamp
+        dist = torch.cdist(query_ts[:, None], loaded_ts[:, None], p=1)
+        min_, argmin_ = dist.min(1)
 
-    is_within_tol = min_ < tolerance_s
-    assert is_within_tol.all(), (
-        f"One or several query timestamps unexpectedly violate the tolerance ({min_[~is_within_tol]} > {tolerance_s=})."
-        "It means that the closest frame that can be loaded from the video is too far away in time."
-        "This might be due to synchronization issues with timestamps during data collection."
-        "To be safe, we advise to ignore this item during training."
-        f"\nqueried timestamps: {query_ts}"
-        f"\nloaded timestamps: {loaded_ts}"
-        f"\nvideo: {video_path}"
-    )
+        is_within_tol = min_ < tolerance_s
+        assert is_within_tol.all(), (
+            f"One or several query timestamps unexpectedly violate the tolerance ({min_[~is_within_tol]} > {tolerance_s=})."
+            "It means that the closest frame that can be loaded from the video is too far away in time."
+            "This might be due to synchronization issues with timestamps during data collection."
+            "To be safe, we advise to ignore this item during training."
+            f"\nqueried timestamps: {query_ts}"
+            f"\nloaded timestamps: {loaded_ts}"
+            f"\nvideo: {video_path}"
+        )
+    else:
+        # Actual timestamp: frame_index is correct, pts mismatch is expected
+        # Just get the frames without pts checking
+        argmin_ = torch.arange(len(loaded_frames))
 
     # get closest frames to the query timestamps
     closest_frames = torch.stack([loaded_frames[idx] for idx in argmin_])
