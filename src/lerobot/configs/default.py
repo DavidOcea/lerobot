@@ -21,7 +21,7 @@ from lerobot import (
 )
 from lerobot.datasets.transforms import ImageTransformsConfig
 from lerobot.datasets.video_utils import get_safe_default_codec
-
+from PIL import Image
 
 @dataclass
 class DatasetConfig:
@@ -37,10 +37,46 @@ class DatasetConfig:
     revision: str | None = None
     use_imagenet_stats: bool = True
     video_backend: str = field(default_factory=get_safe_default_codec)
+    customer_transforms: bool = False
+    # 仅对头部图像坐增强
+    only_head_transforms: bool = False
+    # 图像数据增强，为了适应相机角度可能变化。
+    customer_transforms_cfg: dict = field(default_factory=lambda:{
+        # "random_resize_crop":{ # 随机缩放裁剪
+        #     "size":(480, 640),    # 最终输出尺寸 h w
+        #     "scale":(0.7, 1.3),   # 随机缩放范围（相对于原始图像的比例）
+        #     "ratio":(3/4, 4/3),    # 随机长宽比范围3/4, 4/3 |固定长宽比为 1:1
+        #     "interpolation":Image.BILINEAR  # 插值方法
+        # },
+        "random_rotation":{  # 随机旋转
+            "degrees":(-6, 6),  # 角度范围：-15° 到 15°
+            "expand":False,        # 扩展图像，避免裁剪
+            "fill":(255, 255, 255),  # 白色填充
+            "interpolation":Image.BILINEAR  # 双线性重采样（画质更平滑）
+        },
+        # "colorjitter":{ # 随机亮度变化
+        #     "brightness":0.2,  # 亮度 ±20%
+        #     "contrast":0.2,    # 对比度 ±20%
+        #     "saturation":0.2,  # 饱和度 ±20%
+        #     "hue":0.1          # 色相 ±0.1（避免颜色失真）
+        # },
+        # "randomerase":{
+        #     "p":0.8,      #触发概率80%
+        #     "scale":(0.02, 0.33), #擦除区域占比2%~33%
+        #     "ratio":(0.3, 3.3), 
+        #     "value":0
+        # },
+        # "randorm_affine":{
+        #     "degrees": 0,
+        #     "translate":(0.1,0.1), # 平移尺度
+        #     "scale":(1.0,1.0) # 缩放比例
+        # }
+    })
     # Timestamp tolerance in seconds for delta_timestamps validation.
     # Use 0.03 for datasets recorded with actual timestamps (perf_counter).
     # Use 1e-4 for datasets recorded with ideal timestamps (frame_index/fps).
     tolerance_s: float = 1e-4
+
 
 
 @dataclass
