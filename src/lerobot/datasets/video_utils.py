@@ -202,6 +202,11 @@ def decode_video_frames_torchcodec(
     # convert timestamps to frame indices
     frame_indices = [round(ts * average_fps) for ts in timestamps]
 
+    # 边界保护：限制帧索引不超过视频最大帧数
+    # perf_counter 时间戳可能有抖动导致 timestamp 超出视频时长
+    max_frame_index = metadata.num_frames - 1
+    frame_indices = [min(idx, max_frame_index) for idx in frame_indices]
+
     # retrieve frames based on indices
     frames_batch = decoder.get_frames_at(indices=frame_indices)
 
