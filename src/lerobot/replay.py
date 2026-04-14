@@ -418,6 +418,12 @@ def replay_record_loop(
         # === 7. 执行动作 ===
         sent_action = robot.send_action(final_action)
 
+        # === 7.1 力反馈：检查阻力并发送给 Leader ===
+        if teleop is not None and isinstance(teleop, Teleoperator):
+            if hasattr(robot, 'get_force_feedback') and hasattr(teleop, 'send_feedback'):
+                force_feedback = robot.get_force_feedback()
+                teleop.send_feedback(force_feedback)
+
         # === 8. 录制数据 ===
         if new_dataset is not None:
             observation_frame = build_dataset_frame(new_dataset.features, observation, prefix="observation")
