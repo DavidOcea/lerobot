@@ -45,6 +45,7 @@ def decode_video_frames(
     timestamps: list[float],
     tolerance_s: float,
     backend: str | None = None,
+    decode_fps: float | None = None,
 ) -> torch.Tensor:
     """
     Decodes video frames using the specified backend.
@@ -54,6 +55,8 @@ def decode_video_frames(
         timestamps (list[float]): List of timestamps to extract frames.
         tolerance_s (float): Allowed deviation in seconds for frame retrieval.
         backend (str, optional): Backend to use for decoding. Defaults to "torchcodec" when available in the platform; otherwise, defaults to "pyav"..
+        decode_fps (float, optional): If provided, use this fps for frame index calculation
+            instead of video average_fps. Useful for datasets with actual timestamps.
 
     Returns:
         torch.Tensor: Decoded frames.
@@ -63,7 +66,7 @@ def decode_video_frames(
     if backend is None:
         backend = get_safe_default_codec()
     if backend == "torchcodec":
-        return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
+        return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s, decode_fps)
     elif backend in ["pyav", "video_reader"]:
         return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)
     else:
@@ -172,6 +175,7 @@ def decode_video_frames_torchcodec(
     video_path: Path | str,
     timestamps: list[float],
     tolerance_s: float,
+    decode_fps: float | None = None,
     device: str = "cpu",
     log_loaded_timestamps: bool = False,
 ) -> torch.Tensor:
@@ -184,6 +188,16 @@ def decode_video_frames_torchcodec(
     that key frame. As a consequence, to access a requested frame, we need to load the preceding key frame,
     and all subsequent frames until reaching the requested frame. The number of key frames in a video
     can be adjusted during encoding to take into account decoding time and video size in bytes.
+
+    Args:
+        video_path: Path to the video file.
+        timestamps: List of timestamps to query.
+        tolerance_s: Tolerance in seconds for timestamp matching.
+        decode_fps: If provided, use this fps for frame index calculation instead of video average_fps.
+                    This is useful for datasets recorded with actual timestamps (perf_counter) where
+                    the effective fps differs from the nominal fps.
+        device: Device to use for decoding.
+        log_loaded_timestamps: Whether to log loaded timestamps.
     """
 
     if importlib.util.find_spec("torchcodec"):
@@ -197,10 +211,13 @@ def decode_video_frames_torchcodec(
     loaded_ts = []
     # get metadata for frame information
     metadata = decoder.metadata
-    average_fps = metadata.average_fps
 
-    # convert timestamps to frame indices
-    frame_indices = [round(ts * average_fps) for ts in timestamps]
+    # Choose fps: use decode_fps if provided, otherwise use video average_fps
+    # decode_fps is used for actual timestamp datasets where effective_fps differs from nominal fps
+    effective_fps = decode_fps if decode_fps is not None else metadata.average_fps
+
+    # convert timestamps to frame indices using effective_fps
+    frame_indices = [round(ts * effective_fps) for ts in timestamps]
 
     # 边界保护：限制帧索引不超过视频最大帧数
     # perf_counter 时间戳可能有抖动导致 timestamp 超出视频时长

@@ -511,6 +511,10 @@ class LeRobotDataset(torch.utils.data.Dataset):
             check_delta_timestamps(self.delta_timestamps, self.fps, self.tolerance_s)
             self.delta_indices = get_delta_indices(self.delta_timestamps, self.fps)
 
+        # 计算 episode 级别的 decode_fps（用于视频解码）
+        # 自动检测是理想时间戳还是真实时间戳
+        self.episode_decode_fps = self._compute_episode_decode_fps(timestamps)
+
     def push_to_hub(
         self,
         branch: str | None = None,
@@ -658,6 +662,57 @@ class LeRobotDataset(torch.utils.data.Dataset):
         else:
             return get_hf_features_from_features(self.features)
 
+    def _compute_episode_decode_fps(self, timestamps: np.ndarray) -> dict[int, float]:
+        """计算每个 episode 的解码帧率。
+
+        自动检测是理想时间戳还是真实时间戳：
+        - 理想时间戳：timestamp 最大值 ≈ frame_count / fps → 使用 fps
+        - 真实时间戳：timestamp 最大值与理想值偏差大 → 使用 frame_count / max_timestamp
+
+        Args:
+            timestamps: 所有帧的 timestamp 数组
+
+        Returns:
+            dict[int, float]: episode_index 到 decode_fps 的映射
+        """
+        episode_decode_fps = {}
+        timestamps_tensor = torch.tensor(timestamps)
+
+        for ep_idx in range(self.num_episodes):
+            ep_start = self.episode_data_index["from"][ep_idx].item()
+            ep_end = self.episode_data_index["to"][ep_idx].item()
+            frame_count = ep_end - ep_start
+
+            # 获取该 episode 的最大 timestamp
+            ep_timestamps = timestamps_tensor[ep_start:ep_end]
+            max_timestamp = ep_timestamps.max().item()
+
+            # 计算理想最大 timestamp
+            ideal_max_timestamp = frame_count / self.fps
+
+            # 计算偏差
+            deviation = abs(max_timestamp - ideal_max_timestamp)
+
+            # 判断阈值：如果偏差大于 0.5秒，认为是真实时间戳
+            # 对于真实时间戳，偏差通常在几秒量级（如60秒录制实际只有43秒帧数）
+            timestamp_threshold = 0.5  # 秒
+
+            if deviation > timestamp_threshold:
+                # 真实时间戳：使用实际帧率
+                decode_fps = frame_count / max_timestamp
+                logging.info(
+                    f"Episode {ep_idx}: Detected actual timestamps. "
+                    f"Using decode_fps={decode_fps:.2f} (frames={frame_count}, max_ts={max_timestamp:.2f}s)"
+                )
+            else:
+                # 理想时间戳：使用配置的 fps
+                decode_fps = self.fps
+                # 不打印日志，避免过多输出
+
+            episode_decode_fps[ep_idx] = decode_fps
+
+        return episode_decode_fps
+
     def _get_query_indices(self, idx: int, ep_idx: int) -> tuple[dict[str, list[int | bool]]]:
         ep_start = self.episode_data_index["from"][ep_idx]
         ep_end = self.episode_data_index["to"][ep_idx]
@@ -702,9 +757,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
         the main process and a subprocess fails to access it.
         """
         item = {}
+        # 获取该 episode 的 decode_fps（自动检测的理想/真实时间戳）
+        decode_fps = self.episode_decode_fps.get(ep_idx, self.fps)
+
         for vid_key, query_ts in query_timestamps.items():
             video_path = self.root / self.meta.get_video_file_path(ep_idx, vid_key)
-            frames = decode_video_frames(video_path, query_ts, self.tolerance_s, self.video_backend)
+            frames = decode_video_frames(
+                video_path, query_ts, self.tolerance_s, self.video_backend, decode_fps
+            )
             item[vid_key] = frames.squeeze(0)
 
         return item
