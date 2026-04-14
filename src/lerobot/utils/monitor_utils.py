@@ -1,47 +1,62 @@
+import logging
+import os
 import time
 from functools import wraps
+
+# 全局开关：通过环境变量 MONITOR_ENABLED=1 启用监控日志
+# 默认情况下不输出（DEBUG级别，且logging默认级别为INFO）
+MONITOR_ENABLED = os.environ.get("MONITOR_ENABLED", "0") == "1"
 
 def monitor_performance(func):
     """
     一个监控函数性能的装饰器，会打印调用频率、间隔和时长。
+
+    输出级别：logging.DEBUG
+    正常运行时不输出，只有设置日志级别为DEBUG时才输出。
+
+    快速启用方式：
+    - 设置环境变量 MONITOR_ENABLED=1（强制启用）
+    - 或设置 logging level 为 DEBUG
     """
-    # 使用@wraps(func)可以保留原函数的元信息（如__name__, __doc__）
     @wraps(func)
     def wrapper(*args, **kwargs):
         # --- 1. 初始化状态 (只在第一次调用时执行) ---
-        # 我们将状态信息直接附加到wrapper函数对象上，避免使用全局变量
         if not hasattr(wrapper, 'call_count'):
             wrapper.call_count = 0
             wrapper.total_duration = 0.0
-            # 使用perf_counter()，因为它提供高精度且不受系统时间调整的影响
             wrapper.last_call_time = time.perf_counter()
 
         # --- 2. 计算本次调用的指标 ---
         current_time = time.perf_counter()
-        
-        # 调用间隔 = 当前时间 - 上次调用的时间
         interval = current_time - wrapper.last_call_time
-        
-        # 频率 = 1 / 间隔 (如果间隔为0则为无穷大)
         frequency = 1.0 / interval if interval > 0 else float('inf')
 
         # --- 3. 执行原函数并计时 ---
         start_time = time.perf_counter()
-        result = func(*args, **kwargs) # 执行真正的函数
+        result = func(*args, **kwargs)
         end_time = time.perf_counter()
         duration = end_time - start_time
 
         # --- 4. 更新累计状态 ---
         wrapper.call_count += 1
         wrapper.total_duration += duration
-        wrapper.last_call_time = current_time # 更新上次调用时间
+        wrapper.last_call_time = current_time
 
         # --- 5. 计算平均值 ---
         avg_duration = wrapper.total_duration / wrapper.call_count
 
-        # --- 6. 打印报告 ---
-        print(f"--- Function '{func.__qualname__} ' Monitor --- Call #{wrapper.call_count} Duration: {duration:.6f} s Interval: {interval:.6f} s Frequency: {frequency:.2f} Hz Average Duration: {avg_duration:.6f} s")
+        # --- 6. 输出报告（DEBUG级别）---
+        # 只有在 DEBUG 模式或 MONITOR_ENABLED=1 时才输出
+        if MONITOR_ENABLED or logging.getLogger().level <= logging.DEBUG:
+            logging.debug(
+                f"--- Function '{func.__qualname__}' Monitor --- "
+                f"Call #{wrapper.call_count} "
+                f"Duration: {duration:.6f}s "
+                f"Interval: {interval:.6f}s "
+                f"Frequency: {frequency:.2f}Hz "
+                f"Average Duration: {avg_duration:.6f}s"
+            )
 
         return result
-    
+
     return wrapper

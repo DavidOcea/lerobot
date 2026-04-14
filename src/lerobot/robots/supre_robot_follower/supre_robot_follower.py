@@ -1,5 +1,6 @@
 # supre_robot.py
 
+import logging
 import time
 import math
 from typing import Any, Dict, List, Optional, Tuple, Type
@@ -99,12 +100,12 @@ class SupreRobotFollower(Robot):
     def connect(self, calibrate: bool = True) -> None:
         """建立与机器人的通信。"""
         if self.is_connected:
-            print("Robot is already connected.")
+            logging.info("Robot is already connected.")
             return
 
-        print(f"Connecting to {self.name} using config '{self.config.joint_config_path}'...")
+        logging.info(f"Connecting to {self.name} using config '{self.config.joint_config_path}'...")
         self._hardware_manager = SupreRobotHardwareManager(config_path=self.config.joint_config_path,control_frequency=self.config.control_frequency,use_interpolation=self._use_interpolation)
-        
+
         try:
             if not self._hardware_manager.init():
                 self._hardware_manager = None
@@ -115,8 +116,8 @@ class SupreRobotFollower(Robot):
                 raise RuntimeError("Failed to activate hardware.")
 
             self._is_connected_flag = True
-            print("Robot connected successfully.")
-            
+            logging.info("Robot connected successfully.")
+
             if calibrate:
                 self.calibrate()
 
@@ -124,7 +125,7 @@ class SupreRobotFollower(Robot):
                 cam.connect()
 
         except Exception as e:
-            print(f"Failed to connect: {e}")
+            logging.error(f"Failed to connect: {e}")
             self._hardware_manager = None
             self._is_connected_flag = False
             raise e
@@ -143,7 +144,7 @@ class SupreRobotFollower(Robot):
         """
         if not self.is_connected:
             raise RuntimeError("Cannot calibrate while disconnected.")
-        print("Hardware does not require an explicit calibration step. Skipping.")
+        logging.debug("Hardware does not require an explicit calibration step. Skipping.")
         pass
 
     def configure(self) -> None:
@@ -153,18 +154,18 @@ class SupreRobotFollower(Robot):
         """
         if not self.is_connected:
             raise RuntimeError("Cannot configure while disconnected.")
-        print("Hardware is already configured on connect. Skipping.")
+        logging.debug("Hardware is already configured on connect. Skipping.")
         pass
     @monitor_performance
     def get_observation(self) -> dict[str, Any]:
         """从机器人获取当前观测值。"""
         if not self.is_connected:
             raise RuntimeError("Robot is not connected.")
-        
+
         hd_readings = self._hardware_manager.read()
         positions = hd_readings[0]
         forces = hd_readings[1]
-        print("forces: ", forces)
+        logging.debug("forces: %s", forces)
         # obs_dict = {f"{self.observation_joint_names[i]}.pos": positions[i] for i in range(len(self.observation_joint_names))}
         obs_dict = {}
         for i in range(len(self.observation_joint_names)):
@@ -174,7 +175,7 @@ class SupreRobotFollower(Robot):
             # 添加关节力/力矩
             obs_dict[f"{joint_name}.force"] = forces[i]
 
-        print("obs_dict: ", obs_dict)
+        logging.debug("obs_dict: %s", obs_dict)
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
             obs_dict[cam_key] = cam.async_read()
@@ -186,11 +187,11 @@ class SupreRobotFollower(Robot):
         """获取机器人的当前位置。"""
         if not self.is_connected:
             raise RuntimeError("Robot is not connected.")
-        
+
         positions = self._hardware_manager.read()[0]
-        
+
         pos_dict = {f"{self.observation_joint_names[i]}": positions[i] for i in range(len(self.observation_joint_names))}
-        print("current_pos: ", pos_dict)
+        logging.debug("current_pos: %s", pos_dict)
         return {self.observation_joint_names[i]: positions[i] for i in range(len(self.observation_joint_names))}
 
     def _prepare_and_clamp_action(self, action: dict[str, Any]) -> Tuple[List[float], Dict[str, Any]]:
@@ -318,14 +319,14 @@ class SupreRobotFollower(Robot):
         logger.debug(f"Sending action: {action}")
         # 1. 调用辅助方法来完成所有的计算和安全检查
         final_target_positions, final_action_dict = self._prepare_and_clamp_action(action)
-        print("final_target_positions: ",final_target_positions)
+        logging.debug("final_target_positions: %s", final_target_positions)
         # 2. 将计算结果发送到硬件
         # 2. 根据是否启用插值，选择不同的发送方式
 
         # --- 直接发送逻辑 ---
         self.send_target_position(final_target_positions)
 
-        
+
         return final_action_dict
         
     def send_target_position(self, target_positions: list[float]) -> None:
@@ -334,20 +335,20 @@ class SupreRobotFollower(Robot):
     def disconnect(self) -> None:
         """断开与机器人的连接。"""
         if not self.is_connected:
-            print("Robot is already disconnected.")
+            logging.info("Robot is already disconnected.")
             return
-        
-        print("Disconnecting from robot...")
-                        
+
+        logging.info("Disconnecting from robot...")
+
         try:
             if self._hardware_manager:
                 self._hardware_manager.deactivate()
         except Exception as e:
-            print(f"An error occurred during deactivation: {e}")
+            logging.error(f"An error occurred during deactivation: {e}")
         finally:
             self._hardware_manager = None
             self._is_connected_flag = False
-            print("Robot disconnected.")
+            logging.info("Robot disconnected.")
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
