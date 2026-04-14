@@ -386,7 +386,7 @@ def replay_record_loop(
 
         # === 4. Leader微调（状态机设计）===
         if leader_state_machine is not None:
-            leader_obs = teleop.get_observation()
+            leader_obs = teleop.get_action()  # 使用 get_action 获取 Leader 位置
             state = leader_state_machine.process(leader_obs, final_action)
             # 状态会显示在日志中
 
