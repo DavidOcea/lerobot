@@ -239,6 +239,10 @@ def record_loop(
         # 根据配置选择时间戳计算方式
         if use_actual_timestamp:
             frame_timestamp = time.perf_counter() - start_episode_t  # 实际时间戳
+            # 限制 timestamp 不超出当前帧数对应的时长，防止超出视频范围
+            # 这确保 timestamp 与视频帧索引一致
+            max_timestamp = frame_index / fps
+            frame_timestamp = min(frame_timestamp, max_timestamp)
         else:
             frame_timestamp = frame_index / fps  # 理想时间戳（原方案）
 
