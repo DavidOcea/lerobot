@@ -238,10 +238,19 @@ def record_loop(
         has_force_feedback_methods = hasattr(robot, 'get_force_feedback') and hasattr(teleop, 'send_feedback')
 
     timestamp = 0
+    frame_index = 0  # 用于旧模式的时间戳计算
     start_episode_t = time.perf_counter()
     while timestamp < control_time_s:
         start_loop_t = time.perf_counter()
-        # [临时移除] 时间戳计算逻辑
+        # 根据配置选择时间戳计算方式
+        if use_actual_timestamp:
+            frame_timestamp = time.perf_counter() - start_episode_t  # 实际时间戳
+            # 限制 timestamp 不超出当前帧数对应的时长，防止超出视频范围
+            # 这确保 timestamp 与视频帧索引一致
+            max_timestamp = frame_index / fps
+            frame_timestamp = min(frame_timestamp, max_timestamp)
+        else:
+            frame_timestamp = frame_index / fps  # 理想时间戳（原方案）
 
         if events["exit_early"]:
             events["exit_early"] = False
@@ -297,15 +306,16 @@ def record_loop(
             #print(f"dataset.features: {dataset.features}")
             action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
             frame = {**observation_frame, **action_frame}
-            dataset.add_frame(frame, task=single_task)  # [临时移除] timestamp 参数
+            dataset.add_frame(frame, task=single_task, timestamp=frame_timestamp)  # 根据配置的时间戳
 
         if display_data:
             log_rerun_data(observation, action)
 
         dt_s = time.perf_counter() - start_loop_t
         busy_wait(1 / fps - dt_s)
+        # 移除 logging.debug 以减少每帧开销
         timestamp = time.perf_counter() - start_episode_t
-        # [临时移除] frame_index += 1
+        frame_index += 1  # 帧计数（用于旧模式时间戳）
 
 
 @parser.wrap()
