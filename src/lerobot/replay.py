@@ -54,6 +54,7 @@ python -m lerobot.replay \
 import logging
 import numpy as np
 import time
+import ast
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -774,20 +775,18 @@ def apply_key_adjustment_smooth(
     joint_inverse_raw = key_cfg.joint_inverse
     if isinstance(joint_inverse_raw, str):
         # 命令行传入的字符串，尝试解析
-        # 支持两种格式：
-        # 1. 标准 JSON: '{"right_arm_joint_1":true}'
-        # 2. Python 格式: "{'right_arm_joint_1':true}" (单引号)
+        # 使用 ast.literal_eval 支持多种格式：
+        # 1. Python 格式: "{'right_arm_joint_1': True}" (单引号 + Python布尔值)
+        # 2. 标准 JSON: '{"right_arm_joint_1": true}' (双引号 + JSON布尔值)
         try:
-            # 先尝试标准 JSON 解析
-            joint_inverse = json.loads(joint_inverse_raw)
-            logging.debug(f"[KeyAdjust] joint_inverse parsed from JSON: {joint_inverse}")
-        except json.JSONDecodeError:
-            # 如果 JSON 解析失败，尝试替换单引号为双引号（支持 Python 格式）
+            joint_inverse = ast.literal_eval(joint_inverse_raw)
+            logging.info(f"[KeyAdjust] joint_inverse parsed: {joint_inverse}")
+        except (ValueError, SyntaxError) as e:
+            # ast.literal_eval 失败，尝试 JSON 解析（兼容纯 JSON 格式）
             try:
-                normalized = joint_inverse_raw.replace("'", '"')
-                joint_inverse = json.loads(normalized)
-                logging.debug(f"[KeyAdjust] joint_inverse parsed from Python-format: {joint_inverse}")
-            except json.JSONDecodeError as e:
+                joint_inverse = json.loads(joint_inverse_raw)
+                logging.info(f"[KeyAdjust] joint_inverse parsed from JSON: {joint_inverse}")
+            except json.JSONDecodeError:
                 logging.warning(f"[KeyAdjust] Failed to parse joint_inverse '{joint_inverse_raw}': {e}, using empty dict")
                 joint_inverse = {}
     else:
