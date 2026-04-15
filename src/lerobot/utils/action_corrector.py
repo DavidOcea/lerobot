@@ -205,15 +205,26 @@ class KeyboardCorrector:
 
     特点：
     - 每帧渐进调整（而非跳变）
-    - 按住持续调整，释放停止
+    - 按住持续调整，释放时清零累积器（每次按键独立计算）
     - 最大累积调整量限制
     - 支持关节方向反转
     """
+
+    # 按键到关节的映射（用于释放时清零）
+    KEY_TO_JOINTS = {
+        "joint_1_positive": ["left_arm_joint_1", "right_arm_joint_1"],
+        "joint_1_negative": ["left_arm_joint_1", "right_arm_joint_1"],
+        "joint_3_positive": ["left_arm_joint_3", "right_arm_joint_3"],
+        "joint_3_negative": ["left_arm_joint_3", "right_arm_joint_3"],
+        "trunk_positive": ["trunk_joint_1"],
+        "trunk_negative": ["trunk_joint_1"],
+    }
 
     def __init__(self, cfg: KeyAdjustConfig):
         self.cfg = cfg
         self.accumulator: dict[str, float] = {}
         self._joint_inverse: dict[str, bool] = {}
+        self._prev_key_state: dict[str, bool] = {}  # 存储上一帧按键状态
         self._parse_joint_inverse()
 
     def _parse_joint_inverse(self):
@@ -244,6 +255,9 @@ class KeyboardCorrector:
     def update_accumulator(self, events: dict) -> dict[str, float]:
         """根据键盘事件更新累积器。
 
+        每次按键独立计算：按键释放时清零对应关节的累积值，
+        下次按键从0开始重新累加。
+
         Args:
             events: 键盘事件字典，包含:
                 - arm_control_mode: "left"/"right"/"both"
@@ -260,6 +274,34 @@ class KeyboardCorrector:
         mode = events.get("arm_control_mode", self.cfg.arm_control_mode)
         step = self.cfg.step_per_frame
         max_adj = self.cfg.max_adjustment
+
+        # === 检测按键释放，清零对应关节累积值 ===
+        for key_name in self.KEY_TO_JOINTS.keys():
+            event_key = f"{key_name}_held"
+            current_state = events.get(event_key, False)
+            prev_state = self._prev_key_state.get(event_key, False)
+
+            # 检测从 True -> False（按键释放）
+            if prev_state and not current_state:
+                joints_to_clear = self.KEY_TO_JOINTS[key_name]
+                mode_now = events.get("arm_control_mode", mode)
+                for joint in joints_to_clear:
+                    # 根据 mode 决定清零哪个关节
+                    if joint.startswith("left_arm") and mode_now in ["both", "left"]:
+                        if joint in self.accumulator:
+                            self.accumulator[joint] = 0.0
+                            logging.debug(f"[KeyboardCorrector] Key released: cleared {joint}")
+                    elif joint.startswith("right_arm") and mode_now in ["both", "right"]:
+                        if joint in self.accumulator:
+                            self.accumulator[joint] = 0.0
+                            logging.debug(f"[KeyboardCorrector] Key released: cleared {joint}")
+                    elif joint.startswith("trunk"):
+                        if joint in self.accumulator:
+                            self.accumulator[joint] = 0.0
+                            logging.debug(f"[KeyboardCorrector] Key released: cleared {joint}")
+
+            # 更新按键状态记录
+            self._prev_key_state[event_key] = current_state
 
         # === 双臂 joint_1（同向）===
         if events.get("joint_1_positive_held"):  # W键
