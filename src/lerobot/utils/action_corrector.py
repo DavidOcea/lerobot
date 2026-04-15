@@ -109,11 +109,15 @@ class LeaderCorrector:
     流程：
     1. 等待Leader变化 > trigger_threshold_deg → 进入微调状态
     2. 重置基准位置，从此刻起计算delta
-    3. 微调期间：将修正量保存到累积器
-    4. 连续N帧变化 < exit_threshold_deg → 退出微调状态，累积器保持不变
-    5. 累积器每帧都会应用，退出后修正量保持
+    3. 微调期间：将修正量保存到 accumulator
+    4. 连续N帧变化 < exit_threshold_deg → 退出微调状态
+       - accumulator 合并到 applied_offset（保持修正）
+       - accumulator 清零（下次独立计算）
+    5. 总修正量 = applied_offset + accumulator，保证不跳跃
 
-    关键改进：退出时累积器不清零，避免目标位置跳跃
+    变量说明：
+    - accumulator: 当前微调期间的临时累积（触发时清零）
+    - applied_offset: 退出时保存的修正量（持续保持）
     """
 
     def __init__(self, cfg: LeaderAdjustConfig):
@@ -122,7 +126,8 @@ class LeaderCorrector:
         self.trigger_baseline: dict[str, float] | None = None
         self.prev_leader_pos: dict[str, float] | None = None
         self.exit_frame_count = 0
-        self.accumulator: dict[str, float] = {}
+        self.accumulator: dict[str, float] = {}        # 当前微调临时累积
+        self.applied_offset: dict[str, float] = {}     # 退出时保存的修正量
 
     def deg_to_rad(self, deg: float) -> float:
         return deg * np.pi / 180.0
@@ -131,16 +136,24 @@ class LeaderCorrector:
         return rad * 180.0 / np.pi
 
     def reset(self):
-        """重置状态机和累积器"""
+        """重置状态机和所有修正量"""
         self.state = "idle"
         self.trigger_baseline = None
         self.prev_leader_pos = None
         self.exit_frame_count = 0
         self.accumulator.clear()
+        self.applied_offset.clear()
 
     def reset_accumulator(self):
-        """仅重置累积器（保留状态机状态）"""
+        """仅重置累积器（保留 applied_offset）"""
         self.accumulator.clear()
+
+    def get_total_offset(self) -> dict[str, float]:
+        """获取总修正量（applied_offset + accumulator）"""
+        total = self.applied_offset.copy()
+        for joint, val in self.accumulator.items():
+            total[joint] = total.get(joint, 0.0) + val
+        return total
 
     def process(self, leader_obs: dict[str, float]) -> dict[str, float]:
         """处理Leader输入，返回累积修正量。
@@ -187,9 +200,15 @@ class LeaderCorrector:
             if max_delta_deg < self.cfg.exit_threshold_deg:
                 self.exit_frame_count += 1
                 if self.exit_frame_count >= self.cfg.exit_frame_count:
+                    # 退出时：保存 accumulator 到 applied_offset，然后清零 accumulator
+                    for joint, val in self.accumulator.items():
+                        if abs(val) > 0.001:  # 只保存有意义的修正
+                            self.applied_offset[joint] = self.applied_offset.get(joint, 0.0) + val
+                            logging.debug(f"[LeaderCorrector] Saved {joint} offset={val:.3f}, total={self.applied_offset[joint]:.3f}")
+                    self.accumulator.clear()  # 清零，下次触发独立计算
                     self.state = "idle"
                     self.trigger_baseline = None
-                    logging.info(f"[LeaderCorrector] 微调退出: 连续{self.exit_frame_count}帧变化<{self.cfg.exit_threshold_deg}度, 累积修正保持")
+                    logging.info(f"[LeaderCorrector] 微调退出: 连续{self.exit_frame_count}帧变化<{self.cfg.exit_threshold_deg}度, 修正已保存")
                     self.exit_frame_count = 0
             else:
                 self.exit_frame_count = 0
@@ -197,7 +216,8 @@ class LeaderCorrector:
         # === 更新上一帧位置 ===
         self.prev_leader_pos = leader_pos.copy()
 
-        return self.accumulator.copy()
+        # 返回总修正量（applied_offset + accumulator）
+        return self.get_total_offset()
 
 
 class KeyboardCorrector:
@@ -552,7 +572,11 @@ class ActionCorrector:
         """获取所有修正器状态"""
         accumulators = {}
         if self.leader_corrector:
-            accumulators["leader"] = self.leader_corrector.accumulator.copy()
+            accumulators["leader"] = {
+                "accumulator": self.leader_corrector.accumulator.copy(),
+                "applied_offset": self.leader_corrector.applied_offset.copy(),
+                "total": self.leader_corrector.get_total_offset(),
+            }
         if self.keyboard_corrector:
             accumulators["keyboard"] = {
                 "accumulator": self.keyboard_corrector.get_accumulator(),
