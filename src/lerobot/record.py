@@ -231,6 +231,12 @@ def record_loop(
     if policy is not None:
         policy.reset()
 
+    # 力反馈检查：移到循环外，避免每帧 getattr 调用
+    enable_force_feedback = False
+    if teleop is not None and isinstance(teleop, Teleoperator):
+        enable_force_feedback = getattr(teleop.config, 'enable_force_feedback', False)
+        has_force_feedback_methods = hasattr(robot, 'get_force_feedback') and hasattr(teleop, 'send_feedback')
+
     timestamp = 0
     frame_index = 0  # 用于旧模式的时间戳计算
     start_episode_t = time.perf_counter()
@@ -290,13 +296,10 @@ def record_loop(
         # so action actually sent is saved in the dataset.
         sent_action = robot.send_action(action)
 
-        # 力反馈：只在启用时才调用，避免不必要的性能开销
-        if teleop is not None and isinstance(teleop, Teleoperator):
-            # 检查力反馈是否启用
-            if getattr(teleop.config, 'enable_force_feedback', False):
-                if hasattr(robot, 'get_force_feedback') and hasattr(teleop, 'send_feedback'):
-                    force_feedback = robot.get_force_feedback()
-                    teleop.send_feedback(force_feedback)
+        # 力反馈：使用预先计算的标志，避免每帧 getattr 调用
+        if enable_force_feedback and has_force_feedback_methods:
+            force_feedback = robot.get_force_feedback()
+            teleop.send_feedback(force_feedback)
 
         if dataset is not None:
             #print(f"sent_action: {sent_action}")
@@ -310,7 +313,7 @@ def record_loop(
 
         dt_s = time.perf_counter() - start_loop_t
         busy_wait(1 / fps - dt_s)
-        logging.debug("sleep time: %s", 1/fps - dt_s)  # 改为DEBUG级别，避免每帧打印影响性能
+        # 移除 logging.debug 以减少每帧开销
         timestamp = time.perf_counter() - start_episode_t
         frame_index += 1  # 帧计数（用于旧模式时间戳）
 
