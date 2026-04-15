@@ -54,7 +54,7 @@ python -m lerobot.replay \
 import logging
 import numpy as np
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from pprint import pformat
 from typing import Any
@@ -127,7 +127,7 @@ class KeyAdjustConfig:
 
     # 关节方向反转（解决硬件电机安装方向不一致问题）
     # 例如：如果右臂 joint_1 实际运动方向与左臂相反，设置 right_arm_joint_1_inverse=True
-    joint_inverse: dict[str, bool] = {}  # {"left_arm_joint_1": False, "right_arm_joint_1": True}
+    joint_inverse: dict[str, bool] = field(default_factory=dict)  # {"left_arm_joint_1": False, "right_arm_joint_1": True}
 
     # 按键映射
     # W/X: 双臂joint_1 正/反（同向）
