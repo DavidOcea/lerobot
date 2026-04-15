@@ -76,7 +76,10 @@ class SupreRobotLeader(Teleoperator):
             return
 
         print(f"Connecting to {self.name} using config '{self.config.joint_config_path}'...")
-        self._hardware_manager = SupreRobotHardwareManager(config_path=self.config.joint_config_path)
+        self._hardware_manager = SupreRobotHardwareManager(
+            config_path=self.config.joint_config_path,
+            enable_velocity_read=self.config.enable_velocity_read
+        )
         
         try:
             if not self._hardware_manager.init():

@@ -13,6 +13,9 @@ class SupreRobotLeaderConfig(TeleoperatorConfig):
     joint_config_file: str = _DEFAULT_JOINT_CONFIG_PATH
     joint_direction: list = field(default_factory=lambda: [-1, -1, 1, 1, 1, -1, 1, -1, -1, 1, 1, 1, -1, 1])
 
+    # 速度读取开关（默认关闭以优化性能）
+    enable_velocity_read: bool = False
+
     # ==================== 力反馈配置（声音提示模式）====================
     # 当 Follower 遇到阻力时，播放声音提示用户
     # 阻力越大，声音越急促

@@ -21,10 +21,13 @@ class SupreRobotHardwareManager:
         "JodellGripperHardware": JodellGripperHardware,
     }
 
-    def __init__(self, config_path: str,control_frequency:float = 30,use_interpolation:bool = False):
+    def __init__(self, config_path: str, control_frequency: float = 30, use_interpolation: bool = False, enable_velocity_read: bool = False):
         """
         构造函数。
         :param config_path: 指向 robot_config.yaml 文件的路径。
+        :param control_frequency: 控制频率 (Hz)
+        :param use_interpolation: 是否启用插值模式
+        :param enable_velocity_read: 是否读取速度数据（默认关闭以优化性能）
         """
         print("Initializing SupreRobotHardwareManager...")
         with open(config_path, 'r') as f:
@@ -51,7 +54,13 @@ class SupreRobotHardwareManager:
         self.commands = [0.0] * self.num_joints
 
         self.use_interpolation = use_interpolation
-        self.control_frequency = control_frequency 
+        self.control_frequency = control_frequency
+        self.enable_velocity_read = enable_velocity_read  # 速度读取开关（默认关闭）
+
+        if self.enable_velocity_read:
+            print("Velocity reading is ENABLED.")
+        else:
+            print("Velocity reading is DISABLED (for performance optimization).") 
     def init(self) -> bool:
         """
         根据配置初始化所有硬件接口并构建映射表。
@@ -131,14 +140,17 @@ class SupreRobotHardwareManager:
         for instance in self._hardware_instances:
             instance.deactivate()
         print("All hardware deactivated.")
-    def read(self) ->  Tuple[List[float],List[float]]:
+    def read(self) -> Tuple[List[float], List[float]]:
         """
         从所有硬件读取数据，并聚合成全局状态向量。
         """
         # 1. 从每个硬件读取数据
         hw_results = {inst: inst.read() for inst in self._hardware_instances}
-        hw_velocities = {inst: inst.read_velocities() if hasattr(inst, 'read_velocities') else [] for inst in self._hardware_instances}
-        # print(f"Results from hardware:{hw_results}")  # 减少日志输出
+
+        # 只在启用时读取速度数据（避免额外开销）
+        if self.enable_velocity_read:
+            hw_velocities = {inst: inst.read_velocities() if hasattr(inst, 'read_velocities') else [] for inst in self._hardware_instances}
+
         # 2. 使用映射表填充全局状态向量
         for global_index in range(self.num_joints):
             mapping = self._joint_map[global_index]
@@ -152,8 +164,8 @@ class SupreRobotHardwareManager:
                 # EyouMotorHardware.read() -> Tuple[List[float], List[float]]
                 self.positions[global_index] = result[hw_index][0]
                 self.forces[global_index] = result[hw_index][1]
-                # 读取速度
-                if hw_velocities[instance]:
+                # 只在启用时读取速度
+                if self.enable_velocity_read and hw_velocities.get(instance):
                     self.velocities[global_index] = hw_velocities[instance][hw_index]
                 else:
                     self.velocities[global_index] = 0.0
