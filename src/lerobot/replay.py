@@ -773,21 +773,34 @@ def apply_key_adjustment_smooth(
     # 解析 joint_inverse 配置（支持字符串或字典）
     joint_inverse_raw = key_cfg.joint_inverse
     if isinstance(joint_inverse_raw, str):
-        # 命令行传入的 JSON 字符串，需要解析
+        # 命令行传入的字符串，尝试解析
+        # 支持两种格式：
+        # 1. 标准 JSON: '{"right_arm_joint_1":true}'
+        # 2. Python 格式: "{'right_arm_joint_1':true}" (单引号)
         try:
+            # 先尝试标准 JSON 解析
             joint_inverse = json.loads(joint_inverse_raw)
-        except json.JSONDecodeError as e:
-            logging.warning(f"[KeyAdjust] Failed to parse joint_inverse JSON: {e}, using empty dict")
-            joint_inverse = {}
+            logging.debug(f"[KeyAdjust] joint_inverse parsed from JSON: {joint_inverse}")
+        except json.JSONDecodeError:
+            # 如果 JSON 解析失败，尝试替换单引号为双引号（支持 Python 格式）
+            try:
+                normalized = joint_inverse_raw.replace("'", '"')
+                joint_inverse = json.loads(normalized)
+                logging.debug(f"[KeyAdjust] joint_inverse parsed from Python-format: {joint_inverse}")
+            except json.JSONDecodeError as e:
+                logging.warning(f"[KeyAdjust] Failed to parse joint_inverse '{joint_inverse_raw}': {e}, using empty dict")
+                joint_inverse = {}
     else:
         joint_inverse = joint_inverse_raw if joint_inverse_raw else {}
 
     for joint_key, adjust in accumulator.items():
         action_key = f"{joint_key}.pos"
         if action_key in final_action:
+            original_adjust = adjust
             # 应用方向反转（解决硬件电机安装方向不一致问题）
             if joint_key in joint_inverse and joint_inverse[joint_key]:
                 adjust = -adjust  # 反转方向
+                logging.debug(f"[KeyAdjust] {joint_key} inverted: {original_adjust:.2f} -> {adjust:.2f}")
             final_action[action_key] += adjust
             if abs(adjust) > 0.01:  # 只记录有意义的调整
                 applied_joints.append(f"{joint_key}:{adjust:.2f}")
