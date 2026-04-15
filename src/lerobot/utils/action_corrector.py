@@ -172,6 +172,7 @@ class LeaderCorrector:
             if max_delta_deg > self.cfg.trigger_threshold_deg:
                 self.state = "adjusting"
                 self.trigger_baseline = leader_pos.copy()
+                self.accumulator.clear()  # 触发时清零累积器，避免叠加旧修正量导致跳跃
                 self.exit_frame_count = 0
                 logging.info(f"[LeaderCorrector] 微调触发: 变化量={max_delta_deg:.1f}度")
 
