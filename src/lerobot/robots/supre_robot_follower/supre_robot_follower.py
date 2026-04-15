@@ -84,6 +84,10 @@ class SupreRobotFollower(Robot):
         else:
             logger.info("Interpolation mode is DISABLED. Using direct command sending.")
 
+        # ==================== 力反馈缓存 ====================
+        # 缓存最新的力数据，避免 get_force_feedback() 重复调用硬件读取
+        self._cached_forces: Optional[List[float]] = None
+
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
         return {**self._motors_ft, **self._cameras_ft, **self._force_ft}
@@ -165,6 +169,10 @@ class SupreRobotFollower(Robot):
         hd_readings = self._hardware_manager.read()
         positions = hd_readings[0]
         forces = hd_readings[1]
+
+        # 缓存力数据供 get_force_feedback() 使用，避免重复硬件读取
+        self._cached_forces = forces
+
         logging.debug("forces: %s", forces)
         # obs_dict = {f"{self.observation_joint_names[i]}.pos": positions[i] for i in range(len(self.observation_joint_names))}
         obs_dict = {}
@@ -368,6 +376,7 @@ class SupreRobotFollower(Robot):
     def get_force_feedback(self) -> dict[str, float]:
         """
         获取当前关节力/力矩数据，用于力反馈功能。
+        使用缓存的力数据，避免重复硬件读取。
 
         Returns:
             dict[str, float]: 力数据字典，格式为 {"joint_name.force": force_value_in_Nm}
@@ -375,8 +384,13 @@ class SupreRobotFollower(Robot):
         if not self.is_connected:
             raise RuntimeError("Follower robot is not connected.")
 
-        hd_readings = self._hardware_manager.read()
-        forces = hd_readings[1]
+        # 使用缓存的力数据（由 get_observation() 更新），避免重复CAN读取
+        if self._cached_forces is None:
+            # 如果没有缓存（如首次调用或未执行过 get_observation），则读取一次
+            hd_readings = self._hardware_manager.read()
+            forces = hd_readings[1]
+        else:
+            forces = self._cached_forces
 
         force_feedback = {}
         for i, joint_name in enumerate(self.observation_joint_names):

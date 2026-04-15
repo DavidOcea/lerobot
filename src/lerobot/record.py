@@ -290,11 +290,13 @@ def record_loop(
         # so action actually sent is saved in the dataset.
         sent_action = robot.send_action(action)
 
-        # 力反馈：检查阻力并播放蜂鸣提示
+        # 力反馈：只在启用时才调用，避免不必要的性能开销
         if teleop is not None and isinstance(teleop, Teleoperator):
-            if hasattr(robot, 'get_force_feedback') and hasattr(teleop, 'send_feedback'):
-                force_feedback = robot.get_force_feedback()
-                teleop.send_feedback(force_feedback)
+            # 检查力反馈是否启用
+            if getattr(teleop.config, 'enable_force_feedback', False):
+                if hasattr(robot, 'get_force_feedback') and hasattr(teleop, 'send_feedback'):
+                    force_feedback = robot.get_force_feedback()
+                    teleop.send_feedback(force_feedback)
 
         if dataset is not None:
             #print(f"sent_action: {sent_action}")
@@ -308,7 +310,7 @@ def record_loop(
 
         dt_s = time.perf_counter() - start_loop_t
         busy_wait(1 / fps - dt_s)
-        print(f"sleep time: {1/fps - dt_s}")
+        logging.debug("sleep time: %s", 1/fps - dt_s)  # 改为DEBUG级别，避免每帧打印影响性能
         timestamp = time.perf_counter() - start_episode_t
         frame_index += 1  # 帧计数（用于旧模式时间戳）
 
