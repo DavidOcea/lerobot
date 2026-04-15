@@ -54,6 +54,7 @@ python -m lerobot.replay \
 import logging
 import numpy as np
 import time
+import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from pprint import pformat
@@ -126,8 +127,9 @@ class KeyAdjustConfig:
     arm_control_mode: str = "both"
 
     # 关节方向反转（解决硬件电机安装方向不一致问题）
-    # 例如：如果右臂 joint_1 实际运动方向与左臂相反，设置 right_arm_joint_1_inverse=True
-    joint_inverse: dict[str, bool] = field(default_factory=dict)  # {"left_arm_joint_1": False, "right_arm_joint_1": True}
+    # 例如：如果右臂 joint_1 实际运动方向与左臂相反，设置 {"right_arm_joint_1": true}
+    # 支持命令行传入 JSON 字符串：--dataset.replay_record.key_adjust.joint_inverse='{"right_arm_joint_1":true}'
+    joint_inverse: str | dict[str, bool] = field(default_factory=dict)
 
     # 按键映射
     # W/X: 双臂joint_1 正/反（同向）
@@ -768,7 +770,18 @@ def apply_key_adjustment_smooth(
 
     # === 应用累积调整量到动作 ===
     applied_joints = []
-    joint_inverse = key_cfg.joint_inverse  # 关节方向反转配置
+    # 解析 joint_inverse 配置（支持字符串或字典）
+    joint_inverse_raw = key_cfg.joint_inverse
+    if isinstance(joint_inverse_raw, str):
+        # 命令行传入的 JSON 字符串，需要解析
+        try:
+            joint_inverse = json.loads(joint_inverse_raw)
+        except json.JSONDecodeError as e:
+            logging.warning(f"[KeyAdjust] Failed to parse joint_inverse JSON: {e}, using empty dict")
+            joint_inverse = {}
+    else:
+        joint_inverse = joint_inverse_raw if joint_inverse_raw else {}
+
     for joint_key, adjust in accumulator.items():
         action_key = f"{joint_key}.pos"
         if action_key in final_action:
