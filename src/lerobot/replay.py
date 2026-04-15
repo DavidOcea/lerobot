@@ -54,8 +54,6 @@ python -m lerobot.replay \
 import logging
 import numpy as np
 import time
-import ast
-import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from pprint import pformat
@@ -88,6 +86,12 @@ from lerobot.teleoperators import (  # noqa: F401
     ros2_leader,
     supre_robot_leader,  # noqa: F401
 )
+from lerobot.utils.action_corrector import (
+    ActionCorrector,
+    ActionCorrectorConfig,
+    LeaderAdjustConfig,
+    KeyAdjustConfig,
+)
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.control_utils import init_keyboard_listener, is_headless
 from lerobot.utils.utils import (
@@ -96,54 +100,6 @@ from lerobot.utils.utils import (
 )
 
 
-@dataclass
-class LeaderAdjustConfig:
-    """Leader微调配置（状态机设计，滞回机制）"""
-
-    enable: bool = True
-
-    # 触发参数
-    trigger_threshold_deg: float = 5.0  # 触发阈值：5度（Leader变化超过此值进入微调状态）
-    trigger_alpha: float = 0.3          # 触发后修正系数
-
-    # 退出参数（滞回设计，防止频繁进出）
-    exit_threshold_deg: float = 1.0     # 退出阈值：1度（Leader变化小于此值开始计数退出）
-    exit_frame_count: int = 5           # 连续N帧变化<1度才退出
-
-    # 微调期间参数
-    adjust_alpha: float = 0.3           # 微调修正系数（follower = leader_delta * alpha）
-
-
-@dataclass
-class KeyAdjustConfig:
-    """键盘微调配置（平滑精细控制）"""
-
-    enable: bool = True
-
-    # 平滑参数（精细控制）
-    step_per_frame: float = 0.1      # 每帧调整幅度（度）
-    max_adjustment: float = 5.0      # 单次按键最大累积调整量（度）
-
-    # 双臂控制模式：left / right / both
-    arm_control_mode: str = "both"
-
-    # 关节方向反转（解决硬件电机安装方向不一致问题）
-    # 例如：如果右臂 joint_1 实际运动方向与左臂相反，设置 {"right_arm_joint_1": true}
-    # 支持命令行传入 JSON 字符串：--dataset.replay_record.key_adjust.joint_inverse='{"right_arm_joint_1":true}'
-    joint_inverse: str | dict[str, bool] = field(default_factory=dict)
-
-    # 按键映射
-    # W/X: 双臂joint_1 正/反（同向）
-    # A/D: 双臂joint_3 正/反（相对方向）
-    # Q/E: 腰部 trunk 正/反
-    # K: 切换控制模式
-    keys_joint_1_positive: str = "w"
-    keys_joint_1_negative: str = "x"
-    keys_joint_3_positive: str = "a"
-    keys_joint_3_negative: str = "d"
-    keys_trunk_positive: str = "q"
-    keys_trunk_negative: str = "e"
-    key_mode_toggle: str = "k"
 
 
 @dataclass
@@ -231,110 +187,6 @@ def add_noise_to_action(action: dict[str, float], noise_std: float, rng: np.rand
     return noisy_action
 
 
-class LeaderAdjustStateMachine:
-    """Leader微调状态机（滞回设计，累积器模式）。
-
-    状态：
-    - idle: 等待触发
-    - adjusting: 微调状态（Leader连续影响Follower）
-
-    流程：
-    1. 等待Leader变化 > 5度 → 进入微调状态
-    2. 重置基准位置，从此刻起计算delta
-    3. 微调期间：将修正量保存到累积器（而非每帧临时修正）
-    4. 连续5帧变化 < 1度 → 退出微调状态，但累积器保持不变（不跳跃）
-    5. 累积器每帧都会应用，退出后修正量保持
-
-    关键改进：退出时累积器不清零，避免目标位置跳跃
-    """
-
-    def __init__(self, cfg: LeaderAdjustConfig):
-        self.cfg = cfg
-        self.state = "idle"
-        self.trigger_baseline: dict[str, float] | None = None  # 触发时的Leader位置基准
-        self.prev_leader_pos: dict[str, float] | None = None   # 上一帧Leader位置（用于计算变化量）
-        self.exit_frame_count = 0  # 退出计数
-        self.accumulator: dict[str, float] = {}  # 累积修正量（退出时保持）
-
-    def deg_to_rad(self, deg: float) -> float:
-        """度转弧度"""
-        return deg * np.pi / 180.0
-
-    def rad_to_deg(self, rad: float) -> float:
-        """弧度转度"""
-        return rad * 180.0 / np.pi
-
-    def process(
-        self,
-        leader_obs: dict[str, float],
-    ) -> dict[str, float]:
-        """处理Leader输入，返回累积修正量。
-
-        Args:
-            leader_obs: Leader observation (包含 .pos 的关节位置)
-
-        Returns:
-            累积修正量字典（用于应用到 final_action）
-        """
-        # 提取Leader位置
-        leader_pos = {k: v for k, v in leader_obs.items() if k.endswith(".pos")}
-
-        # === 计算变化量 ===
-        if self.prev_leader_pos is not None:
-            frame_delta = {}
-            max_delta_rad = 0.0
-            for key, value in leader_pos.items():
-                delta_rad = value - self.prev_leader_pos.get(key, value)
-                frame_delta[key.replace(".pos", "")] = delta_rad
-                max_delta_rad = max(max_delta_rad, abs(delta_rad))
-
-            max_delta_deg = self.rad_to_deg(max_delta_rad)
-        else:
-            frame_delta = {}
-            max_delta_deg = 0.0
-
-        # === 状态机逻辑 ===
-        if self.state == "idle":
-            # 等待状态：检测是否触发
-            if max_delta_deg > self.cfg.trigger_threshold_deg:
-                # 触发：进入微调状态
-                self.state = "adjusting"
-                self.trigger_baseline = leader_pos.copy()  # 记录触发基准
-                self.exit_frame_count = 0
-                logging.info(f"Leader微调触发: 变化量={max_delta_deg:.1f}度")
-
-        elif self.state == "adjusting":
-            # 微调状态：计算相对于触发基准的偏移，保存到累积器
-            if self.trigger_baseline is not None:
-                for joint_key, leader_value in leader_pos.items():
-                    joint_name = joint_key.replace(".pos", "")
-                    baseline = self.trigger_baseline.get(joint_key, leader_value)
-                    delta_rad = leader_value - baseline  # 相对触发点的偏移
-
-                    # 保存到累积器（而非直接修改 final_action）
-                    self.accumulator[joint_name] = self.cfg.adjust_alpha * delta_rad
-
-            # 检测退出：变化量小于阈值
-            if max_delta_deg < self.cfg.exit_threshold_deg:
-                self.exit_frame_count += 1
-                if self.exit_frame_count >= self.cfg.exit_frame_count:
-                    # 连续N帧变化小，退出微调
-                    self.state = "idle"
-                    self.trigger_baseline = None
-                    # 注意：累积器不清零，修正量保持
-                    logging.info(f"Leader微调退出: 连续{self.exit_frame_count}帧变化<{self.cfg.exit_threshold_deg}度, 累积修正保持")
-                    self.exit_frame_count = 0
-            else:
-                # 变化大，重置退出计数
-                self.exit_frame_count = 0
-
-        # === 更新上一帧位置 ===
-        self.prev_leader_pos = leader_pos.copy()
-
-        # 返回累积修正量（调用方负责应用）
-        return self.accumulator.copy()
-
-
 def replay_record_loop(
     robot: Robot,
     dataset: LeRobotDataset,
@@ -366,13 +218,13 @@ def replay_record_loop(
     """
     rng = np.random.default_rng(cfg.noise_seed)
 
-    # Leader微调状态机（滞回设计）
-    leader_state_machine: LeaderAdjustStateMachine | None = None
-    if teleop is not None and cfg.leader_adjust.enable:
-        leader_state_machine = LeaderAdjustStateMachine(cfg.leader_adjust)
-
-    # 键盘调整累积器（平滑控制）
-    key_adjust_accumulator: dict[str, float] = {}
+    # 创建 ActionCorrector 实例（使用独立模块）
+    corrector_config = ActionCorrectorConfig(
+        enable=True,
+        leader=cfg.leader_adjust,
+        keyboard=cfg.key_adjust,
+    )
+    corrector = ActionCorrector(corrector_config, teleop=teleop)
 
     # Episode recording state
     episode_start = time.perf_counter()
@@ -381,7 +233,7 @@ def replay_record_loop(
     timestamp_mode = "actual" if use_actual_timestamp else "ideal"
     logging.info(f"Replay_record started with noise_std={cfg.noise_std}, timestamp_mode={timestamp_mode}")
     logging.info(f"Key adjust mode: {cfg.key_adjust.arm_control_mode}, step={cfg.key_adjust.step_per_frame} deg/frame")
-    if leader_state_machine:
+    if cfg.leader_adjust.enable:
         logging.info(f"Leader adjust: trigger={cfg.leader_adjust.trigger_threshold_deg}度, exit={cfg.leader_adjust.exit_threshold_deg}度/{cfg.leader_adjust.exit_frame_count}帧")
 
     for idx in range(dataset.num_frames):
@@ -404,40 +256,27 @@ def replay_record_loop(
 
         # === 3. 添加扰动 ===
         noisy_action = add_noise_to_action(base_action, cfg.noise_std, rng)
-        final_action = noisy_action.copy()
 
-        # === 4. Leader微调（累积器模式，退出时不跳跃）===
-        if leader_state_machine is not None:
-            leader_obs = teleop.get_action()  # 使用 get_action 获取 Leader 位置
-            leader_adjustments = leader_state_machine.process(leader_obs)
-            # 应用累积修正量到 final_action
-            for joint_name, adjust in leader_adjustments.items():
-                action_key = f"{joint_name}.pos"
-                if action_key in final_action:
-                    final_action[action_key] += adjust
+        # === 4. 使用 ActionCorrector 应用修正 ===
+        corrected_action = corrector.correct(
+            action=noisy_action,
+            events=events,
+        )
+        final_action = corrected_action
 
-        # === 5. 按键平滑微调 ===
-        if cfg.key_adjust.enable:
-            apply_key_adjustment_smooth(
-                final_action=final_action,
-                events=events,
-                key_cfg=cfg.key_adjust,
-                accumulator=key_adjust_accumulator,
-            )
-
-        # === 6. 获取observation ===
+        # === 5. 获取observation ===
         observation = robot.get_observation()
 
-        # === 7. 执行动作 ===
+        # === 6. 执行动作 ===
         sent_action = robot.send_action(final_action)
 
-        # === 7.1 力反馈：检查阻力并发送给 Leader ===
+        # === 6.1 力反馈：检查阻力并发送给 Leader ===
         if teleop is not None and isinstance(teleop, Teleoperator):
             if hasattr(robot, 'get_force_feedback') and hasattr(teleop, 'send_feedback'):
                 force_feedback = robot.get_force_feedback()
                 teleop.send_feedback(force_feedback)
 
-        # === 8. 录制数据 ===
+        # === 7. 录制数据 ===
         if new_dataset is not None:
             observation_frame = build_dataset_frame(new_dataset.features, observation, prefix="observation")
             action_frame = build_dataset_frame(new_dataset.features, sent_action, prefix="action")
@@ -446,25 +285,26 @@ def replay_record_loop(
 
         frame_index += 1
 
-        # === 9. 检测成功/失败按键 ===
+        # === 8. 检测成功/失败按键 ===
         if events.get("mark_fail"):
             logging.info("Episode marked as FAIL, discarding...")
             new_dataset.clear_episode_buffer()
             events["mark_fail"] = False
+            corrector.reset()  # 重置修正器
             return False
 
         if events.get("exit_early"):
             events["exit_early"] = False
             break
 
-        # === 10. 时间同步 ===
+        # === 9. 时间同步 ===
         dt_s = time.perf_counter() - loop_start
         expected_interval = 1.0 / fps
         wait_time = expected_interval - dt_s
         if wait_time > 0:
             busy_wait(wait_time)
 
-    # === 11. Episode结束后等待成功按键 ===
+    # === 10. Episode结束后等待成功按键 ===
     logging.info("Episode replay completed. Press 'S' to save, 'F' to discard...")
 
     wait_start = time.perf_counter()
@@ -473,17 +313,20 @@ def replay_record_loop(
             logging.info("Episode marked as SUCCESS, saving...")
             new_dataset.save_episode()
             events["mark_success"] = False
+            corrector.reset()  # 重置修正器
             return True
         if events.get("mark_fail"):
             logging.info("Episode marked as FAIL, discarding...")
             new_dataset.clear_episode_buffer()
             events["mark_fail"] = False
+            corrector.reset()  # 重置修正器
             return False
         time.sleep(0.1)
 
     # 超时未按键，默认保存
     logging.info("Timeout, auto-saving episode...")
     new_dataset.save_episode()
+    corrector.reset()  # 重置修正器
     return True
 
 
@@ -601,211 +444,6 @@ def init_replay_record_keyboard_listener(events: dict, key_cfg: KeyAdjustConfig)
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
     return listener
-
-
-def apply_key_adjustment_smooth(
-    final_action: dict,
-    events: dict,
-    key_cfg: KeyAdjustConfig,
-    accumulator: dict[str, float],
-) -> None:
-    """应用平滑精细的键盘微调。
-
-    特点：
-    - 每帧渐进调整 0.1度（而非跳变）
-    - 按住持续调整，释放停止
-    - 最大累积调整量 5度
-
-    Args:
-        final_action: 动作字典
-        events: 按键事件
-        key_cfg: 键盘配置
-        accumulator: 累积调整量字典
-    """
-    mode = events.get("arm_control_mode", key_cfg.arm_control_mode)
-    step = key_cfg.step_per_frame
-    max_adj = key_cfg.max_adjustment
-
-    # 检查是否有任何按键被按住（用于日志输出）
-    any_held = any([
-        events.get("joint_1_positive_held"),
-        events.get("joint_1_negative_held"),
-        events.get("joint_3_positive_held"),
-        events.get("joint_3_negative_held"),
-        events.get("trunk_positive_held"),
-        events.get("trunk_negative_held"),
-    ])
-
-    # === 双臂 joint_1（同向）===
-    if events.get("joint_1_positive_held"):  # W键
-        if mode == "both":
-            acc_left = accumulator.get("left_arm_joint_1", 0.0)
-            acc_right = accumulator.get("right_arm_joint_1", 0.0)
-            left_updated = False
-            right_updated = False
-            # 检查更新后的值是否在范围内（而非当前值）
-            new_left = acc_left + step
-            new_right = acc_right + step
-            if abs(new_left) <= max_adj:
-                accumulator["left_arm_joint_1"] = new_left
-                left_updated = True
-            if abs(new_right) <= max_adj:
-                accumulator["right_arm_joint_1"] = new_right
-                right_updated = True
-            logging.debug(f"[KeyAdjust] W+both: left={left_updated}({acc_left:.2f}->{accumulator['left_arm_joint_1']:.2f}), right={right_updated}({acc_right:.2f}->{accumulator['right_arm_joint_1']:.2f})")
-        elif mode == "left":
-            acc = accumulator.get("left_arm_joint_1", 0.0)
-            new_val = acc + step
-            if abs(new_val) <= max_adj:
-                accumulator["left_arm_joint_1"] = new_val
-                logging.debug(f"[KeyAdjust] W+left: left_arm_joint_1 {acc:.2f}->{accumulator['left_arm_joint_1']:.2f}")
-        elif mode == "right":
-            acc = accumulator.get("right_arm_joint_1", 0.0)
-            new_val = acc + step
-            if abs(new_val) <= max_adj:
-                accumulator["right_arm_joint_1"] = new_val
-                logging.debug(f"[KeyAdjust] W+right: right_arm_joint_1 {acc:.2f}->{accumulator['right_arm_joint_1']:.2f}")
-
-    if events.get("joint_1_negative_held"):  # X键
-        if mode == "both":
-            acc_left = accumulator.get("left_arm_joint_1", 0.0)
-            acc_right = accumulator.get("right_arm_joint_1", 0.0)
-            left_updated = False
-            right_updated = False
-            # 检查更新后的值是否在范围内（而非当前值）
-            new_left = acc_left - step
-            new_right = acc_right - step
-            if abs(new_left) <= max_adj:
-                accumulator["left_arm_joint_1"] = new_left
-                left_updated = True
-            if abs(new_right) <= max_adj:
-                accumulator["right_arm_joint_1"] = new_right
-                right_updated = True
-            logging.debug(f"[KeyAdjust] X+both: left={left_updated}({acc_left:.2f}->{accumulator['left_arm_joint_1']:.2f}), right={right_updated}({acc_right:.2f}->{accumulator['right_arm_joint_1']:.2f})")
-        elif mode == "left":
-            acc = accumulator.get("left_arm_joint_1", 0.0)
-            new_val = acc - step
-            if abs(new_val) <= max_adj:
-                accumulator["left_arm_joint_1"] = new_val
-                logging.debug(f"[KeyAdjust] X+left: left_arm_joint_1 {acc:.2f}->{accumulator['left_arm_joint_1']:.2f}")
-        elif mode == "right":
-            acc = accumulator.get("right_arm_joint_1", 0.0)
-            new_val = acc - step
-            if abs(new_val) <= max_adj:
-                accumulator["right_arm_joint_1"] = new_val
-                logging.debug(f"[KeyAdjust] X+right: right_arm_joint_1 {acc:.2f}->{accumulator['right_arm_joint_1']:.2f}")
-
-    # === 双臂 joint_3（相对方向）===
-    if events.get("joint_3_positive_held"):  # A键
-        if mode == "both":
-            acc_left = accumulator.get("left_arm_joint_3", 0.0)
-            acc_right = accumulator.get("right_arm_joint_3", 0.0)
-            left_updated = False
-            right_updated = False
-            # 检查更新后的值是否在范围内（而非当前值）
-            new_left = acc_left + step
-            new_right = acc_right - step  # 相对方向
-            if abs(new_left) <= max_adj:
-                accumulator["left_arm_joint_3"] = new_left
-                left_updated = True
-            if abs(new_right) <= max_adj:
-                accumulator["right_arm_joint_3"] = new_right
-                right_updated = True
-            logging.debug(f"[KeyAdjust] A+both: left={left_updated}({acc_left:.2f}->{accumulator['left_arm_joint_3']:.2f}), right={right_updated}({acc_right:.2f}->{accumulator['right_arm_joint_3']:.2f})")
-        elif mode == "left":
-            acc = accumulator.get("left_arm_joint_3", 0.0)
-            new_val = acc + step
-            if abs(new_val) <= max_adj:
-                accumulator["left_arm_joint_3"] = new_val
-                logging.debug(f"[KeyAdjust] A+left: left_arm_joint_3 {acc:.2f}->{accumulator['left_arm_joint_3']:.2f}")
-        elif mode == "right":
-            acc = accumulator.get("right_arm_joint_3", 0.0)
-            new_val = acc - step
-            if abs(new_val) <= max_adj:
-                accumulator["right_arm_joint_3"] = new_val
-                logging.debug(f"[KeyAdjust] A+right: right_arm_joint_3 {acc:.2f}->{accumulator['right_arm_joint_3']:.2f}")
-
-    if events.get("joint_3_negative_held"):  # D键
-        if mode == "both":
-            acc_left = accumulator.get("left_arm_joint_3", 0.0)
-            acc_right = accumulator.get("right_arm_joint_3", 0.0)
-            left_updated = False
-            right_updated = False
-            # 检查更新后的值是否在范围内（而非当前值）
-            new_left = acc_left - step
-            new_right = acc_right + step  # 相对方向
-            if abs(new_left) <= max_adj:
-                accumulator["left_arm_joint_3"] = new_left
-                left_updated = True
-            if abs(new_right) <= max_adj:
-                accumulator["right_arm_joint_3"] = new_right
-                right_updated = True
-            logging.debug(f"[KeyAdjust] D+both: left={left_updated}({acc_left:.2f}->{accumulator['left_arm_joint_3']:.2f}), right={right_updated}({acc_right:.2f}->{accumulator['right_arm_joint_3']:.2f})")
-        elif mode == "left":
-            acc = accumulator.get("left_arm_joint_3", 0.0)
-            new_val = acc - step
-            if abs(new_val) <= max_adj:
-                accumulator["left_arm_joint_3"] = new_val
-                logging.debug(f"[KeyAdjust] D+left: left_arm_joint_3 {acc:.2f}->{accumulator['left_arm_joint_3']:.2f}")
-        elif mode == "right":
-            acc = accumulator.get("right_arm_joint_3", 0.0)
-            new_val = acc + step
-            if abs(new_val) <= max_adj:
-                accumulator["right_arm_joint_3"] = new_val
-                logging.debug(f"[KeyAdjust] D+right: right_arm_joint_3 {acc:.2f}->{accumulator['right_arm_joint_3']:.2f}")
-
-    # === 腰部 trunk ===
-    if events.get("trunk_positive_held"):  # Q键
-        acc = accumulator.get("trunk_joint_1", 0.0)
-        new_val = acc + step
-        if abs(new_val) <= max_adj:
-            accumulator["trunk_joint_1"] = new_val
-            logging.debug(f"[KeyAdjust] Q: trunk_joint_1 {acc:.2f}->{accumulator['trunk_joint_1']:.2f}")
-
-    if events.get("trunk_negative_held"):  # E键
-        acc = accumulator.get("trunk_joint_1", 0.0)
-        new_val = acc - step
-        if abs(new_val) <= max_adj:
-            accumulator["trunk_joint_1"] = new_val
-            logging.debug(f"[KeyAdjust] E: trunk_joint_1 {acc:.2f}->{accumulator['trunk_joint_1']:.2f}")
-
-    # === 应用累积调整量到动作 ===
-    applied_joints = []
-    # 解析 joint_inverse 配置（支持字符串或字典）
-    joint_inverse_raw = key_cfg.joint_inverse
-    if isinstance(joint_inverse_raw, str):
-        # 命令行传入的字符串，尝试解析
-        # 使用 ast.literal_eval 支持多种格式：
-        # 1. Python 格式: "{'right_arm_joint_1': True}" (单引号 + Python布尔值)
-        # 2. 标准 JSON: '{"right_arm_joint_1": true}' (双引号 + JSON布尔值)
-        try:
-            joint_inverse = ast.literal_eval(joint_inverse_raw)
-            logging.info(f"[KeyAdjust] joint_inverse parsed: {joint_inverse}")
-        except (ValueError, SyntaxError) as e:
-            # ast.literal_eval 失败，尝试 JSON 解析（兼容纯 JSON 格式）
-            try:
-                joint_inverse = json.loads(joint_inverse_raw)
-                logging.info(f"[KeyAdjust] joint_inverse parsed from JSON: {joint_inverse}")
-            except json.JSONDecodeError:
-                logging.warning(f"[KeyAdjust] Failed to parse joint_inverse '{joint_inverse_raw}': {e}, using empty dict")
-                joint_inverse = {}
-    else:
-        joint_inverse = joint_inverse_raw if joint_inverse_raw else {}
-
-    for joint_key, adjust in accumulator.items():
-        action_key = f"{joint_key}.pos"
-        if action_key in final_action:
-            original_adjust = adjust
-            # 应用方向反转（解决硬件电机安装方向不一致问题）
-            if joint_key in joint_inverse and joint_inverse[joint_key]:
-                adjust = -adjust  # 反转方向
-                logging.debug(f"[KeyAdjust] {joint_key} inverted: {original_adjust:.2f} -> {adjust:.2f}")
-            final_action[action_key] += adjust
-            if abs(adjust) > 0.01:  # 只记录有意义的调整
-                applied_joints.append(f"{joint_key}:{adjust:.2f}")
-
-    if applied_joints and any_held:
-        logging.debug(f"[KeyAdjust] Applied: {', '.join(applied_joints)}")
 
 
 @draccus.wrap()
