@@ -205,12 +205,16 @@ class KeyboardCorrector:
 
     特点：
     - 每帧渐进调整（而非跳变）
-    - 按住持续调整，释放时清零累积器（每次按键独立计算）
-    - 最大累积调整量限制
+    - 按键释放时：清零累积器，但保持已微调的位置（applied_offset）
+    - 每次按键独立计算最多5度，但总修正量持续累积
     - 支持关节方向反转
+
+    变量说明：
+    - accumulator: 当前按键会话的临时累积，按键释放时清零
+    - applied_offset: 已应用并保持的修正量，按键释放时合并accumulated值
     """
 
-    # 按键到关节的映射（用于释放时清零）
+    # 按键到关节的映射（用于释放时处理）
     KEY_TO_JOINTS = {
         "joint_1_positive": ["left_arm_joint_1", "right_arm_joint_1"],
         "joint_1_negative": ["left_arm_joint_1", "right_arm_joint_1"],
@@ -222,9 +226,10 @@ class KeyboardCorrector:
 
     def __init__(self, cfg: KeyAdjustConfig):
         self.cfg = cfg
-        self.accumulator: dict[str, float] = {}
+        self.accumulator: dict[str, float] = {}      # 当前按键会话的临时累积
+        self.applied_offset: dict[str, float] = {}   # 已应用并保持的修正量
         self._joint_inverse: dict[str, bool] = {}
-        self._prev_key_state: dict[str, bool] = {}  # 存储上一帧按键状态
+        self._prev_key_state: dict[str, bool] = {}   # 存储上一帧按键状态
         self._parse_joint_inverse()
 
     def _parse_joint_inverse(self):
@@ -245,12 +250,20 @@ class KeyboardCorrector:
             self._joint_inverse = raw if raw else {}
 
     def reset(self):
-        """重置累积器"""
+        """重置所有修正量"""
         self.accumulator.clear()
+        self.applied_offset.clear()
 
     def get_accumulator(self) -> dict[str, float]:
-        """获取当前累积修正量"""
+        """获取当前累积修正量（用于调试）"""
         return self.accumulator.copy()
+
+    def get_total_offset(self) -> dict[str, float]:
+        """获取总修正量（applied_offset + accumulator）"""
+        total = self.applied_offset.copy()
+        for joint, val in self.accumulator.items():
+            total[joint] = total.get(joint, 0.0) + val
+        return total
 
     def update_accumulator(self, events: dict) -> dict[str, float]:
         """根据键盘事件更新累积器。
@@ -275,7 +288,7 @@ class KeyboardCorrector:
         step = self.cfg.step_per_frame
         max_adj = self.cfg.max_adjustment
 
-        # === 检测按键释放，清零对应关节累积值 ===
+        # === 检测按键释放，保存修正并清零累积器 ===
         for key_name in self.KEY_TO_JOINTS.keys():
             event_key = f"{key_name}_held"
             current_state = events.get(event_key, False)
@@ -283,22 +296,25 @@ class KeyboardCorrector:
 
             # 检测从 True -> False（按键释放）
             if prev_state and not current_state:
-                joints_to_clear = self.KEY_TO_JOINTS[key_name]
+                joints_to_process = self.KEY_TO_JOINTS[key_name]
                 mode_now = events.get("arm_control_mode", mode)
-                for joint in joints_to_clear:
-                    # 根据 mode 决定清零哪个关节
+                for joint in joints_to_process:
+                    should_process = False
                     if joint.startswith("left_arm") and mode_now in ["both", "left"]:
-                        if joint in self.accumulator:
-                            self.accumulator[joint] = 0.0
-                            logging.debug(f"[KeyboardCorrector] Key released: cleared {joint}")
+                        should_process = True
                     elif joint.startswith("right_arm") and mode_now in ["both", "right"]:
-                        if joint in self.accumulator:
-                            self.accumulator[joint] = 0.0
-                            logging.debug(f"[KeyboardCorrector] Key released: cleared {joint}")
+                        should_process = True
                     elif joint.startswith("trunk"):
-                        if joint in self.accumulator:
-                            self.accumulator[joint] = 0.0
-                            logging.debug(f"[KeyboardCorrector] Key released: cleared {joint}")
+                        should_process = True
+
+                    if should_process and joint in self.accumulator:
+                        # 将当前累积值合并到 applied_offset（保持微调位置）
+                        acc_val = self.accumulator[joint]
+                        if abs(acc_val) > 0.001:  # 只处理有意义的修正
+                            self.applied_offset[joint] = self.applied_offset.get(joint, 0.0) + acc_val
+                            logging.debug(f"[KeyboardCorrector] Key released: saved {joint} offset={acc_val:.3f}, total={self.applied_offset[joint]:.3f}")
+                        # 清零累积器（下次按键从0开始）
+                        self.accumulator[joint] = 0.0
 
             # 更新按键状态记录
             self._prev_key_state[event_key] = current_state
@@ -405,7 +421,9 @@ class KeyboardCorrector:
         return self.accumulator.copy()
 
     def apply_to_action(self, action: dict[str, float]) -> dict[str, float]:
-        """将累积修正量应用到动作。
+        """将修正量应用到动作。
+
+        应用 applied_offset（保持的修正）+ accumulator（当前按键累积）。
 
         Args:
             action: 原始动作字典（格式如 {"joint_name.pos": value}）
@@ -415,7 +433,10 @@ class KeyboardCorrector:
         """
         corrected_action = action.copy()
 
-        for joint_key, adjust in self.accumulator.items():
+        # 计算总修正量
+        total_offset = self.get_total_offset()
+
+        for joint_key, adjust in total_offset.items():
             action_key = f"{joint_key}.pos"
             if action_key in corrected_action:
                 # 应用方向反转
@@ -528,12 +549,16 @@ class ActionCorrector:
         return "disabled"
 
     def get_accumulators(self) -> dict:
-        """获取所有累积器状态"""
+        """获取所有修正器状态"""
         accumulators = {}
         if self.leader_corrector:
             accumulators["leader"] = self.leader_corrector.accumulator.copy()
         if self.keyboard_corrector:
-            accumulators["keyboard"] = self.keyboard_corrector.get_accumulator()
+            accumulators["keyboard"] = {
+                "accumulator": self.keyboard_corrector.get_accumulator(),
+                "applied_offset": self.keyboard_corrector.applied_offset.copy(),
+                "total": self.keyboard_corrector.get_total_offset(),
+            }
         return accumulators
 
 
