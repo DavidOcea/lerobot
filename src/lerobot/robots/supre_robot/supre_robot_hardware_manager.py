@@ -86,7 +86,10 @@ class SupreRobotHardwareManager:
                 instance = AsyncInterpolator(instance, interpolation_config)
 
             # 初始化硬件
-            if not instance.init(hw_info["config"]):
+            # 将 enable_velocity_read 传递给硬件配置（用于控制速度计算）
+            hw_config = hw_info["config"].copy()
+            hw_config["enable_velocity_calculation"] = self.enable_velocity_read
+            if not instance.init(hw_config):
                 print(f"Error: Failed to initialize hardware '{hw_info['name']}'")
                 return False
                         

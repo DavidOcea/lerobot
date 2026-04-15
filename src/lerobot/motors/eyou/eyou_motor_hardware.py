@@ -34,6 +34,7 @@ class EyouMotorHardware(HardwareInterface):
         # --- 软件速度计算（因为硬件反馈速度始终为0）---
         self._prev_positions_: List[float] = []
         self._prev_time_: float = 0.0
+        self._enable_velocity_calculation: bool = False  # 默认关闭，避免每帧计算开销
 
         self._config: Dict[str, Any] = {}
         self._last_log_time = time.monotonic()
@@ -75,6 +76,13 @@ class EyouMotorHardware(HardwareInterface):
             # 软件速度计算初始化
             self._prev_positions_ = [0.0] * num_joints
             self._prev_time_ = 0.0
+
+            # 从配置读取是否启用速度计算（默认关闭以优化性能）
+            self._enable_velocity_calculation = self._config.get("enable_velocity_calculation", False)
+            if self._enable_velocity_calculation:
+                print("Velocity calculation is ENABLED.")
+            else:
+                print("Velocity calculation is DISABLED (for performance optimization).")
 
             # 初始化CAN总线
             self.can_manager_ = eu_motor_py.CanNetworkManager()
@@ -181,10 +189,12 @@ class EyouMotorHardware(HardwareInterface):
         """
         更新内部状态并返回一份新的状态拷贝。
 
-        :return: (new_positions, new_velocities) 元组。
+        :return: (positions, torques) 元组列表。
         """
-        current_time = time.perf_counter()
-        dt = current_time - self._prev_time_ if self._prev_time_ > 0 else 0.001
+        # 只在启用速度计算时才获取时间和计算 dt
+        if self._enable_velocity_calculation:
+            current_time = time.perf_counter()
+            dt = current_time - self._prev_time_ if self._prev_time_ > 0 else 0.001
 
         for i, motor in enumerate(self.motor_nodes_):
             feedback = motor.get_latest_feedback()
@@ -192,21 +202,21 @@ class EyouMotorHardware(HardwareInterface):
             if feedback.last_update_time > datetime.timedelta(0):
                 new_position = feedback.position_deg
 
-                # 软件计算速度（因为硬件反馈速度始终为0）
-                if dt > 0.0001:  # 避免除以0
-                    velocity = (new_position - self._prev_positions_[i]) / dt
-                else:
-                    velocity = 0.0
+                # 只在启用时计算速度，避免每帧不必要的计算开销
+                if self._enable_velocity_calculation:
+                    if dt > 0.0001:  # 避免除以0
+                        velocity = (new_position - self._prev_positions_[i]) / dt
+                    else:
+                        velocity = 0.0
+                    self.hw_states_velocities_[i] = velocity
+                    self._prev_positions_[i] = new_position
 
                 self.hw_states_positions_[i] = new_position
-                self.hw_states_velocities_[i] = velocity
                 self.hw_states_torques_[i] = float(feedback.torque_milli)/1000.0
 
-                # 更新上次位置
-                self._prev_positions_[i] = new_position
-
-        # 更新上次时间
-        self._prev_time_ = current_time
+        # 只在启用时更新时间
+        if self._enable_velocity_calculation:
+            self._prev_time_ = current_time
 
         # 返回内部状态的拷贝，防止外部代码意外修改
         return list(zip(self.hw_states_positions_, self.hw_states_torques_))
