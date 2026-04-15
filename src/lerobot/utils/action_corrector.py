@@ -68,7 +68,7 @@ class KeyAdjustConfig:
     enable: bool = True
 
     # 平滑参数（精细控制）
-    step_per_frame: float = 0.1      # 每帧调整幅度（度）
+    step_per_frame: float = 0.2      # 每帧调整幅度（度）- 增大以提高joint_3可见度
     max_adjustment: float = 5.0      # 单次按键最大累积调整量（度）
 
     # 双臂控制模式：left / right / both
