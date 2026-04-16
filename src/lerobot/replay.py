@@ -461,6 +461,8 @@ def replay(cfg: ReplayConfig):
     # 加载源数据集：使用宽松的 tolerance_s 以兼容 perf_counter 录制的数据
     # 源数据可能使用 tolerance_s=0.03 录制，加载时需要匹配
     source_tolerance_s = cfg.dataset.replay_record.tolerance_s if cfg.dataset.replay_record.enable else 1e-4
+    if source_tolerance_s is None:
+        source_tolerance_s = 0.03  # 默认使用宽松容差，兼容 perf_counter 录制的数据
     dataset = LeRobotDataset(
         cfg.dataset.repo_id,
         root=cfg.dataset.root,
