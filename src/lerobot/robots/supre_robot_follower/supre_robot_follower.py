@@ -178,7 +178,7 @@ class SupreRobotFollower(Robot):
         # 缓存力数据供 get_force_feedback() 使用，避免重复硬件读取
         self._cached_forces = forces
 
-        logging.debug("forces: %s", forces)
+        # 移除 logging.debug 以减少每帧开销
         # obs_dict = {f"{self.observation_joint_names[i]}.pos": positions[i] for i in range(len(self.observation_joint_names))}
         obs_dict = {}
         for i in range(len(self.observation_joint_names)):
@@ -188,12 +188,12 @@ class SupreRobotFollower(Robot):
             # 添加关节力/力矩
             obs_dict[f"{joint_name}.force"] = forces[i]
 
-        logging.debug("obs_dict: %s", obs_dict)
+        # 移除 logging.debug 以减少每帧开销
         for cam_key, cam in self.cameras.items():
             start = time.perf_counter()
             obs_dict[cam_key] = cam.async_read()
             dt_ms = (time.perf_counter() - start) * 1e3
-            logger.debug(f"{self} read {cam_key}: {dt_ms:.1f}ms")
+            # 移除 logger.debug 以减少每帧开销
         return obs_dict
 
     def get_current_position(self) -> dict[str, float]:
@@ -203,8 +203,7 @@ class SupreRobotFollower(Robot):
 
         positions = self._hardware_manager.read()[0]
 
-        pos_dict = {f"{self.observation_joint_names[i]}": positions[i] for i in range(len(self.observation_joint_names))}
-        logging.debug("current_pos: %s", pos_dict)
+        # 移除 logging.debug 以减少每帧开销
         return {self.observation_joint_names[i]: positions[i] for i in range(len(self.observation_joint_names))}
 
     def _prepare_and_clamp_action(self, action: dict[str, Any]) -> Tuple[List[float], Dict[str, Any]]:
@@ -332,7 +331,7 @@ class SupreRobotFollower(Robot):
         logger.debug(f"Sending action: {action}")
         # 1. 调用辅助方法来完成所有的计算和安全检查
         final_target_positions, final_action_dict = self._prepare_and_clamp_action(action)
-        logging.debug("final_target_positions: %s", final_target_positions)
+        # 移除 logging.debug 以减少每帧开销
         # 2. 将计算结果发送到硬件
         # 2. 根据是否启用插值，选择不同的发送方式
 
