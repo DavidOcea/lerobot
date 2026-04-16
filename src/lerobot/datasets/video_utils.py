@@ -16,7 +16,6 @@
 import glob
 import importlib
 import logging
-import shutil
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +28,8 @@ import torchvision
 from datasets.features.features import register_feature
 from PIL import Image
 
+import os
+import subprocess
 
 def get_safe_default_codec():
     if importlib.util.find_spec("torchcodec"):
@@ -45,7 +46,6 @@ def decode_video_frames(
     timestamps: list[float],
     tolerance_s: float,
     backend: str | None = None,
-    decode_fps: float | None = None,
 ) -> torch.Tensor:
     """
     Decodes video frames using the specified backend.
@@ -55,8 +55,6 @@ def decode_video_frames(
         timestamps (list[float]): List of timestamps to extract frames.
         tolerance_s (float): Allowed deviation in seconds for frame retrieval.
         backend (str, optional): Backend to use for decoding. Defaults to "torchcodec" when available in the platform; otherwise, defaults to "pyav"..
-        decode_fps (float, optional): If provided, use this fps for frame index calculation
-            instead of video average_fps. Useful for datasets with actual timestamps.
 
     Returns:
         torch.Tensor: Decoded frames.
@@ -66,7 +64,7 @@ def decode_video_frames(
     if backend is None:
         backend = get_safe_default_codec()
     if backend == "torchcodec":
-        return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s, decode_fps)
+        return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s)
     elif backend in ["pyav", "video_reader"]:
         return decode_video_frames_torchvision(video_path, timestamps, tolerance_s, backend)
     else:
@@ -175,7 +173,6 @@ def decode_video_frames_torchcodec(
     video_path: Path | str,
     timestamps: list[float],
     tolerance_s: float,
-    decode_fps: float | None = None,
     device: str = "cpu",
     log_loaded_timestamps: bool = False,
 ) -> torch.Tensor:
@@ -188,16 +185,6 @@ def decode_video_frames_torchcodec(
     that key frame. As a consequence, to access a requested frame, we need to load the preceding key frame,
     and all subsequent frames until reaching the requested frame. The number of key frames in a video
     can be adjusted during encoding to take into account decoding time and video size in bytes.
-
-    Args:
-        video_path: Path to the video file.
-        timestamps: List of timestamps to query.
-        tolerance_s: Tolerance in seconds for timestamp matching.
-        decode_fps: If provided, use this fps for frame index calculation instead of video average_fps.
-                    This is useful for datasets recorded with actual timestamps (perf_counter) where
-                    the effective fps differs from the nominal fps.
-        device: Device to use for decoding.
-        log_loaded_timestamps: Whether to log loaded timestamps.
     """
 
     if importlib.util.find_spec("torchcodec"):
@@ -211,18 +198,10 @@ def decode_video_frames_torchcodec(
     loaded_ts = []
     # get metadata for frame information
     metadata = decoder.metadata
+    average_fps = metadata.average_fps
 
-    # Choose fps: use decode_fps if provided, otherwise use video average_fps
-    # decode_fps is used for actual timestamp datasets where effective_fps differs from nominal fps
-    effective_fps = decode_fps if decode_fps is not None else metadata.average_fps
-
-    # convert timestamps to frame indices using effective_fps
-    frame_indices = [round(ts * effective_fps) for ts in timestamps]
-
-    # 边界保护：限制帧索引不超过视频最大帧数
-    # perf_counter 时间戳可能有抖动导致 timestamp 超出视频时长
-    max_frame_index = metadata.num_frames - 1
-    frame_indices = [min(idx, max_frame_index) for idx in frame_indices]
+    # convert timestamps to frame indices
+    frame_indices = [round(ts * average_fps) for ts in timestamps]
 
     # retrieve frames based on indices
     frames_batch = decoder.get_frames_at(indices=frame_indices)
@@ -236,31 +215,20 @@ def decode_video_frames_torchcodec(
     query_ts = torch.tensor(timestamps)
     loaded_ts = torch.tensor(loaded_ts)
 
-    # Tolerance check: compare query timestamp with loaded frame pts
-    # For ideal timestamp datasets (decode_fps=None), pts should match timestamp
-    # For actual timestamp datasets (decode_fps provided), pts != timestamp (expected)
-    #   - frame_index is correctly calculated using decode_fps
-    #   - video pts is based on encoding fps (e.g., 30)
-    #   - pts and timestamp difference is expected, so skip the check
-    if decode_fps is None:
-        # Ideal timestamp: check pts matches timestamp
-        dist = torch.cdist(query_ts[:, None], loaded_ts[:, None], p=1)
-        min_, argmin_ = dist.min(1)
+    # compute distances between each query timestamp and loaded timestamps
+    dist = torch.cdist(query_ts[:, None], loaded_ts[:, None], p=1)
+    min_, argmin_ = dist.min(1)
 
-        is_within_tol = min_ < tolerance_s
-        assert is_within_tol.all(), (
-            f"One or several query timestamps unexpectedly violate the tolerance ({min_[~is_within_tol]} > {tolerance_s=})."
-            "It means that the closest frame that can be loaded from the video is too far away in time."
-            "This might be due to synchronization issues with timestamps during data collection."
-            "To be safe, we advise to ignore this item during training."
-            f"\nqueried timestamps: {query_ts}"
-            f"\nloaded timestamps: {loaded_ts}"
-            f"\nvideo: {video_path}"
-        )
-    else:
-        # Actual timestamp: frame_index is correct, pts mismatch is expected
-        # Just get the frames without pts checking
-        argmin_ = torch.arange(len(loaded_frames))
+    is_within_tol = min_ < tolerance_s
+    assert is_within_tol.all(), (
+        f"One or several query timestamps unexpectedly violate the tolerance ({min_[~is_within_tol]} > {tolerance_s=})."
+        "It means that the closest frame that can be loaded from the video is too far away in time."
+        "This might be due to synchronization issues with timestamps during data collection."
+        "To be safe, we advise to ignore this item during training."
+        f"\nqueried timestamps: {query_ts}"
+        f"\nloaded timestamps: {loaded_ts}"
+        f"\nvideo: {video_path}"
+    )
 
     # get closest frames to the query timestamps
     closest_frames = torch.stack([loaded_frames[idx] for idx in argmin_])
@@ -486,65 +454,246 @@ def get_image_pixel_channels(image: Image):
     else:
         raise ValueError("Unknown format")
 
-
-class VideoEncodingManager:
+def encode_video_frames_gst(
+    imgs_dir: Path | str,
+    video_path: Path | str,
+    fps: int,
+    vcodec: str = "libsvtav1",
+    pix_fmt: str = "yuv420p",
+    g: int | None = 2,
+    crf: int | None = 30,
+    fast_decode: int = 0,
+    # 注意: 为了移除此函数对 `av` 库的依赖，
+    # 原有的默认值 `av.logging.ERROR` 已被其对应的整数值 32 替代。
+    log_level: int | None = 32,
+    overwrite: bool = False,
+) -> None:
     """
-    Context manager that ensures proper video encoding and data cleanup even if exceptions occur.
+    使用 GStreamer 管道将一系列图像编码为视频文件。
 
-    This manager handles:
-    - Batch encoding for any remaining episodes when recording interrupted
-    - Cleaning up temporary image files from interrupted episodes
-    - Removing empty image directories
+    此实现使用 `gst-launch-1.0` 命令行工具执行硬件加速的 H.264 编码，
+    旨在替代原有的基于 PyAV 的实现，以解决库不兼容的问题。
 
-    Args:
-        dataset: The LeRobotDataset instance
+    关于参数的说明:
+    - `vcodec`, `pix_fmt`, `crf`, `fast_decode`, `log_level` 等参数未在
+      GStreamer 管道中使用，将被忽略。如果它们被设置为非默认值，将发出警告。
+    - 视频编码器硬编码为 `nvv4l2h264enc` (NVIDIA H.264 硬件编码器)。
+    - 视频质量由固定的码率 (250 kbps) 控制。
+    - `g` (GOP 大小) 参数被映射到编码器的 `idrinterval` 属性 (关键帧间隔)。
     """
+    video_path = Path(video_path)
+    imgs_dir = Path(imgs_dir)
 
-    def __init__(self, dataset):
-        self.dataset = dataset
+    # 1. 执行前检查
+    if video_path.exists() and not overwrite:
+        raise FileExistsError(f"输出文件 {video_path} 已存在。请使用 overwrite=True 进行覆盖。")
+    # 确保输出目录存在
+    video_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def __enter__(self):
-        return self
+    # 查找输入图片文件，用于获取尺寸
+    input_files = sorted(glob.glob(str(imgs_dir / "frame_[0-9][0-9][0-9][0-9][0-9][0-9].jpeg")))
+    if not input_files:
+        raise FileNotFoundError(f"在目录 {imgs_dir} 中未找到匹配 'frame_xxxxxx.png' 格式的图片。")
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        # Handle any remaining episodes that haven't been batch encoded
-        if self.dataset.episodes_since_last_encoding > 0:
-            if exc_type is not None:
-                logging.info("Exception occurred. Encoding remaining episodes before exit...")
-            else:
-                logging.info("Recording stopped. Encoding remaining episodes...")
+    # 2. 从第一张图片获取视频帧的宽度和高度
+    with Image.open(input_files[0]) as img:
+        width, height = img.size
 
-            start_ep = self.dataset.num_episodes - self.dataset.episodes_since_last_encoding
-            end_ep = self.dataset.num_episodes
-            logging.info(
-                f"Encoding remaining {self.dataset.episodes_since_last_encoding} episodes, "
-                f"from episode {start_ep} to {end_ep - 1}"
-            )
-            self.dataset.batch_encode_videos(start_ep, end_ep)
+    # 3. 对被忽略的参数发出警告
+    if vcodec not in ["h264", "nvv4l2h264enc", "h264_v4l2m2m"]:
+        warnings.warn(f"参数 'vcodec' (值为: '{vcodec}') 被忽略。GStreamer 管道将使用 'nvv4l2h264enc'。")
+    if pix_fmt not in ["yuv420p", "nv12"]:
+        warnings.warn(f"参数 'pix_fmt' (值为: '{pix_fmt}') 被忽略。GStreamer 管道使用 NV12 格式，兼容 yuv420p。")
+    if crf is not None and crf != 30:
+        warnings.warn("参数 'crf' 被忽略。GStreamer 管道使用固定的码率进行质量控制。")
+    if fast_decode != 0:
+        warnings.warn("参数 'fast_decode' 被忽略，因为它不适用于此 GStreamer 管道。")
+    if log_level is not None:
+        warnings.warn("参数 'log_level' 被忽略。GStreamer 的日志级别由 GST_DEBUG 等环境变量控制。")
 
-        # Clean up episode images if recording was interrupted
-        if exc_type is not None:
-            interrupted_episode_index = self.dataset.num_episodes
-            for key in self.dataset.meta.video_keys:
-                img_dir = self.dataset._get_image_file_path(
-                    episode_index=interrupted_episode_index, image_key=key, frame_index=0
-                ).parent
-                if img_dir.exists():
-                    logging.debug(
-                        f"Cleaning up interrupted episode images for episode {interrupted_episode_index}, camera {key}"
-                    )
-                    shutil.rmtree(img_dir)
+    # 4. 构建 GStreamer 命令行字符串
+    location = os.path.join(str(imgs_dir), "frame_%06d.jpeg")
+    
+    # 根据用户提供的命令设置码率
+    bitrate = 5000000  # 5000 kbps
 
-        # Clean up any remaining images directory if it's empty
-        img_dir = self.dataset.root / "images"
-        # Check for any remaining PNG files
-        png_files = list(img_dir.rglob("*.png"))
-        if len(png_files) == 0:
-            # Only remove the images directory if no PNG files remain
-            if img_dir.exists():
-                shutil.rmtree(img_dir)
-                logging.debug("Cleaned up empty images directory")
-        else:
-            logging.debug(f"Images directory is not empty, containing {len(png_files)} PNG files")
+    encoder_opts = [f"bitrate={bitrate}"]
+    if g is not None:
+        # 将 GOP size (g) 映射到关键帧间隔 (idrinterval)
+        encoder_opts.append(f"idrinterval={g}")
+    encoder_opts_str = " ".join(encoder_opts)
 
-        return False  # Don't suppress the original exception
+    # 为了清晰和安全，使用 f-string 构建命令，并对可能包含空格的路径和参数进行引用
+    #command = (
+    #    f'gst-launch-1.0 -e '
+    #    f'multifilesrc location="{location}" ! '
+    #    f'"image/png,width={width},height={height},framerate={fps}/1" ! '
+    #    f'pngdec ! '
+    #    f'videoconvert ! '
+    #    f'nvvidconv ! '
+    #    f'"video/x-raw(memory:NVMM),format=NV12" ! '
+    #    f'nvv4l2h264enc {encoder_opts_str} ! '
+    #    f'h264parse ! '
+    #    f'mp4mux ! '
+    #    f'filesink location="{str(video_path)}"'
+    #)
+
+    #command = (
+    #f'gst-launch-1.0 -e '
+    #f'multifilesrc location="{location}" ! '  # 确保这里的 location 指向的是 JPEG 文件, 例如 "image_%04d.jpg"
+    #f'"image/jpeg,width={width},height={height},framerate={fps}/1" ! '  # 关键修改 1: 从 image/png 改为 image/jpeg
+    #f'jpegdec ! '  # 关键修改 2: 从 pngdec 改为 jpegdec
+    #f'videoconvert ! '
+    #f'nvvidconv ! '
+    #f'"video/x-raw(memory:NVMM),format=NV12 ! '
+    #f'nvv4l2h264enc {encoder_opts_str} ! '
+    #f'h264parse ! '
+    #f'mp4mux ! '
+    #f'filesink location="{str(video_path)}"'
+    #)    
+
+    command = (
+        f'gst-launch-1.0 -e '
+        f'multifilesrc location="{location}" ! '
+        f'"image/jpeg,width={width},height={height},framerate={fps}/1" ! '
+        # 1. 使用硬件JPEG解码器
+        f'nvjpegdec ! ' 
+        # 2. 直接连接到硬件编码器。
+        #    nvjpegdec 直接输出到 NVMM 内存，nvv4l2h264enc 可以直接消费 NVMM 内存。
+        #    因此，中间的 videoconvert 和 nvvidconv 可以被移除，实现了零拷贝。
+        f'nvv4l2h264enc {encoder_opts_str} ! '
+        f'h264parse ! '
+        f'mp4mux ! '
+        f'filesink location="{str(video_path)}"'
+    )
+    # 5. 执行 GStreamer 命令
+    logging.info(f"正在执行 GStreamer 命令:\n{command}")
+    try:
+        subprocess.run(
+            command, shell=True, check=True, capture_output=True, text=True, encoding='utf-8'
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "命令 'gst-launch-1.0' 未找到。"
+            "请确保 GStreamer 已正确安装并已添加到系统的 PATH 环境变量中。"
+        )
+    except subprocess.CalledProcessError as e:
+        error_message = (
+            f"GStreamer 管道执行失败，退出码: {e.returncode}。\n"
+            f"执行的命令: {e.cmd}\n\n"
+            f"--- STDOUT ---\n{e.stdout}\n\n"
+            f"--- STDERR ---\n{e.stderr}"
+        )
+        raise RuntimeError(error_message) from e
+    
+    # 6. 最终检查，确保视频文件已生成且不为空
+    if not video_path.exists() or video_path.stat().st_size == 0:
+        raise OSError(f"视频编码失败。输出文件未创建或为空: {video_path}")
+    
+def encode_video_frames_gst_png(
+    imgs_dir: Path | str,
+    video_path: Path | str,
+    fps: int,
+    vcodec: str = "libsvtav1",
+    pix_fmt: str = "yuv420p",
+    g: int | None = 2,
+    crf: int | None = 30,
+    fast_decode: int = 0,
+    # 注意: 为了移除此函数对 `av` 库的依赖，
+    # 原有的默认值 `av.logging.ERROR` 已被其对应的整数值 32 替代。
+    log_level: int | None = 32,
+    overwrite: bool = False,
+) -> None:
+    """
+    使用 GStreamer 管道将一系列图像编码为视频文件。
+
+    此实现使用 `gst-launch-1.0` 命令行工具执行硬件加速的 H.264 编码，
+    旨在替代原有的基于 PyAV 的实现，以解决库不兼容的问题。
+
+    关于参数的说明:
+    - `vcodec`, `pix_fmt`, `crf`, `fast_decode`, `log_level` 等参数未在
+      GStreamer 管道中使用，将被忽略。如果它们被设置为非默认值，将发出警告。
+    - 视频编码器硬编码为 `nvv4l2h264enc` (NVIDIA H.264 硬件编码器)。
+    - 视频质量由固定的码率 (250 kbps) 控制。
+    - `g` (GOP 大小) 参数被映射到编码器的 `idrinterval` 属性 (关键帧间隔)。
+    """
+    video_path = Path(video_path)
+    imgs_dir = Path(imgs_dir)
+
+    # 1. 执行前检查
+    if video_path.exists() and not overwrite:
+        raise FileExistsError(f"输出文件 {video_path} 已存在。请使用 overwrite=True 进行覆盖。")
+    # 确保输出目录存在
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 查找输入图片文件，用于获取尺寸
+    input_files = sorted(glob.glob(str(imgs_dir / "frame_[0-9][0-9][0-9][0-9][0-9][0-9].png")))
+    if not input_files:
+        raise FileNotFoundError(f"在目录 {imgs_dir} 中未找到匹配 'frame_xxxxxx.png' 格式的图片。")
+
+    # 2. 从第一张图片获取视频帧的宽度和高度
+    with Image.open(input_files[0]) as img:
+        width, height = img.size
+
+    # 3. 对被忽略的参数发出警告
+    if vcodec not in ["h264", "nvv4l2h264enc", "h264_v4l2m2m"]:
+        warnings.warn(f"参数 'vcodec' (值为: '{vcodec}') 被忽略。GStreamer 管道将使用 'nvv4l2h264enc'。")
+    if pix_fmt not in ["yuv420p", "nv12"]:
+        warnings.warn(f"参数 'pix_fmt' (值为: '{pix_fmt}') 被忽略。GStreamer 管道使用 NV12 格式，兼容 yuv420p。")
+    if crf is not None and crf != 30:
+        warnings.warn("参数 'crf' 被忽略。GStreamer 管道使用固定的码率进行质量控制。")
+    if fast_decode != 0:
+        warnings.warn("参数 'fast_decode' 被忽略，因为它不适用于此 GStreamer 管道。")
+    if log_level is not None:
+        warnings.warn("参数 'log_level' 被忽略。GStreamer 的日志级别由 GST_DEBUG 等环境变量控制。")
+
+    # 4. 构建 GStreamer 命令行字符串
+    location = os.path.join(str(imgs_dir), "frame_%06d.png")
+    
+    # 根据用户提供的命令设置码率
+    bitrate = 5000000  # 5000 kbps
+
+    encoder_opts = [f"bitrate={bitrate}"]
+    if g is not None:
+        # 将 GOP size (g) 映射到关键帧间隔 (idrinterval)
+        encoder_opts.append(f"idrinterval={g}")
+    encoder_opts_str = " ".join(encoder_opts)
+
+    ##为了清晰和安全，使用 f-string 构建命令，并对可能包含空格的路径和参数进行引用
+    command = (
+        f'gst-launch-1.0 -e '
+        f'multifilesrc location="{location}" ! '
+        f'"image/png,width={width},height={height},framerate={fps}/1" ! '
+        f'pngdec ! '
+        f'videoconvert ! '
+        f'nvvidconv ! '
+        f'"video/x-raw(memory:NVMM),format=NV12" ! '
+        f'nvv4l2h264enc {encoder_opts_str} ! '
+        f'h264parse ! '
+        f'mp4mux ! '
+        f'filesink location="{str(video_path)}"'
+    )
+
+    # 5. 执行 GStreamer 命令
+    logging.info(f"正在执行 GStreamer 命令:\n{command}")
+    try:
+        subprocess.run(
+            command, shell=True, check=True, capture_output=True, text=True, encoding='utf-8'
+        )
+    except FileNotFoundError:
+        raise RuntimeError(
+            "命令 'gst-launch-1.0' 未找到。"
+            "请确保 GStreamer 已正确安装并已添加到系统的 PATH 环境变量中。"
+        )
+    except subprocess.CalledProcessError as e:
+        error_message = (
+            f"GStreamer 管道执行失败，退出码: {e.returncode}。\n"
+            f"执行的命令: {e.cmd}\n\n"
+            f"--- STDOUT ---\n{e.stdout}\n\n"
+            f"--- STDERR ---\n{e.stderr}"
+        )
+        raise RuntimeError(error_message) from e
+    
+    # 6. 最终检查，确保视频文件已生成且不为空
+    if not video_path.exists() or video_path.stat().st_size == 0:
+        raise OSError(f"视频编码失败。输出文件未创建或为空: {video_path}")

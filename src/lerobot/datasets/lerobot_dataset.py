@@ -16,8 +16,11 @@
 import contextlib
 import logging
 import shutil
-from collections.abc import Callable
 from pathlib import Path
+from typing import Callable
+from typing import Dict
+import concurrent.futures
+import os
 
 import datasets
 import numpy as np
@@ -36,6 +39,7 @@ from lerobot.datasets.image_writer import AsyncImageWriter, write_image
 from lerobot.datasets.utils import (
     DEFAULT_FEATURES,
     DEFAULT_IMAGE_PATH,
+    DEFAULT_IMAGE_PATH_GST,
     INFO_PATH,
     TASKS_PATH,
     _validate_feature_names,
@@ -71,12 +75,8 @@ from lerobot.datasets.video_utils import (
     encode_video_frames,
     get_safe_default_codec,
     get_video_info,
+    encode_video_frames_gst,
 )
-
-from lerobot.datasets.customer_transforms import CustomerImageTransforms
-from PIL import Image
-import torchvision.transforms as transforms
-
 
 CODEBASE_VERSION = "v2.1"
 
@@ -265,6 +265,8 @@ class LeRobotDatasetMetadata:
 
         self.info["splits"] = {"train": f"0:{self.info['total_episodes']}"}
         self.info["total_videos"] += len(self.video_keys)
+        if len(self.video_keys) > 0:
+            self.update_video_info()
 
         write_info(self.info, self.root)
 
@@ -345,10 +347,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
         force_cache_sync: bool = False,
         download_videos: bool = True,
         video_backend: str | None = None,
-        batch_encoding_size: int = 1,
-        customer_transforms: bool = False,
-        customer_transforms_cfg: dict = {},
-        only_head_transforms: bool = False,
     ):
         """
         2 modes are available for instantiating this class, depending on 2 different use cases:
@@ -441,7 +439,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 multiples of 1/fps. Defaults to 1e-4.
             revision (str, optional): An optional Git revision id which can be a branch name, a tag, or a
                 commit hash. Defaults to current codebase version tag.
-            force_cache_sync (bool, optional): Flag to sync and refresh local files first. If True and files
+            sync_cache_first (bool, optional): Flag to sync and refresh local files first. If True and files
                 are already present in the local cache, this will be faster. However, files loaded might not
                 be in sync with the version on the hub, especially if you specified 'revision'. Defaults to
                 False.
@@ -450,8 +448,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 True.
             video_backend (str | None, optional): Video backend to use for decoding videos. Defaults to torchcodec when available int the platform; otherwise, defaults to 'pyav'.
                 You can also use the 'pyav' decoder used by Torchvision, which used to be the default option, or 'video_reader' which is another decoder of Torchvision.
-            batch_encoding_size (int, optional): Number of episodes to accumulate before batch encoding videos.
-                Set to 1 for immediate encoding (default), or higher for batched encoding. Defaults to 1.
         """
         super().__init__()
         self.repo_id = repo_id
@@ -463,21 +459,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.revision = revision if revision else CODEBASE_VERSION
         self.video_backend = video_backend if video_backend else get_safe_default_codec()
         self.delta_indices = None
-        self.batch_encoding_size = batch_encoding_size
-        self.episodes_since_last_encoding = 0
-        self.customer_transforms = customer_transforms
-        self.only_head_transforms = only_head_transforms
 
         # Unused attributes
         self.image_writer = None
         self.episode_buffer = None
+        self.num_parallel_workers = 1
+        self.gst_encoding = os.environ.get("GST_ENCODING", "0").lower() in ["1", "true", "yes"]
 
         self.root.mkdir(exist_ok=True, parents=True)
-        
-        # customer transformer
-        if self.customer_transforms:
-            self.customer_transforms = CustomerImageTransforms(customer_transforms_cfg)
-            self.transform = transforms.ToTensor()
 
         # Load metadata
         self.meta = LeRobotDatasetMetadata(
@@ -510,10 +499,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
         if self.delta_timestamps is not None:
             check_delta_timestamps(self.delta_timestamps, self.fps, self.tolerance_s)
             self.delta_indices = get_delta_indices(self.delta_timestamps, self.fps)
-
-        # 计算 episode 级别的 decode_fps（用于视频解码）
-        # 自动检测是理想时间戳还是真实时间戳
-        self.episode_decode_fps = self._compute_episode_decode_fps(timestamps)
 
     def push_to_hub(
         self,
@@ -662,57 +647,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
         else:
             return get_hf_features_from_features(self.features)
 
-    def _compute_episode_decode_fps(self, timestamps: np.ndarray) -> dict[int, float]:
-        """计算每个 episode 的解码帧率。
-
-        自动检测是理想时间戳还是真实时间戳：
-        - 理想时间戳：timestamp 最大值 ≈ frame_count / fps → 使用 fps
-        - 真实时间戳：timestamp 最大值与理想值偏差大 → 使用 frame_count / max_timestamp
-
-        Args:
-            timestamps: 所有帧的 timestamp 数组
-
-        Returns:
-            dict[int, float]: episode_index 到 decode_fps 的映射
-        """
-        episode_decode_fps = {}
-        timestamps_tensor = torch.tensor(timestamps)
-
-        for ep_idx in range(self.num_episodes):
-            ep_start = self.episode_data_index["from"][ep_idx].item()
-            ep_end = self.episode_data_index["to"][ep_idx].item()
-            frame_count = ep_end - ep_start
-
-            # 获取该 episode 的最大 timestamp
-            ep_timestamps = timestamps_tensor[ep_start:ep_end]
-            max_timestamp = ep_timestamps.max().item()
-
-            # 计算理想最大 timestamp
-            ideal_max_timestamp = frame_count / self.fps
-
-            # 计算偏差
-            deviation = abs(max_timestamp - ideal_max_timestamp)
-
-            # 判断阈值：如果偏差大于 0.5秒，认为是真实时间戳
-            # 对于真实时间戳，偏差通常在几秒量级（如60秒录制实际只有43秒帧数）
-            timestamp_threshold = 0.5  # 秒
-
-            if deviation > timestamp_threshold:
-                # 真实时间戳：使用实际帧率
-                decode_fps = frame_count / max_timestamp
-                logging.info(
-                    f"Episode {ep_idx}: Detected actual timestamps. "
-                    f"Using decode_fps={decode_fps:.2f} (frames={frame_count}, max_ts={max_timestamp:.2f}s)"
-                )
-            else:
-                # 理想时间戳：使用配置的 fps
-                decode_fps = self.fps
-                # 不打印日志，避免过多输出
-
-            episode_decode_fps[ep_idx] = decode_fps
-
-        return episode_decode_fps
-
     def _get_query_indices(self, idx: int, ep_idx: int) -> tuple[dict[str, list[int | bool]]]:
         ep_start = self.episode_data_index["from"][ep_idx]
         ep_end = self.episode_data_index["to"][ep_idx]
@@ -757,14 +691,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
         the main process and a subprocess fails to access it.
         """
         item = {}
-        # 获取该 episode 的 decode_fps（自动检测的理想/真实时间戳）
-        decode_fps = self.episode_decode_fps.get(ep_idx, self.fps)
-
         for vid_key, query_ts in query_timestamps.items():
             video_path = self.root / self.meta.get_video_file_path(ep_idx, vid_key)
-            frames = decode_video_frames(
-                video_path, query_ts, self.tolerance_s, self.video_backend, decode_fps
-            )
+            frames = decode_video_frames(video_path, query_ts, self.tolerance_s, self.video_backend)
             item[vid_key] = frames.squeeze(0)
 
         return item
@@ -800,40 +729,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
             for cam in image_keys:
                 item[cam] = self.image_transforms(item[cam])
 
-        if self.customer_transforms:
-            # print("customer_transfomers")
-            image_keys = self.meta.camera_keys
-            for cam in image_keys:
-                if self.only_head_transforms:
-                    if 'head_cam' not in cam:
-                        continue
-                # import pdb; pdb.set_trace()
-                if len(item[cam].shape) == 3:
-                    cam_img = np.transpose(item[cam].cpu().numpy(),(1,2,0))*255   #c h w -> h w c 去归一化（在_query_videos decoder 中/255归一化了）
-                    cam_img = Image.fromarray(np.uint8(cam_img)) 
-                    # cam_img.save("orcam"+".jpg")
-                    cam_img = self.customer_transforms(cam_img)
-                    # cam_img.save("cam"+".jpg")
-                    cam_img = self.transform(cam_img)   # h w c -> c h w 并自动归一化 transforms.ToTensor() 自动将像素值从 [0, 255] 缩放到 [0.0, 1.0]（浮点类型）
-                else: # len(shape) == 4
-                    cam_img = np.transpose(item[cam].cpu().numpy(),(0,2,3,1))*255 #b c h w -> b h w c
-                    all_img = []
-                    for img in cam_img:
-                        img = Image.fromarray(np.uint8(img)) 
-                        # cam_img.save("orcam"+".jpg")
-                        img = self.customer_transforms(img)
-                        # cam_img.save("cam"+".jpg")
-                        img = self.transform(img)   # h w c -> c h w 并自动归一化 transforms.ToTensor() 自动将像素值从 [0, 255] 缩放到 [0.0, 1.0]（浮点类型）
-                        all_img.append(img)
-                    cam_img = torch.stack(all_img, dim=0) #合并两个tensor
-                
-                item[cam] = cam_img
-                if self.customer_transforms.random_erase != None:
-                    # 对多张图暂未支持
-                    item[cam] = self.customer_transforms.random_erase(cam_img)
-                    # save_img = np.transpose(item[cam].cpu().numpy(),(1,2,0))*255
-                    # save_img= Image.fromarray(np.uint8(save_img)) 
-                    # save_img.save("savam"+".jpg")
         # Add task as a string
         task_idx = item["task_index"].item()
         item["task"] = self.meta.tasks[task_idx]
@@ -865,6 +760,10 @@ class LeRobotDataset(torch.utils.data.Dataset):
         fpath = DEFAULT_IMAGE_PATH.format(
             image_key=image_key, episode_index=episode_index, frame_index=frame_index
         )
+        if self.gst_encoding:
+            fpath = DEFAULT_IMAGE_PATH_GST.format(
+                image_key=image_key, episode_index=episode_index, frame_index=frame_index
+            )
         return self.root / fpath
 
     def _save_image(self, image: torch.Tensor | np.ndarray | PIL.Image.Image, fpath: Path) -> None:
@@ -925,10 +824,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
         """
         This will save to disk the current episode in self.episode_buffer.
 
-        Video encoding is handled automatically based on batch_encoding_size:
-        - If batch_encoding_size == 1: Videos are encoded immediately after each episode
-        - If batch_encoding_size > 1: Videos are encoded in batches.
-
         Args:
             episode_data (dict | None, optional): Dict containing the episode data to save. If None, this will
                 save the current episode in self.episode_buffer, which is filled with 'add_frame'. Defaults to
@@ -936,8 +831,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
         """
         if not episode_data:
             episode_buffer = self.episode_buffer
-        else:
-            episode_buffer = episode_data
 
         validate_episode_buffer(episode_buffer, self.meta.total_episodes, self.features)
 
@@ -970,28 +863,17 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self._save_episode_table(episode_buffer, episode_index)
         ep_stats = compute_episode_stats(episode_buffer, self.features)
 
-        has_video_keys = len(self.meta.video_keys) > 0
-        use_batched_encoding = self.batch_encoding_size > 1
+        if len(self.meta.video_keys) > 0:
+            if not self.gst_encoding:
+                video_paths = self.encode_episode_videos(episode_index)
+            else:
+                video_paths = self.encode_episode_videos_gst(episode_index)
+            for key in self.meta.video_keys:
+                episode_buffer[key] = video_paths[key]
 
-        if has_video_keys and not use_batched_encoding:
-            self.encode_episode_videos(episode_index)
-
-        # `meta.save_episode` should be executed after encoding the videos
+        # `meta.save_episode` be executed after encoding the videos
         self.meta.save_episode(episode_index, episode_length, episode_tasks, ep_stats)
 
-        # Check if we should trigger batch encoding
-        if has_video_keys and use_batched_encoding:
-            self.episodes_since_last_encoding += 1
-            if self.episodes_since_last_encoding == self.batch_encoding_size:
-                start_ep = self.num_episodes - self.batch_encoding_size
-                end_ep = self.num_episodes
-                logging.info(
-                    f"Batch encoding {self.batch_encoding_size} videos for episodes {start_ep} to {end_ep - 1}"
-                )
-                self.batch_encode_videos(start_ep, end_ep)
-                self.episodes_since_last_encoding = 0
-
-        # Episode data index and timestamp checking
         ep_data_index = get_episode_data_index(self.meta.episodes, [episode_index])
         ep_data_index_np = {k: t.numpy() for k, t in ep_data_index.items()}
         check_timestamps_sync(
@@ -1002,13 +884,16 @@ class LeRobotDataset(torch.utils.data.Dataset):
             self.tolerance_s,
         )
 
-        # Verify that we have one parquet file per episode and the number of video files matches the number of encoded episodes
+        video_files = list(self.root.rglob("*.mp4"))
+        assert len(video_files) == self.num_episodes * len(self.meta.video_keys)
+
         parquet_files = list(self.root.rglob("*.parquet"))
         assert len(parquet_files) == self.num_episodes
-        video_files = list(self.root.rglob("*.mp4"))
-        assert len(video_files) == (self.num_episodes - self.episodes_since_last_encoding) * len(
-            self.meta.video_keys
-        )
+
+        # delete images
+        img_dir = self.root / "images"
+        if img_dir.is_dir():
+            shutil.rmtree(self.root / "images")
 
         if not episode_data:  # Reset the buffer
             self.episode_buffer = self.create_episode_buffer()
@@ -1025,8 +910,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
 
     def clear_episode_buffer(self) -> None:
         episode_index = self.episode_buffer["episode_index"]
-
-        # Clean up image files for the current episode buffer
         if self.image_writer is not None:
             for cam_key in self.meta.camera_keys:
                 img_dir = self._get_image_file_path(
@@ -1063,22 +946,25 @@ class LeRobotDataset(torch.utils.data.Dataset):
         if self.image_writer is not None:
             self.image_writer.wait_until_done()
 
-    def encode_episode_videos(self, episode_index: int) -> None:
+    def encode_videos(self) -> None:
         """
         Use ffmpeg to convert frames stored as png into mp4 videos.
         Note: `encode_video_frames` is a blocking call. Making it asynchronous shouldn't speedup encoding,
         since video encoding with ffmpeg is already using multithreading.
-
-        This method handles video encoding steps:
-        - Video encoding via ffmpeg
-        - Video info updating in metadata
-        - Raw image cleanup
-
-        Args:
-            episode_index (int): Index of the episode to encode.
         """
+        for ep_idx in range(self.meta.total_episodes):
+            self.encode_episode_videos(ep_idx)
+
+    def encode_episode_videos(self, episode_index: int) -> dict:
+        """
+        Use ffmpeg to convert frames stored as png into mp4 videos.
+        Note: `encode_video_frames` is a blocking call. Making it asynchronous shouldn't speedup encoding,
+        since video encoding with ffmpeg is already using multithreading.
+        """
+        video_paths = {}
         for key in self.meta.video_keys:
             video_path = self.root / self.meta.get_video_file_path(episode_index, key)
+            video_paths[key] = str(video_path)
             if video_path.is_file():
                 # Skip if video is already encoded. Could be the case when resuming data recording.
                 continue
@@ -1086,33 +972,73 @@ class LeRobotDataset(torch.utils.data.Dataset):
                 episode_index=episode_index, image_key=key, frame_index=0
             ).parent
             encode_video_frames(img_dir, video_path, self.fps, overwrite=True)
-            shutil.rmtree(img_dir)
 
-        # Update video info (only needed when first episode is encoded since it reads from episode 0)
-        if len(self.meta.video_keys) > 0 and episode_index == 0:
-            self.meta.update_video_info()
-            write_info(self.meta.info, self.meta.root)  # ensure video info always written properly
+        return video_paths
 
-    def batch_encode_videos(self, start_episode: int = 0, end_episode: int | None = None) -> None:
+    def encode_episode_videos_gst(self, episode_index: int) -> Dict[str, str]:
         """
-        Batch encode videos for multiple episodes.
-
-        Args:
-            start_episode: Starting episode index (inclusive)
-            end_episode: Ending episode index (exclusive). If None, encodes all episodes from start_episode
+        Converts frames (PNGs) into MP4 videos using a GStreamer-based hardware encoder.
+        
+        This implementation runs encoding tasks for different camera keys (e.g., 'camera_main', 
+        'camera_wrist') in parallel using a process pool, significantly speeding up the 
+        process on multi-encoder hardware like the Jetson Orin.
         """
-        if end_episode is None:
-            end_episode = self.meta.total_episodes
+        tasks_to_run = []
+        video_paths = {}
 
-        logging.info(f"Starting batch video encoding for episodes {start_episode} to {end_episode - 1}")
+        # Step 1: Gather all encoding tasks that need to be performed.
+        for key in self.meta.video_keys:
+            video_path = self.root / self.meta.get_video_file_path(episode_index, key)
+            video_paths[key] = str(video_path)
 
-        # Encode all episodes with cleanup enabled for individual episodes
-        for ep_idx in range(start_episode, end_episode):
-            logging.info(f"Encoding videos for episode {ep_idx}")
-            self.encode_episode_videos(ep_idx)
+            # Skip if the video file already exists and is valid.
+            if video_path.is_file() and video_path.stat().st_size > 0:
+                print(f"Skipping existing video: {video_path}")
+                continue
 
-        logging.info("Batch video encoding completed")
+            # This is a task that needs to be run.
+            img_dir = self._get_image_file_path(
+                episode_index=episode_index, image_key=key, frame_index=0
+            ).parent
+            
+            # Create a dictionary holding all arguments for the encoding function.
+            task_info = {
+                "imgs_dir": img_dir,
+                "video_path": video_path,
+                "fps": self.fps,
+                "overwrite": True,  # Overwrite if file exists but is empty/corrupt
+            }
+            tasks_to_run.append(task_info)
+        
+        # If there are no tasks to run, we can exit early.
+        if not tasks_to_run:
+            return video_paths
 
+        # Step 2: Execute the gathered tasks in parallel using a process pool.
+        print(f"Starting parallel encoding for {len(tasks_to_run)} videos with {self.num_parallel_workers} workers...")
+        with concurrent.futures.ProcessPoolExecutor(max_workers=self.num_parallel_workers) as executor:
+            # Submit each task to the pool. The `**task` syntax unpacks the dictionary
+            # into keyword arguments for the encode_video_frames_gst function.
+            future_to_video = {
+                executor.submit(encode_video_frames_gst, **task): task["video_path"]
+                for task in tasks_to_run
+            }
+
+            # Wait for all futures to complete and handle any exceptions.
+            for future in concurrent.futures.as_completed(future_to_video):
+                video_path = future_to_video[future]
+                try:
+                    # future.result() will re-raise any exception that occurred in the child process.
+                    future.result(timeout=300)
+                    print(f"✅ Successfully encoded: {video_path}")
+                except Exception as exc:
+                    print(f"❌ Failed to encode {video_path}: {exc}")
+                    # Re-raise the exception to halt the entire process, ensuring
+                    # data integrity. If one video fails, the episode is incomplete.
+                    raise RuntimeError(f"Video encoding failed for {video_path}") from exc
+
+        # The function's return value remains unchanged.
+        return video_paths
     @classmethod
     def create(
         cls,
@@ -1126,7 +1052,6 @@ class LeRobotDataset(torch.utils.data.Dataset):
         image_writer_processes: int = 0,
         image_writer_threads: int = 0,
         video_backend: str | None = None,
-        batch_encoding_size: int = 1,
     ) -> "LeRobotDataset":
         """Create a LeRobot Dataset from scratch in order to record data."""
         obj = cls.__new__(cls)
@@ -1143,15 +1068,14 @@ class LeRobotDataset(torch.utils.data.Dataset):
         obj.revision = None
         obj.tolerance_s = tolerance_s
         obj.image_writer = None
-        obj.batch_encoding_size = batch_encoding_size
-        obj.episodes_since_last_encoding = 0
 
         if image_writer_processes or image_writer_threads:
             obj.start_image_writer(image_writer_processes, image_writer_threads)
 
         # TODO(aliberts, rcadene, alexander-soare): Merge this with OnlineBuffer/DataBuffer
         obj.episode_buffer = obj.create_episode_buffer()
-
+        obj.num_parallel_workers = 1
+        obj.gst_encoding = os.environ.get("GST_ENCODING", "0").lower() in ["1", "true", "yes"]
         obj.episodes = None
         obj.hf_dataset = obj.create_hf_dataset()
         obj.image_transforms = None
