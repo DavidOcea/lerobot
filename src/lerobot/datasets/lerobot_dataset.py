@@ -893,7 +893,7 @@ class LeRobotDataset(torch.utils.data.Dataset):
         # delete images
         img_dir = self.root / "images"
         if img_dir.is_dir():
-            shutil.rmtree(self.root / "images")
+            shutil.rmtree(self.root / "images", ignore_errors=True)
 
         if not episode_data:  # Reset the buffer
             self.episode_buffer = self.create_episode_buffer()
@@ -916,7 +916,8 @@ class LeRobotDataset(torch.utils.data.Dataset):
                     episode_index=episode_index, image_key=cam_key, frame_index=0
                 ).parent
                 if img_dir.is_dir():
-                    shutil.rmtree(img_dir)
+                    # 使用 ignore_errors=True 强制删除，避免 GST 编码或线程未完成导致的删除失败
+                    shutil.rmtree(img_dir, ignore_errors=True)
 
         # Reset the buffer
         self.episode_buffer = self.create_episode_buffer()
