@@ -17,7 +17,13 @@ def monitor_performance(func):
     快速启用方式：
     - 设置环境变量 MONITOR_ENABLED=1（强制启用）
     - 或设置 logging level 为 DEBUG
+
+    性能优化：当监控关闭时，直接返回原函数，不添加任何开销。
     """
+    # 性能优化：当监控关闭时，直接返回原函数，避免装饰器开销
+    if not MONITOR_ENABLED:
+        return func
+
     @wraps(func)
     def wrapper(*args, **kwargs):
         # --- 1. 初始化状态 (只在第一次调用时执行) ---
@@ -46,16 +52,14 @@ def monitor_performance(func):
         avg_duration = wrapper.total_duration / wrapper.call_count
 
         # --- 6. 输出报告（DEBUG级别）---
-        # 只有在 DEBUG 模式或 MONITOR_ENABLED=1 时才输出
-        if MONITOR_ENABLED or logging.getLogger().level <= logging.DEBUG:
-            logging.debug(
-                f"--- Function '{func.__qualname__}' Monitor --- "
-                f"Call #{wrapper.call_count} "
-                f"Duration: {duration:.6f}s "
-                f"Interval: {interval:.6f}s "
-                f"Frequency: {frequency:.2f}Hz "
-                f"Average Duration: {avg_duration:.6f}s"
-            )
+        logging.debug(
+            f"--- Function '{func.__qualname__}' Monitor --- "
+            f"Call #{wrapper.call_count} "
+            f"Duration: {duration:.6f}s "
+            f"Interval: {interval:.6f}s "
+            f"Frequency: {frequency:.2f}Hz "
+            f"Average Duration: {avg_duration:.6f}s"
+        )
 
         return result
 

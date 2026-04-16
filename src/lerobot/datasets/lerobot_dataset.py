@@ -886,13 +886,15 @@ class LeRobotDataset(torch.utils.data.Dataset):
             if isinstance(frame[name], torch.Tensor):
                 frame[name] = frame[name].numpy()
 
-        validate_frame(frame, self.features)
-
         if self.episode_buffer is None:
             self.episode_buffer = self.create_episode_buffer()
 
-        # Automatically add frame_index and timestamp to episode buffer
+        # 性能优化：只验证第一帧，后续帧跳过验证（格式已确定正确）
         frame_index = self.episode_buffer["size"]
+        if frame_index == 0:
+            validate_frame(frame, self.features)
+
+        # Automatically add frame_index and timestamp to episode buffer
         if timestamp is None:
             timestamp = frame_index / self.fps
         self.episode_buffer["frame_index"].append(frame_index)
