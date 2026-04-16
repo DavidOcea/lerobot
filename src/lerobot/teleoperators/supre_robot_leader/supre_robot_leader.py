@@ -2,6 +2,7 @@
 
 import time
 import math
+import subprocess
 from typing import Any, Dict, List, Optional, Tuple, Type
 from pathlib import Path
 
@@ -63,6 +64,15 @@ class SupreRobotLeader(Teleoperator):
 
         # 统计信息
         self._feedback_count = 0
+
+        # ==================== 力反馈配置缓存 ====================
+        # 性能优化：将 getattr 调用移到初始化时，避免每帧调用
+        self._force_feedback_enabled = getattr(config, 'enable_force_feedback', False)
+        self._force_threshold = getattr(config, 'force_threshold', 0.3)
+        self._force_debounce_count = getattr(config, 'force_debounce_count', 3)
+        self._min_beep_interval = getattr(config, 'min_beep_interval', 0.1)
+        self._max_beep_interval = getattr(config, 'max_beep_interval', 1.0)
+        self._max_force_for_sound = getattr(config, 'max_force_for_sound', 1.0)
 
     @property
     def is_connected(self) -> bool:
@@ -236,22 +246,11 @@ class SupreRobotLeader(Teleoperator):
         if not self.is_connected:
             return
 
-        # 检查是否启用力反馈
-        if not getattr(self.config, 'enable_force_feedback', False):
+        # 检查是否启用力反馈（使用缓存的配置值）
+        if not self._force_feedback_enabled:
             return
 
-        import time
-        import subprocess
         current_time = time.perf_counter()
-
-        # ===== 配置参数 =====
-        force_threshold = getattr(self.config, 'force_threshold', 0.3)      # 触发声音的力阈值 (Nm)
-        force_debounce_count = getattr(self.config, 'force_debounce_count', 3)  # 防抖计数
-
-        # 声音参数
-        min_beep_interval = getattr(self.config, 'min_beep_interval', 0.1)   # 最小蜂鸣间隔 (s) - 最大阻力
-        max_beep_interval = getattr(self.config, 'max_beep_interval', 1.0)   # 最大蜂鸣间隔 (s) - 最小阻力
-        max_force_for_sound = getattr(self.config, 'max_force_for_sound', 1.0)  # 最大力参考值 (Nm)
 
         # ===== 1. 检测 Follower 是否遇到阻力 =====
         max_force = 0.0
@@ -264,17 +263,17 @@ class SupreRobotLeader(Teleoperator):
                     max_force_joint = key
 
         # 防抖处理：连续多次检测到超限才触发
-        if max_force > force_threshold:
+        if max_force > self._force_threshold:
             self._force_exceed_count += 1
         else:
             self._force_exceed_count = 0
 
         # ===== 2. 播放声音提示 =====
-        if self._force_exceed_count >= force_debounce_count:
+        if self._force_exceed_count >= self._force_debounce_count:
             # 根据力的大小计算蜂鸣间隔
             # 力越大，间隔越短（声音越急促）
-            force_ratio = min(max_force / max_force_for_sound, 1.0)  # 归一化到 0-1
-            beep_interval = max_beep_interval - force_ratio * (max_beep_interval - min_beep_interval)
+            force_ratio = min(max_force / self._max_force_for_sound, 1.0)  # 归一化到 0-1
+            beep_interval = self._max_beep_interval - force_ratio * (self._max_beep_interval - self._min_beep_interval)
 
             # 检查是否到了播放时间
             if current_time - self._last_sound_time >= beep_interval:
