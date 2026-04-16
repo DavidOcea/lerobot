@@ -61,6 +61,11 @@ from typing import Any
 
 import draccus
 
+from lerobot.cameras import (  # noqa: F401
+    CameraConfig,  # noqa: F401
+)
+from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
+from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig  # noqa: F401
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
 from lerobot.robots import (  # noqa: F401
