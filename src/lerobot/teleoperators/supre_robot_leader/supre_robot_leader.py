@@ -299,8 +299,8 @@ class SupreRobotLeader(Teleoperator):
 
         # ===== 3. 统计与调试 =====
         self._feedback_count += 1
-        if self._feedback_count % 100 == 0 and max_force > force_threshold:
-            print(f"Force check: max_force={max_force:.3f} Nm, threshold={force_threshold} Nm")
+        if self._feedback_count % 100 == 0 and max_force > self._force_threshold:
+            print(f"Force check: max_force={max_force:.3f} Nm, threshold={self._force_threshold} Nm")
 
     @cached_property
     def action_features(self) -> dict[str, type]:
