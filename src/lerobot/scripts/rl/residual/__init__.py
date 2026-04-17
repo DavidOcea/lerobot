@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,18 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .configuration_keyboard import (
-    KeyboardEndEffectorTeleopConfig,
-    KeyboardBimanualEndEffectorTeleopConfig,
-    KeyboardTeleopConfig,
-)
-from .teleop_keyboard import KeyboardBimanualEndEffectorTeleop, KeyboardEndEffectorTeleop, KeyboardTeleop
+"""Residual RL training scripts."""
+
+from .env_wrapper import ResidualEnvWrapper, ResidualEnvWrapperWithIntervention
+from .train_residual import TrainResidualConfig, train_residual, train_offline_phase, train_online_phase
 
 __all__ = [
-    "KeyboardTeleopConfig",
-    "KeyboardTeleop",
-    "KeyboardEndEffectorTeleopConfig",
-    "KeyboardEndEffectorTeleop",
-    "KeyboardBimanualEndEffectorTeleopConfig",
-    "KeyboardBimanualEndEffectorTeleop",
+    "ResidualEnvWrapper",
+    "ResidualEnvWrapperWithIntervention",
+    "TrainResidualConfig",
+    "train_residual",
+    "train_offline_phase",
+    "train_online_phase",
 ]

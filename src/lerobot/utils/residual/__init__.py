@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,18 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .configuration_keyboard import (
-    KeyboardEndEffectorTeleopConfig,
-    KeyboardBimanualEndEffectorTeleopConfig,
-    KeyboardTeleopConfig,
-)
-from .teleop_keyboard import KeyboardBimanualEndEffectorTeleop, KeyboardEndEffectorTeleop, KeyboardTeleop
+"""Residual RL utility modules for LeRobot."""
+
+from .logger import LocalLogger, LocalLoggerConfig
+from .checkpoint import CheckpointManager, CheckpointConfig
+from .normalize import ActionScaler, StateStandardizer, NormalizationConfig
+from .replay_buffer import ReplayBuffer, ReplayBufferConfig
+from .utils import schedule_stddev, TruncatedNormal
 
 __all__ = [
-    "KeyboardTeleopConfig",
-    "KeyboardTeleop",
-    "KeyboardEndEffectorTeleopConfig",
-    "KeyboardEndEffectorTeleop",
-    "KeyboardBimanualEndEffectorTeleopConfig",
-    "KeyboardBimanualEndEffectorTeleop",
+    "LocalLogger",
+    "LocalLoggerConfig",
+    "CheckpointManager",
+    "CheckpointConfig",
+    "ActionScaler",
+    "StateStandardizer",
+    "NormalizationConfig",
+    "ReplayBuffer",
+    "ReplayBufferConfig",
+    "schedule_stddev",
+    "TruncatedNormal",
 ]

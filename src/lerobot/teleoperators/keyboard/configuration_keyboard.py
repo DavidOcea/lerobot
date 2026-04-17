@@ -30,3 +30,15 @@ class KeyboardTeleopConfig(TeleoperatorConfig):
 @dataclass
 class KeyboardEndEffectorTeleopConfig(KeyboardTeleopConfig):
     use_gripper: bool = True
+
+
+@TeleoperatorConfig.register_subclass("keyboard_ee_bimanual")
+@dataclass
+class KeyboardBimanualEndEffectorTeleopConfig(KeyboardTeleopConfig):
+    """Configuration for bimanual (dual-arm) keyboard end-effector teleoperation."""
+    use_gripper: bool = False  # Default false since gripper is currently removed
+    # Key mapping configuration (optional customization)
+    # Right arm: Arrow keys + Shift
+    # Left arm: WASD + Q/E
+    right_arm_keys: dict = None  # Will use defaults if None
+    left_arm_keys: dict = None   # Will use defaults if None

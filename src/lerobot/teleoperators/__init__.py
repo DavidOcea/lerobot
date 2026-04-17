@@ -17,4 +17,10 @@
 from .config import TeleoperatorConfig
 from .teleoperator import Teleoperator
 from .utils import make_teleoperator_from_config
-from . import ros2_leader
+
+# ROS2 leader is optional - only import if ROS2 is available
+try:
+    from . import ros2_leader
+except ImportError:
+    # ROS2 not installed, ros2_leader module unavailable
+    pass

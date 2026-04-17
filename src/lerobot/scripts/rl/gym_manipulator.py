@@ -64,7 +64,16 @@ from lerobot.teleoperators import (
     so101_leader,  # noqa: F401
 )
 from lerobot.teleoperators.gamepad.teleop_gamepad import GamepadTeleop
-from lerobot.teleoperators.keyboard.teleop_keyboard import KeyboardEndEffectorTeleop
+from lerobot.teleoperators.keyboard.teleop_keyboard import (
+    KeyboardBimanualEndEffectorTeleop,
+    KeyboardEndEffectorTeleop,
+)
+from lerobot.utils.action_corrector import (
+    ActionCorrector,
+    ActionCorrectorConfig,
+    LeaderAdjustConfig,
+    KeyAdjustConfig,
+)
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import log_say
 
@@ -1783,6 +1792,457 @@ class KeyboardControlWrapper(GamepadControlWrapper):
         )
 
 
+class KeyboardBimanualControlWrapper(GamepadControlWrapper):
+    """
+    Wrapper that allows controlling a bimanual (dual-arm) gym environment with a keyboard.
+
+    Key mapping:
+    - Right arm: Arrow keys (X/Y) + Shift/Shift_R (Z)
+    - Left arm: WASD (X/Y) + Q/E (Z)
+
+    Output action shape: 6 (delta_x_right, delta_y_right, delta_z_right, delta_x_left, delta_y_left, delta_z_left)
+    With gripper: 8 (includes gripper_right, gripper_left)
+    """
+
+    def __init__(
+        self,
+        env,
+        teleop_device,  # KeyboardBimanualEndEffectorTeleop instance
+        use_gripper=False,
+        auto_reset=False,
+    ):
+        """
+        Initialize the bimanual keyboard controller wrapper.
+
+        Args:
+            env: The environment to wrap.
+            teleop_device: The instantiated KeyboardBimanualEndEffectorTeleop device.
+            use_gripper: Whether to include gripper control.
+            auto_reset: Whether to auto reset the environment when episode ends.
+        """
+        super().__init__(env, teleop_device, use_gripper, auto_reset)
+
+        self.is_intervention_active = False
+
+        logging.info("Keyboard bimanual control wrapper initialized.")
+        print("Keyboard Bimanual Controls:")
+        print("  RIGHT ARM:")
+        print("    Arrow Up/Down:    Y axis (forward/backward)")
+        print("    Arrow Left/Right: X axis (left/right)")
+        print("    Shift/Shift_R:    Z axis (down/up)")
+        print("  LEFT ARM:")
+        print("    W/S:              Y axis (forward/backward)")
+        print("    A/D:              X axis (left/right)")
+        print("    Q/E:              Z axis (down/up)")
+        print("  OTHER:")
+        print("    f: End episode with FAILURE")
+        print("    s: End episode with SUCCESS")
+        print("    r: End episode with RERECORD")
+        print("    i: Start/Stop Intervention")
+
+    def get_teleop_commands(
+        self,
+    ) -> tuple[bool, np.ndarray, bool, bool, bool]:
+        """
+        Get the current action from the bimanual keyboard teleop.
+
+        Returns:
+            Tuple containing:
+            - is_intervention_active: Whether intervention mode is active
+            - action: Bimanual action array [delta_x_r, delta_y_r, delta_z_r, delta_x_l, delta_y_l, delta_z_l, ...]
+            - terminate_episode: Whether episode termination was requested
+            - success: Whether episode success was signaled
+            - rerecord_episode: Whether episode rerecording was requested
+        """
+        action_dict = self.teleop_device.get_action()
+        episode_end_status = None
+
+        # Process misc keys queue for intervention/success/failure
+        while not self.teleop_device.misc_keys_queue.empty():
+            key = self.teleop_device.misc_keys_queue.get()
+            if key == "i":
+                self.is_intervention_active = not self.is_intervention_active
+            elif key == "f":
+                episode_end_status = "failure"
+            elif key == "s":
+                episode_end_status = "success"
+            elif key == "r":
+                episode_end_status = "rerecord_episode"
+
+        terminate_episode = episode_end_status is not None
+        success = episode_end_status == "success"
+        rerecord_episode = episode_end_status == "rerecord_episode"
+
+        # Convert action_dict to numpy array
+        # Order: delta_x_right, delta_y_right, delta_z_right, delta_x_left, delta_y_left, delta_z_left
+        action_list = [
+            action_dict["delta_x_right"],
+            action_dict["delta_y_right"],
+            action_dict["delta_z_right"],
+            action_dict["delta_x_left"],
+            action_dict["delta_y_left"],
+            action_dict["delta_z_left"],
+        ]
+
+        if self.use_gripper:
+            gripper_right = action_dict.get("gripper_right", 1.0)
+            gripper_left = action_dict.get("gripper_left", 1.0)
+            action_list.extend([float(gripper_right), float(gripper_left)])
+
+        keyboard_action_np = np.array(action_list, dtype=np.float32)
+
+        return (
+            self.is_intervention_active,
+            keyboard_action_np,
+            terminate_episode,
+            success,
+            rerecord_episode,
+        )
+
+
+class JointLeaderControlWrapper(gym.Wrapper):
+    """
+    Wrapper for joint-space incremental control using leader arm.
+
+    This wrapper enables human intervention through a leader-follower setup,
+    using **incremental (delta) control** in joint space - NOT absolute position.
+
+    Key features:
+    - No URDF/kinematics dependency
+    - Uses ActionCorrector for incremental corrections
+    - Leader changes > threshold triggers adjustment mode
+    - Keyboard joint selection mode (数字键选择关节, A/D调整)
+
+    Keyboard controls (关节选择模式):
+    - 1-6: 选择 joint_1 ~ joint_6
+    - 8-9: 选择 trunk_joint_1, trunk_joint_2
+    - A/D: 正向/负向调整
+    - J/K/L: 左臂/双臂/右臂模式
+    - U/O: 双臂模式下反转左臂/右臂
+    - R: 重置选择和反转状态
+
+    This is safer than absolute position control because:
+    - Leader doesn't need to follow follower position
+    - Corrections are gradual (adjust_alpha=0.3)
+    - No sudden jumps when intervention starts
+    """
+
+    def __init__(
+        self,
+        env,
+        teleop_device,
+        use_gripper=False,
+        leader_adjust_config: LeaderAdjustConfig = None,
+        key_adjust_config: KeyAdjustConfig = None,
+        auto_reset=False,
+    ):
+        """
+        Initialize the joint-space leader control wrapper.
+
+        Args:
+            env: The environment to wrap.
+            teleop_device: The teleoperation device (leader arm).
+            use_gripper: Whether to include gripper control.
+            leader_adjust_config: Leader correction config (trigger threshold, alpha, etc.)
+            key_adjust_config: Keyboard correction config (step size, etc.)
+            auto_reset: Whether to auto reset when episode ends.
+        """
+        super().__init__(env)
+        self.robot_leader = teleop_device
+        self.robot_follower = env.unwrapped.robot
+        self.use_gripper = use_gripper
+        self.auto_reset = auto_reset
+
+        # Default configs
+        if leader_adjust_config is None:
+            leader_adjust_config = LeaderAdjustConfig(
+                enable=True,
+                trigger_threshold_deg=5.0,
+                trigger_alpha=0.3,
+                exit_threshold_deg=1.0,
+                exit_frame_count=5,
+                adjust_alpha=0.3,
+            )
+
+        if key_adjust_config is None:
+            key_adjust_config = KeyAdjustConfig(
+                enable=True,
+                step_per_frame=0.2,
+                max_adjustment=5.0,
+                default_joint=1,
+                default_arm_mode="both",
+            )
+
+        # Create ActionCorrector
+        corrector_config = ActionCorrectorConfig(
+            enable=True,
+            leader=leader_adjust_config,
+            keyboard=key_adjust_config,
+        )
+        self.corrector = ActionCorrector(corrector_config, teleop=teleop_device)
+
+        # Keyboard events
+        self.keyboard_events = {}
+        self._init_keyboard_events()
+        self._init_keyboard_listener()
+
+        self.is_intervention_active = False
+
+        logging.info("JointLeaderControlWrapper initialized (关节选择模式)")
+        print("=" * 60)
+        print("Joint Leader Controls (关节选择模式):")
+        print("  Leader arm: Move >5° triggers adjustment")
+        print("  关节选择: 1-6 (arm), 8-9 (trunk)")
+        print("  调整: A (正向+), D (负向-)")
+        print("  臂模式: J (左臂), K (双臂), L (右臂)")
+        print("  反转: U (左臂), O (右臂) - 双臂模式下")
+        print("  重置: R (重置选择和反转)")
+        print("  成功/失败: S/F")
+        print("=" * 60)
+
+    def _init_keyboard_events(self):
+        """Initialize keyboard event tracking."""
+        self.keyboard_events = {
+            "episode_success": False,
+            "episode_end": False,
+            "rerecord_episode": False,
+            # 关节选择
+            "joint_1_selected": False,
+            "joint_2_selected": False,
+            "joint_3_selected": False,
+            "joint_4_selected": False,
+            "joint_5_selected": False,
+            "joint_6_selected": False,
+            "joint_8_selected": False,
+            "joint_9_selected": False,
+            # 臂模式选择
+            "arm_mode_left": False,
+            "arm_mode_both": False,
+            "arm_mode_right": False,
+            # 反转控制
+            "inverse_left": False,
+            "inverse_right": False,
+            # 状态重置
+            "reset_state": False,
+            # 调整按键
+            "positive_held": False,
+            "negative_held": False,
+        }
+
+    def _init_keyboard_listener(self):
+        """Initialize keyboard listener for intervention and fine-tuning."""
+        from pynput import keyboard as kb
+        from threading import Lock
+
+        self.event_lock = Lock()
+
+        def get_char(key) -> str | None:
+            try:
+                if hasattr(key, 'char') and key.char:
+                    return key.char.lower()
+                return None
+            except:
+                return None
+
+        def on_press(key):
+            with self.event_lock:
+                char = get_char(key)
+
+                # 成功/失败
+                if char == 's':
+                    logging.info("Key 's' pressed. Episode success.")
+                    self.keyboard_events["episode_success"] = True
+                elif char == 'f':
+                    logging.info("Key 'f' pressed. Episode fail.")
+                    self.keyboard_events["episode_end"] = True
+                elif key == kb.Key.esc:
+                    self.keyboard_events["episode_end"] = True
+
+                # 关节选择
+                elif char in ['1', '2', '3', '4', '5', '6']:
+                    joint_num = int(char)
+                    self.keyboard_events[f"joint_{joint_num}_selected"] = True
+                elif char == '8':
+                    self.keyboard_events["joint_8_selected"] = True
+                elif char == '9':
+                    self.keyboard_events["joint_9_selected"] = True
+
+                # 臂模式选择
+                elif char == 'j':
+                    self.keyboard_events["arm_mode_left"] = True
+                elif char == 'k':
+                    self.keyboard_events["arm_mode_both"] = True
+                elif char == 'l':
+                    self.keyboard_events["arm_mode_right"] = True
+
+                # 反转控制
+                elif char == 'u':
+                    self.keyboard_events["inverse_left"] = True
+                elif char == 'o':
+                    self.keyboard_events["inverse_right"] = True
+
+                # 状态重置
+                elif char == 'r':
+                    self.keyboard_events["reset_state"] = True
+
+                # 调整按键
+                elif char == 'a':
+                    self.keyboard_events["positive_held"] = True
+                elif char == 'd':
+                    self.keyboard_events["negative_held"] = True
+
+        def on_release(key):
+            with self.event_lock:
+                char = get_char(key)
+
+                # 关节选择释放
+                if char in ['1', '2', '3', '4', '5', '6']:
+                    joint_num = int(char)
+                    self.keyboard_events[f"joint_{joint_num}_selected"] = False
+                elif char == '8':
+                    self.keyboard_events["joint_8_selected"] = False
+                elif char == '9':
+                    self.keyboard_events["joint_9_selected"] = False
+
+                # 臂模式选择释放
+                elif char == 'j':
+                    self.keyboard_events["arm_mode_left"] = False
+                elif char == 'k':
+                    self.keyboard_events["arm_mode_both"] = False
+                elif char == 'l':
+                    self.keyboard_events["arm_mode_right"] = False
+
+                # 反转控制释放
+                elif char == 'u':
+                    self.keyboard_events["inverse_left"] = False
+                elif char == 'o':
+                    self.keyboard_events["inverse_right"] = False
+
+                # 状态重置释放
+                elif char == 'r':
+                    self.keyboard_events["reset_state"] = False
+
+                # 调整按键释放
+                elif char == 'a':
+                    self.keyboard_events["positive_held"] = False
+                elif char == 'd':
+                    self.keyboard_events["negative_held"] = False
+
+        self.listener = kb.Listener(on_press=on_press, on_release=on_release)
+        self.listener.start()
+
+    def _action_dict_to_array(self, action_dict: dict[str, float]) -> np.ndarray:
+        """Convert action dict to numpy array for environment.
+
+        Args:
+            action_dict: Action dict with joint names as keys
+
+        Returns:
+            Numpy array matching environment action space
+        """
+        # Get joint order from follower robot
+        joint_names = self.robot_follower.observation_joint_names
+
+        action_array = np.zeros(len(joint_names), dtype=np.float32)
+        for i, name in enumerate(joint_names):
+            key = f"{name}.pos"
+            if key in action_dict:
+                action_array[i] = action_dict[key]
+
+        return action_array
+
+    def step(self, action):
+        """
+        Step environment with incremental corrections.
+
+        The action is modified by:
+        1. Leader incremental corrections (if triggered)
+        2. Keyboard fine-tuning (if keys held)
+
+        Args:
+            action: Original action from agent (joint positions)
+
+        Returns:
+            Tuple of (observation, reward, terminated, truncated, info)
+        """
+        # Convert action to dict format for corrector
+        action_dict = {}
+        joint_names = self.robot_follower.observation_joint_names
+
+        if isinstance(action, np.ndarray):
+            for i, name in enumerate(joint_names):
+                action_dict[f"{name}.pos"] = action[i]
+        elif isinstance(action, dict):
+            action_dict = action.copy()
+
+        # Apply incremental corrections via ActionCorrector
+        corrected_action_dict = self.corrector.correct(
+            action=action_dict,
+            events=self.keyboard_events,
+        )
+
+        # Convert back to array
+        corrected_action = self._action_dict_to_array(corrected_action_dict)
+
+        # Check intervention status
+        leader_state = self.corrector.get_leader_state()
+        self.is_intervention_active = (leader_state == "adjusting")
+
+        # Step environment
+        obs, reward, terminated, truncated, info = self.env.step(corrected_action)
+
+        # Add intervention info
+        info["is_intervention"] = self.is_intervention_active
+        info["leader_state"] = leader_state
+        info["action_intervention"] = corrected_action
+
+        # Handle episode end via keyboard
+        if self.keyboard_events["episode_success"]:
+            reward = 1.0
+            terminated = True
+            logging.info("Episode ended with SUCCESS (reward=1.0)")
+            self.keyboard_events["episode_success"] = False
+
+        if self.keyboard_events["episode_end"]:
+            terminated = True
+            logging.info("Episode ended with FAIL")
+            self.keyboard_events["episode_end"] = False
+
+        if self.keyboard_events["rerecord_episode"]:
+            info["rerecord_episode"] = True
+            self.keyboard_events["rerecord_episode"] = False
+
+        if terminated or truncated:
+            info["next.success"] = self.keyboard_events.get("episode_success", False)
+
+            # Reset corrector for next episode
+            self.corrector.reset()
+
+            if self.auto_reset:
+                obs, reset_info = self.reset()
+                info.update(reset_info)
+
+        return obs, reward, terminated, truncated, info
+
+    def reset(self, **kwargs):
+        """Reset environment and corrector."""
+        obs, info = self.env.reset(**kwargs)
+
+        # Reset corrector state
+        self.corrector.reset()
+
+        # Reset keyboard events
+        self._init_keyboard_events()
+
+        return obs, info
+
+    def close(self):
+        """Clean up resources."""
+        if hasattr(self, 'listener') and self.listener is not None:
+            self.listener.stop()
+        return self.env.close()
+
+
 class GymHilDeviceWrapper(gym.Wrapper):
     def __init__(self, env, device="cpu"):
         super().__init__(env)
@@ -1934,6 +2394,15 @@ def make_robot_env(cfg: EnvConfig) -> gym.Env:
             teleop_device=teleop_device,
             use_gripper=cfg.wrapper.use_gripper,
         )
+    elif control_mode == "keyboard_ee_bimanual":
+        assert isinstance(teleop_device, KeyboardBimanualEndEffectorTeleop), (
+            "teleop_device must be an instance of KeyboardBimanualEndEffectorTeleop for bimanual keyboard control mode"
+        )
+        env = KeyboardBimanualControlWrapper(
+            env=env,
+            teleop_device=teleop_device,
+            use_gripper=cfg.wrapper.use_gripper,
+        )
     elif control_mode == "leader":
         env = GearedLeaderControlWrapper(
             env=env,
@@ -1946,6 +2415,14 @@ def make_robot_env(cfg: EnvConfig) -> gym.Env:
             env=env,
             teleop_device=teleop_device,
             end_effector_step_sizes=cfg.robot.end_effector_step_sizes,
+            use_gripper=cfg.wrapper.use_gripper,
+        )
+    elif control_mode == "leader_joint":
+        # Joint-space incremental control (no URDF/kinematics needed)
+        # Uses ActionCorrector for gradual corrections
+        env = JointLeaderControlWrapper(
+            env=env,
+            teleop_device=teleop_device,
             use_gripper=cfg.wrapper.use_gripper,
         )
     else:

@@ -77,9 +77,13 @@ from lerobot.robots import (  # noqa: F401
     make_robot_from_config,
     so100_follower,
     so101_follower,
-    ros2_follower,
     supre_robot_follower
 )
+# ROS2 follower is optional
+try:
+    from lerobot.robots import ros2_follower  # noqa: F401
+except ImportError:
+    pass
 from lerobot.teleoperators import (  # noqa: F401
     Teleoperator,
     TeleoperatorConfig,
@@ -88,9 +92,13 @@ from lerobot.teleoperators import (  # noqa: F401
     make_teleoperator_from_config,
     so100_leader,
     so101_leader,
-    ros2_leader,
     supre_robot_leader,  # noqa: F401
 )
+# ROS2 leader is optional
+try:
+    from lerobot.teleoperators import ros2_leader  # noqa: F401
+except ImportError:
+    pass
 from lerobot.utils.action_corrector import (
     ActionCorrector,
     ActionCorrectorConfig,
@@ -338,14 +346,20 @@ def replay_record_loop(
 def init_replay_record_keyboard_listener(events: dict, key_cfg: KeyAdjustConfig) -> Any:
     """Initialize keyboard listener for replay_record mode.
 
-    支持按住持续调整（平滑精细控制）：
+    关节选择模式 + 动态反转：
     - S: 标记成功，保存
     - F: 标记失败，丢弃
     - ESC: 停止 replay_record
-    - W/X: 双臂 joint_1 正/反（同向）
-    - A/D: 双臂 joint_3 正/反（相对）
-    - Q/E: 腰部 trunk 正/反
-    - K: 切换控制模式 (left/right/both)
+    - 1-6: 选择 joint_1 ~ joint_6
+    - 8-9: 选择 trunk_joint_1, trunk_joint_2
+    - A: 正向调整（按住持续）
+    - D: 负向调整（按住持续）
+    - J: 左臂模式
+    - K: 双臂模式
+    - L: 右臂模式
+    - U: 双臂模式下反转左臂当前关节
+    - O: 双臂模式下反转右臂当前关节
+    - R: 重置选择状态和反转状态
     """
     # 检查是否在 headless 环境
     if is_headless():
@@ -366,12 +380,6 @@ def init_replay_record_keyboard_listener(events: dict, key_cfg: KeyAdjustConfig)
         except:
             return None
 
-    def next_mode(current: str) -> str:
-        """切换控制模式"""
-        modes = ["both", "left", "right"]
-        idx = modes.index(current) if current in modes else 0
-        return modes[(idx + 1) % len(modes)]
-
     def on_press(key):
         try:
             char = get_char(key)
@@ -388,66 +396,102 @@ def init_replay_record_keyboard_listener(events: dict, key_cfg: KeyAdjustConfig)
                 events["stop_replay_record"] = True
                 events["mark_fail"] = True
 
-            # === 控制模式切换 ===
-            elif char == key_cfg.key_mode_toggle:
-                current_mode = events.get("arm_control_mode", key_cfg.arm_control_mode)
-                new_mode = next_mode(current_mode)
-                events["arm_control_mode"] = new_mode
-                print(f"Arm control mode switched: {current_mode} -> {new_mode}")
+            # === 关节选择（数字键）===
+            elif char in ['1', '2', '3', '4', '5', '6']:
+                joint_num = int(char)
+                events[f"joint_{joint_num}_selected"] = True
+            elif char == '8':
+                events["joint_8_selected"] = True
+            elif char == '9':
+                events["joint_9_selected"] = True
 
-            # === 微调按键（按住持续）===
-            elif char == key_cfg.keys_joint_1_positive:  # W
-                events["joint_1_positive_held"] = True
-                logging.debug(f"[Key] W pressed: joint_1 positive held=True")
-            elif char == key_cfg.keys_joint_1_negative:  # X
-                events["joint_1_negative_held"] = True
-                logging.debug(f"[Key] X pressed: joint_1 negative held=True")
-            elif char == key_cfg.keys_joint_3_positive:  # A
-                events["joint_3_positive_held"] = True
-                logging.debug(f"[Key] A pressed: joint_3 positive held=True")
-            elif char == key_cfg.keys_joint_3_negative:  # D
-                events["joint_3_negative_held"] = True
-                logging.debug(f"[Key] D pressed: joint_3 negative held=True")
-            elif char == key_cfg.keys_trunk_positive:    # Q
-                events["trunk_positive_held"] = True
-                logging.debug(f"[Key] Q pressed: trunk positive held=True")
-            elif char == key_cfg.keys_trunk_negative:    # E
-                events["trunk_negative_held"] = True
-                logging.debug(f"[Key] E pressed: trunk negative held=True")
+            # === 臂模式选择 ===
+            elif char == 'j':
+                events["arm_mode_left"] = True
+            elif char == 'k':
+                events["arm_mode_both"] = True
+            elif char == 'l':
+                events["arm_mode_right"] = True
+
+            # === 反转控制 ===
+            elif char == 'u':
+                events["inverse_left"] = True
+            elif char == 'o':
+                events["inverse_right"] = True
+
+            # === 状态重置 ===
+            elif char == 'r':
+                events["reset_state"] = True
+
+            # === 调整按键（按住持续）===
+            elif char == 'a':
+                events["positive_held"] = True
+                logging.debug("[Key] A pressed: positive adjustment")
+            elif char == 'd':
+                events["negative_held"] = True
+                logging.debug("[Key] D pressed: negative adjustment")
 
         except Exception as e:
             print(f"Error handling key press: {e}")
 
     def on_release(key):
-        """按键释放：停止调整"""
+        """按键释放"""
         try:
             char = get_char(key)
 
-            # === 微调按键释放 ===
-            if char == key_cfg.keys_joint_1_positive:
-                events["joint_1_positive_held"] = False
-                logging.debug(f"[Key] W released: joint_1 positive held=False")
-            elif char == key_cfg.keys_joint_1_negative:
-                events["joint_1_negative_held"] = False
-                logging.debug(f"[Key] X released: joint_1 negative held=False")
-            elif char == key_cfg.keys_joint_3_positive:
-                events["joint_3_positive_held"] = False
-                logging.debug(f"[Key] A released: joint_3 positive held=False")
-            elif char == key_cfg.keys_joint_3_negative:
-                events["joint_3_negative_held"] = False
-                logging.debug(f"[Key] D released: joint_3 negative held=False")
-            elif char == key_cfg.keys_trunk_positive:
-                events["trunk_positive_held"] = False
-                logging.debug(f"[Key] Q released: trunk positive held=False")
-            elif char == key_cfg.keys_trunk_negative:
-                events["trunk_negative_held"] = False
-                logging.debug(f"[Key] E released: trunk negative held=False")
+            # === 关节选择释放（单次触发，立即清除）===
+            if char in ['1', '2', '3', '4', '5', '6']:
+                joint_num = int(char)
+                events[f"joint_{joint_num}_selected"] = False
+            elif char == '8':
+                events["joint_8_selected"] = False
+            elif char == '9':
+                events["joint_9_selected"] = False
+
+            # === 臂模式选择释放 ===
+            elif char == 'j':
+                events["arm_mode_left"] = False
+            elif char == 'k':
+                events["arm_mode_both"] = False
+            elif char == 'l':
+                events["arm_mode_right"] = False
+
+            # === 反转控制释放 ===
+            elif char == 'u':
+                events["inverse_left"] = False
+            elif char == 'o':
+                events["inverse_right"] = False
+
+            # === 状态重置释放 ===
+            elif char == 'r':
+                events["reset_state"] = False
+
+            # === 调整按键释放 ===
+            elif char == 'a':
+                events["positive_held"] = False
+                logging.debug("[Key] A released: positive adjustment stopped")
+            elif char == 'd':
+                events["negative_held"] = False
+                logging.debug("[Key] D released: negative adjustment stopped")
 
         except Exception as e:
             print(f"Error handling key release: {e}")
 
     listener = keyboard.Listener(on_press=on_press, on_release=on_release)
     listener.start()
+
+    # 打印帮助信息
+    print("=" * 60)
+    print("键盘控制帮助（关节选择模式）:")
+    print("  关节选择: 1-6 (arm joints), 8-9 (trunk)")
+    print("  调整: A (正向+), D (负向-)")
+    print("  臂模式: J (左臂), K (双臂), L (右臂)")
+    print("  反转: U (左臂), O (右臂) - 双臂模式下")
+    print("  重置: R (重置选择和反转状态)")
+    print("  成功/失败: S/F")
+    print("  退出: ESC")
+    print("=" * 60)
+
     return listener
 
 
@@ -530,21 +574,29 @@ def replay(cfg: ReplayConfig):
         events["mark_success"] = False
         events["mark_fail"] = False
         events["stop_replay_record"] = False
-        events["arm_control_mode"] = replay_cfg.key_adjust.arm_control_mode  # 初始化控制模式
 
-        # 初始化所有微调按键事件为 False（确保初始状态正确）
-        events["joint_1_positive_held"] = False
-        events["joint_1_negative_held"] = False
-        events["joint_3_positive_held"] = False
-        events["joint_3_negative_held"] = False
-        events["trunk_positive_held"] = False
-        events["trunk_negative_held"] = False
+        # 初始化关节选择模式按键事件
+        # 关节选择
+        for i in [1, 2, 3, 4, 5, 6, 8, 9]:
+            events[f"joint_{i}_selected"] = False
+        # 臂模式选择
+        events["arm_mode_left"] = False
+        events["arm_mode_both"] = False
+        events["arm_mode_right"] = False
+        # 反转控制
+        events["inverse_left"] = False
+        events["inverse_right"] = False
+        # 状态重置
+        events["reset_state"] = False
+        # 调整按键
+        events["positive_held"] = False
+        events["negative_held"] = False
 
-        # 添加 replay_record 专用按键监听（平滑精细控制）
+        # 添加 replay_record 专用按键监听（关节选择模式）
         replay_listener = init_replay_record_keyboard_listener(events, replay_cfg.key_adjust)
 
-        log_say("Replay with recording started. S=save, F=discard, K=mode toggle", cfg.play_sounds, blocking=True)
-        logging.info("Key adjust controls: W/X=joint1, A/D=joint3, Q/E=trunk, K=mode")
+        log_say("Replay with recording started. S=save, F=discard", cfg.play_sounds, blocking=True)
+        logging.info("Key controls: 1-6/8-9=joint select, A/D=adjust, J/K/L=arm mode, U/O=inverse, R=reset")
 
         episode_count = 0
         while not events["stop_replay_record"]:

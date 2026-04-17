@@ -1,0 +1,155 @@
+# ==============================================================
+# Residual RL Environment Configuration - Bimanual Keyboard Control
+# ==============================================================
+#
+# Configuration for dual-arm keyboard control (no leader arm needed).
+# Suitable for bimanual tasks like coffee making.
+#
+# Key mapping:
+#   RIGHT ARM: Arrow keys (X/Y) + Shift/Shift_R (Z)
+#   LEFT ARM:  WASD (X/Y) + Q/E (Z)
+#
+# ==============================================================
+
+type: gym_manipulator
+name: residual_keyboard_bimanual
+fps: 30
+device: cuda
+
+task: "TwoArmCoffee"
+mode: null
+num_episodes: 10
+
+# ===============================================
+# Robot (Follower) Configuration
+# ===============================================
+robot:
+  type: supre_robot_follower
+  joint_config_file: trunk_config_supre_robot_joint.yaml
+
+  cameras:
+    cam_top:
+      type: opencv
+      index_or_path: 0
+      fps: 30
+      width: 640
+      height: 480
+      rotation: 0
+
+  # Safety limits
+  max_relative_joint_move: 5.0
+
+  control_frequency: 30
+
+  # Joint calibration (14 joints without gripper)
+  calibration:
+    - joint_name: left_arm_joint_1
+      min_position: -160.0
+      max_position: 160.0
+    - joint_name: left_arm_joint_2
+      min_position: -90.0
+      max_position: 0.0
+    - joint_name: left_arm_joint_3
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: left_arm_joint_4
+      min_position: -90.0
+      max_position: 0.0
+    - joint_name: left_arm_joint_5
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: left_arm_joint_6
+      min_position: -90.0
+      max_position: 90.0
+
+    - joint_name: right_arm_joint_1
+      min_position: -160.0
+      max_position: 160.0
+    - joint_name: right_arm_joint_2
+      min_position: 0.0
+      max_position: 165.0
+    - joint_name: right_arm_joint_3
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: right_arm_joint_4
+      min_position: -70.0
+      max_position: 90.0
+    - joint_name: right_arm_joint_5
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: right_arm_joint_6
+      min_position: -90.0
+      max_position: 90.0
+
+    - joint_name: trunk_joint_1
+      min_position: -85.0
+      max_position: 85.0
+    - joint_name: trunk_joint_2
+      min_position: 0.0
+      max_position: 45.0
+
+# ===============================================
+# Teleoperator Configuration (Bimanual Keyboard)
+# ===============================================
+teleop:
+  type: keyboard_ee_bimanual
+  use_gripper: false  # Gripper temporarily removed
+
+# ===============================================
+# Wrapper Configuration
+# ===============================================
+wrapper:
+  control_mode: keyboard_ee_bimanual
+
+  display_cameras: true
+
+  control_time_s: 60.0
+  reset_time_s: 5.0
+
+  use_gripper: false
+
+  fixed_reset_joint_positions:
+    # Left Arm
+    left_arm_joint_1: -47.3
+    left_arm_joint_2: -18.7
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -83.6
+    left_arm_joint_5: -23.7
+    left_arm_joint_6: 11.8
+    # Right Arm
+    right_arm_joint_1: 47.3
+    right_arm_joint_2: 18.7
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 83.6
+    right_arm_joint_5: 23.7
+    right_arm_joint_6: -11.8
+    # Trunk
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+# ===============================================
+# Features Configuration
+# ===============================================
+# NOTE: For keyboard_ee_bimanual, action is end-effector deltas:
+#   [delta_x_right, delta_y_right, delta_z_right,
+#    delta_x_left, delta_y_left, delta_z_left]
+# Shape: 6 (or 8 with grippers)
+#
+# State is still joint positions: 14
+features:
+  action:
+    type: action
+    shape: [6]  # Bimanual EE control: 6 deltas (without gripper)
+
+  observation.state:
+    type: state
+    shape: [14]  # Joint positions
+
+  observation.images.cam_top:
+    type: visual
+    shape: [3, 480, 640]
+
+features_map:
+  action: action
+  observation.state: observation.state
+  observation.images.cam_top: observation.images.cam_top

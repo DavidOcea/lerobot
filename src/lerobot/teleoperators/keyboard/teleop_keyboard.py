@@ -24,7 +24,7 @@ from typing import Any
 from lerobot.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 
 from ..teleoperator import Teleoperator
-from .configuration_keyboard import KeyboardEndEffectorTeleopConfig, KeyboardTeleopConfig
+from .configuration_keyboard import KeyboardEndEffectorTeleopConfig, KeyboardTeleopConfig, KeyboardBimanualEndEffectorTeleopConfig
 
 PYNPUT_AVAILABLE = True
 try:
@@ -233,5 +233,161 @@ class KeyboardEndEffectorTeleop(KeyboardTeleop):
 
         if self.config.use_gripper:
             action_dict["gripper"] = gripper_action
+
+        return action_dict
+
+
+class KeyboardBimanualEndEffectorTeleop(KeyboardTeleop):
+    """
+    Teleop class for bimanual (dual-arm) keyboard end-effector control.
+
+    Key mapping:
+    - Right arm: Arrow keys (X/Y) + Shift/Shift_R (Z)
+    - Left arm: WASD (X/Y) + Q/E (Z)
+
+    Output action: [delta_x_right, delta_y_right, delta_z_right, delta_x_left, delta_y_left, delta_z_left]
+    With gripper: + gripper_right, gripper_left (8 dimensions total)
+    """
+
+    config_class = KeyboardBimanualEndEffectorTeleopConfig
+    name = "keyboard_ee_bimanual"
+
+    def __init__(self, config: KeyboardBimanualEndEffectorTeleopConfig):
+        super().__init__(config)
+        self.config = config
+        self.misc_keys_queue = Queue()
+
+        # Default key mappings
+        self.right_arm_keys = config.right_arm_keys or {
+            "up": keyboard.Key.up,        # delta_y negative (forward)
+            "down": keyboard.Key.down,    # delta_y positive (backward)
+            "left": keyboard.Key.left,    # delta_x positive
+            "right": keyboard.Key.right,  # delta_x negative
+            "z_up": keyboard.Key.shift_r, # delta_z positive (up)
+            "z_down": keyboard.Key.shift, # delta_z negative (down)
+        }
+
+        self.left_arm_keys = config.left_arm_keys or {
+            "up": 'w',        # delta_y negative (forward)
+            "down": 's',      # delta_y positive (backward)
+            "left": 'd',      # delta_x positive
+            "right": 'a',     # delta_x negative
+            "z_up": 'e',      # delta_z positive (up)
+            "z_down": 'q',    # delta_z negative (down)
+        }
+
+    @property
+    def action_features(self) -> dict:
+        if self.config.use_gripper:
+            return {
+                "dtype": "float32",
+                "shape": (8,),
+                "names": {
+                    "delta_x_right": 0, "delta_y_right": 1, "delta_z_right": 2,
+                    "delta_x_left": 3, "delta_y_left": 4, "delta_z_left": 5,
+                    "gripper_right": 6, "gripper_left": 7,
+                },
+            }
+        else:
+            return {
+                "dtype": "float32",
+                "shape": (6,),
+                "names": {
+                    "delta_x_right": 0, "delta_y_right": 1, "delta_z_right": 2,
+                    "delta_x_left": 3, "delta_y_left": 4, "delta_z_left": 5,
+                },
+            }
+
+    def _on_press(self, key):
+        if hasattr(key, "char"):
+            key = key.char
+        self.event_queue.put((key, True))
+
+    def _on_release(self, key):
+        if hasattr(key, "char"):
+            key = key.char
+        self.event_queue.put((key, False))
+
+    def get_action(self) -> dict[str, Any]:
+        if not self.is_connected:
+            raise DeviceNotConnectedError(
+                "KeyboardBimanualEndEffectorTeleop is not connected. You need to run `connect()` before `get_action()`."
+            )
+
+        self._drain_pressed_keys()
+
+        # Right arm deltas
+        delta_x_right = 0.0
+        delta_y_right = 0.0
+        delta_z_right = 0.0
+
+        # Left arm deltas
+        delta_x_left = 0.0
+        delta_y_left = 0.0
+        delta_z_left = 0.0
+
+        # Gripper actions (1.0 = stay, 0 = close, 2 = open)
+        gripper_right = 1.0
+        gripper_left = 1.0
+
+        # Process right arm keys (Arrow keys + Shift)
+        for key, val in self.current_pressed.items():
+            if key == self.right_arm_keys["up"]:
+                delta_y_right = -int(val)
+            elif key == self.right_arm_keys["down"]:
+                delta_y_right = int(val)
+            elif key == self.right_arm_keys["left"]:
+                delta_x_right = int(val)
+            elif key == self.right_arm_keys["right"]:
+                delta_x_right = -int(val)
+            elif key == self.right_arm_keys["z_up"]:
+                delta_z_right = int(val)
+            elif key == self.right_arm_keys["z_down"]:
+                delta_z_right = -int(val)
+
+        # Process left arm keys (WASD + Q/E)
+        for key, val in self.current_pressed.items():
+            if key == self.left_arm_keys["up"]:  # 'w'
+                delta_y_left = -int(val)
+            elif key == self.left_arm_keys["down"]:  # 's'
+                delta_y_left = int(val)
+            elif key == self.left_arm_keys["left"]:  # 'd'
+                delta_x_left = int(val)
+            elif key == self.left_arm_keys["right"]:  # 'a'
+                delta_x_left = -int(val)
+            elif key == self.left_arm_keys["z_up"]:  # 'e'
+                delta_z_left = int(val)
+            elif key == self.left_arm_keys["z_down"]:  # 'q'
+                delta_z_left = -int(val)
+
+        # Process misc keys (success/failure/intervention)
+        misc_keys_to_process = []
+        for key, val in list(self.current_pressed.items()):
+            # Keys not part of arm control
+            is_arm_key = False
+            for arm_keys in [self.right_arm_keys, self.left_arm_keys]:
+                if key in arm_keys.values():
+                    is_arm_key = True
+                    break
+            if not is_arm_key and val:
+                misc_keys_to_process.append(key)
+
+        for key in misc_keys_to_process:
+            self.misc_keys_queue.put(key)
+
+        self.current_pressed.clear()
+
+        action_dict = {
+            "delta_x_right": delta_x_right,
+            "delta_y_right": delta_y_right,
+            "delta_z_right": delta_z_right,
+            "delta_x_left": delta_x_left,
+            "delta_y_left": delta_y_left,
+            "delta_z_left": delta_z_left,
+        }
+
+        if self.config.use_gripper:
+            action_dict["gripper_right"] = gripper_right
+            action_dict["gripper_left"] = gripper_left
 
         return action_dict

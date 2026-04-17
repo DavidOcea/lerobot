@@ -1,0 +1,298 @@
+# ==============================================================
+# Residual RL Environment Configuration - Coffee Task Example
+# ==============================================================
+#
+# This config is used for Phase 2 (Online Training) with real robot.
+#
+# Usage:
+#   python -m lerobot.scripts.rl.residual.train_residual \
+#       --phase online \
+#       --env_config_path configs/env_coffee.yaml \
+#       ...
+#
+# ==============================================================
+
+# Environment type - matches HILSerlRobotEnvConfig
+type: gym_manipulator
+name: residual_coffee
+fps: 30
+device: cuda
+
+# Task description (for logging)
+task: "TwoArmCoffee"
+mode: null  # Not record/replay, just online training
+
+# Dataset (optional, for reference)
+repo_id: null
+dataset_root: null
+
+# Number of evaluation episodes
+num_episodes: 10
+
+# Policy to evaluate (will be loaded separately)
+pretrained_policy_name_or_path: null
+
+# Reward classifier (optional, for automatic success detection)
+reward_classifier_pretrained_path: null
+
+# ===============================================
+# Robot (Follower) Configuration
+# ===============================================
+robot:
+  type: supre_robot_follower
+
+  # Joint configuration file
+  joint_config_file: trunk_config_supre_robot_joint.yaml
+
+  # Camera configuration (adjust based on your setup)
+  cameras:
+    # Example: webcams
+    cam_top:
+      type: opencv
+      index_or_path: 0
+      fps: 30
+      width: 640
+      height: 480
+      rotation: 0
+
+    cam_left_hand:
+      type: opencv
+      index_or_path: 1
+      fps: 30
+      width: 640
+      height: 480
+      rotation: 0
+
+    cam_right_hand:
+      type: opencv
+      index_or_path: 2
+      fps: 30
+      width: 640
+      height: 480
+      rotation: 0
+
+  # Safety limits
+  max_relative_joint_move: 5.0  # Max degrees per step
+
+  # Prometheus monitoring (optional)
+  prometheus_port: null
+
+  # Control frequency
+  control_frequency: 30
+
+  # Joint calibration (position limits in degrees)
+  # NOTE: Gripper joints (joint_7) commented out - gripper temporarily removed
+  calibration:
+    # Left arm joints
+    - joint_name: left_arm_joint_1
+      min_position: -160.0
+      max_position: 160.0
+    - joint_name: left_arm_joint_2
+      min_position: -90.0
+      max_position: 0.0
+    - joint_name: left_arm_joint_3
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: left_arm_joint_4
+      min_position: -90.0
+      max_position: 0.0
+    - joint_name: left_arm_joint_5
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: left_arm_joint_6
+      min_position: -90.0
+      max_position: 90.0
+    # Gripper temporarily removed - will restore later
+    # - joint_name: left_arm_joint_7
+    #   min_position: 0.0
+    #   max_position: 1.0
+
+    # Right arm joints
+    - joint_name: right_arm_joint_1
+      min_position: -160.0
+      max_position: 160.0
+    - joint_name: right_arm_joint_2
+      min_position: 0.0
+      max_position: 165.0
+    - joint_name: right_arm_joint_3
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: right_arm_joint_4
+      min_position: -70.0
+      max_position: 90.0
+    - joint_name: right_arm_joint_5
+      min_position: -150.0
+      max_position: 150.0
+    - joint_name: right_arm_joint_6
+      min_position: -90.0
+      max_position: 90.0
+    # Gripper temporarily removed - will restore later
+    # - joint_name: right_arm_joint_7
+    #   min_position: 0.0
+    #   max_position: 1.0
+
+    # Trunk joints
+    - joint_name: trunk_joint_1
+      min_position: -85.0
+      max_position: 85.0
+    - joint_name: trunk_joint_2
+      min_position: 0.0
+      max_position: 45.0
+
+# ===============================================
+# Teleoperator (Leader) Configuration
+# ===============================================
+# For online training, leader can be used for:
+# 1. Emergency intervention (human takeover)
+# 2. Success marking (keyboard/gamepad)
+# 3. Force feedback (optional)
+
+teleop:
+  # Leader arm configuration (for intervention mode)
+  type: supre_robot_leader
+
+  # Joint configuration file
+  joint_config_path: config_supre_robot_joint.yaml
+
+  # Joint direction (14 joints without gripper, from trunk_teleoperate.yaml)
+  # left_arm:  1, 1, 1, -1, 1, -1 (6 joints)
+  # right_arm: 1, 1, 1, 1, 1, -1  (6 joints)
+  # trunk:     1, -1              (2 joints)
+  joint_direction:
+    - 1      # left_arm_joint_1
+    - 1      # left_arm_joint_2
+    - 1      # left_arm_joint_3
+    - -1     # left_arm_joint_4
+    - 1      # left_arm_joint_5
+    - -1     # left_arm_joint_6
+    - 1      # right_arm_joint_1
+    - 1      # right_arm_joint_2
+    - 1      # right_arm_joint_3
+    - 1      # right_arm_joint_4
+    - 1      # right_arm_joint_5
+    - -1     # right_arm_joint_6
+    - 1      # trunk_joint_1
+    - -1     # trunk_joint_2
+
+  # Force feedback (optional, for intervention feedback)
+  enable_force_feedback: false
+  force_threshold: 0.3
+
+# ===============================================
+# Environment Wrapper Configuration
+# ===============================================
+wrapper:
+  # Control mode options:
+  # - "leader_automatic": EE-space auto intervention (requires URDF)
+  # - "leader_joint": Joint-space incremental control (RECOMMENDED, no URDF needed)
+  # - "leader": EE-space manual intervention (requires URDF)
+  # - "keyboard_ee_bimanual": Dual-arm keyboard control
+  # - "keyboard_ee": Single-arm keyboard control
+  # - "gamepad": Gamepad control
+  #
+  # For supre_robot without URDF, use "leader_joint"
+  control_mode: leader_joint
+
+  # Intervention thresholds (only for leader_auto mode)
+  intervention_threshold: 10.0     # Error variance threshold to trigger intervention
+  release_threshold: 0.01          # Error variance threshold to release intervention
+
+  # Display cameras during training
+  display_cameras: true
+
+  # Observation augmentation
+  add_joint_velocity_to_observation: false
+  add_current_to_observation: false
+  add_ee_pose_to_observation: false
+
+  # Image processing (crop and resize)
+  crop_params_dict: null  # e.g., {"cam_top": (100, 100, 400, 400)}
+  resize_size: null       # e.g., (224, 224)
+
+  # Episode timing
+  control_time_s: 60.0    # Max episode duration (seconds)
+  reset_time_s: 5.0       # Reset duration
+
+  # Gripper settings - DISABLED (gripper temporarily removed)
+  # Will restore these settings when gripper is reinstalled:
+  # use_gripper: true
+  # gripper_quantization_threshold: 0.8
+  # gripper_penalty: 0.0
+  # gripper_penalty_in_reward: false
+  use_gripper: false
+
+  # Reset positions (recommended home position from 0226log.log)
+  fixed_reset_joint_positions:
+    # Left Arm
+    left_arm_joint_1: -47.3
+    left_arm_joint_2: -18.7
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -83.6
+    left_arm_joint_5: -23.7
+    left_arm_joint_6: 11.8
+    # Right Arm
+    right_arm_joint_1: 47.3
+    right_arm_joint_2: 18.7
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 83.6
+    right_arm_joint_5: 23.7
+    right_arm_joint_6: -11.8
+    # Trunk
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+# ===============================================
+# Features Configuration
+# ===============================================
+# NOTE: Action/state shape is 14 (gripper removed, but trunk joints included)
+# - left arm:  6 joints (joint_1 ~ joint_6)
+# - right arm: 6 joints (joint_1 ~ joint_6)
+# - trunk:     2 joints (trunk_joint_1, trunk_joint_2)
+# Total: 14 joints
+features:
+  action:
+    type: action
+    shape: [14]  # 6 joints x 2 arms + 2 trunk joints (gripper removed)
+
+  observation.state:
+    type: state
+    shape: [14]  # Joint positions (no gripper, but trunk included)
+
+  observation.images.cam_top:
+    type: visual
+    shape: [3, 480, 640]
+
+  observation.images.cam_left_hand:
+    type: visual
+    shape: [3, 480, 640]
+
+  observation.images.cam_right_hand:
+    type: visual
+    shape: [3, 480, 640]
+
+features_map:
+  action: action
+  observation.state: observation.state
+  observation.images.cam_top: observation.images.cam_top
+  observation.images.cam_left_hand: observation.images.cam_left_hand
+  observation.images.cam_right_hand: observation.images.cam_right_hand
+
+# ===============================================
+# Keyboard Controls (for all modes)
+# ===============================================
+# These keys work regardless of control_mode:
+#
+# Key          | Action
+# -------------|----------------------------------
+# 's'          | Mark episode SUCCESS (reward=1)
+# ESC          | End episode (FAILURE)
+# Left Arrow   | Rerecord episode (for record mode)
+#
+# For leader_manual mode (GearedLeaderControlWrapper):
+# -------------|----------------------------------
+# SPACE        | Toggle intervention mode (enter/exit)
+#
+# For keyboard_ee mode:
+# -------------|----------------------------------
+# Arrow keys   | Move end-effector in X/Y/Z
+# Other keys   | Gripper control (if enabled)

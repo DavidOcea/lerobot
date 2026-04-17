@@ -1,0 +1,194 @@
+# ==============================================================
+# Residual RL Environment Configuration - Safe Training Example
+# ==============================================================
+#
+# Conservative settings for initial real robot training.
+# Use this when you're starting Phase 2 for the first time.
+#
+# Features:
+# - Smaller action_scale (0.05)
+# - Lower exploration noise
+# - Shorter episode duration
+# - More safety margins
+# - Gripper disabled (temporarily removed)
+#
+# ==============================================================
+
+type: gym_manipulator
+name: residual_safe
+fps: 20  # Lower FPS for safer operation
+device: cuda
+
+task: "SafeTraining"
+mode: null
+num_episodes: 5
+
+# ===============================================
+# Robot (Follower) Configuration
+# ===============================================
+robot:
+  type: supre_robot_follower
+  joint_config_file: trunk_config_supre_robot_joint.yaml
+
+  cameras:
+    cam_top:
+      type: opencv
+      index_or_path: 0
+      fps: 20
+      width: 320   # Lower resolution for safety
+      height: 240
+      rotation: 0
+
+  # Tighter safety limits
+  max_relative_joint_move: 2.0  # Smaller steps for safety
+
+  control_frequency: 20  # Lower frequency
+
+  # Joint calibration - Gripper joints commented out
+  calibration:
+    - joint_name: left_arm_joint_1
+      min_position: -120.0  # Tighter limits for safety
+      max_position: 120.0
+    - joint_name: left_arm_joint_2
+      min_position: -60.0
+      max_position: -20.0
+    - joint_name: left_arm_joint_3
+      min_position: -100.0
+      max_position: 100.0
+    - joint_name: left_arm_joint_4
+      min_position: -60.0
+      max_position: -20.0
+    - joint_name: left_arm_joint_5
+      min_position: -100.0
+      max_position: 100.0
+    - joint_name: left_arm_joint_6
+      min_position: -60.0
+      max_position: 60.0
+    # Gripper removed - commented out
+    # - joint_name: left_arm_joint_7
+    #   min_position: 0.0
+    #   max_position: 0.8
+
+    - joint_name: right_arm_joint_1
+      min_position: -120.0
+      max_position: 120.0
+    - joint_name: right_arm_joint_2
+      min_position: 20.0
+      max_position: 120.0
+    - joint_name: right_arm_joint_3
+      min_position: -100.0
+      max_position: 100.0
+    - joint_name: right_arm_joint_4
+      min_position: -40.0
+      max_position: 60.0
+    - joint_name: right_arm_joint_5
+      min_position: -100.0
+      max_position: 100.0
+    - joint_name: right_arm_joint_6
+      min_position: -60.0
+      max_position: 60.0
+    # Gripper removed - commented out
+    # - joint_name: right_arm_joint_7
+    #   min_position: 0.0
+    #   max_position: 0.8
+
+    - joint_name: trunk_joint_1
+      min_position: -60.0
+      max_position: 60.0
+    - joint_name: trunk_joint_2
+      min_position: 10.0
+      max_position: 30.0
+
+# ===============================================
+# Teleoperator Configuration
+# ===============================================
+teleop:
+  type: supre_robot_leader
+  joint_config_path: config_supre_robot_joint.yaml
+  # Joint direction (14 joints without gripper, from trunk_teleoperate.yaml)
+  # left_arm:  1, 1, 1, -1, 1, -1 (6 joints)
+  # right_arm: 1, 1, 1, 1, 1, -1  (6 joints)
+  # trunk:     1, -1              (2 joints)
+  joint_direction:
+    - 1      # left_arm_joint_1
+    - 1      # left_arm_joint_2
+    - 1      # left_arm_joint_3
+    - -1     # left_arm_joint_4
+    - 1      # left_arm_joint_5
+    - -1     # left_arm_joint_6
+    - 1      # right_arm_joint_1
+    - 1      # right_arm_joint_2
+    - 1      # right_arm_joint_3
+    - 1      # right_arm_joint_4
+    - 1      # right_arm_joint_5
+    - -1     # right_arm_joint_6
+    - 1      # trunk_joint_1
+    - -1     # trunk_joint_2
+  enable_force_feedback: true  # Enable for safety
+  force_threshold: 0.2  # Lower threshold for faster intervention
+
+# ===============================================
+# Wrapper Configuration
+# ===============================================
+wrapper:
+  # Use joint-space incremental control (no URDF needed)
+  # Leader movement >5deg triggers gradual correction
+  control_mode: leader_joint
+
+  # Intervention thresholds (for leader_joint mode)
+  # These are handled by ActionCorrector internally
+  # trigger_threshold: 5.0 deg (leader change to trigger)
+  # adjust_alpha: 0.3 (correction factor)
+
+  display_cameras: true
+
+  # Shorter episode for safety
+  control_time_s: 30.0
+  reset_time_s: 10.0
+
+  # Gripper disabled
+  use_gripper: false
+
+  # Conservative reset positions (recommended home position from 0226log.log)
+  fixed_reset_joint_positions:
+    # Left Arm
+    left_arm_joint_1: -47.3
+    left_arm_joint_2: -18.7
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -83.6
+    left_arm_joint_5: -23.7
+    left_arm_joint_6: 11.8
+    # Right Arm
+    right_arm_joint_1: 47.3
+    right_arm_joint_2: 18.7
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 83.6
+    right_arm_joint_5: 23.7
+    right_arm_joint_6: -11.8
+    # Trunk
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+# ===============================================
+# Features Configuration
+# ===============================================
+# NOTE: Action/state shape is 14 (gripper removed, but trunk joints included)
+# - left arm:  6 joints (joint_1 ~ joint_6)
+# - right arm: 6 joints (joint_1 ~ joint_6)
+# - trunk:     2 joints (trunk_joint_1, trunk_joint_2)
+# Total: 14 joints
+features:
+  action:
+    type: action
+    shape: [14]  # 6 joints x 2 arms + 2 trunk joints (gripper removed)
+  observation.state:
+    type: state
+    shape: [14]  # Joint positions (no gripper, but trunk included)
+  observation.images.cam_top:
+    type: visual
+    shape: [3, 240, 320]
+
+features_map:
+  action: action
+  observation.state: observation.state
+  observation.images.cam_top: observation.images.cam_top

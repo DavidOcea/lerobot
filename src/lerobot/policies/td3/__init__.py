@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,18 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .configuration_keyboard import (
-    KeyboardEndEffectorTeleopConfig,
-    KeyboardBimanualEndEffectorTeleopConfig,
-    KeyboardTeleopConfig,
+"""TD3 policy module for residual RL."""
+
+from .config_td3 import (
+    TD3ActorConfig,
+    TD3CriticConfig,
+    TD3Config,
+    TD3ConfigAggressive,
+    TD3ConfigConservative,
+    TD3ConfigFineTune,
 )
-from .teleop_keyboard import KeyboardBimanualEndEffectorTeleop, KeyboardEndEffectorTeleop, KeyboardTeleop
+from .modeling_td3 import TD3Actor, TD3Agent, TD3Critic
 
 __all__ = [
-    "KeyboardTeleopConfig",
-    "KeyboardTeleop",
-    "KeyboardEndEffectorTeleopConfig",
-    "KeyboardEndEffectorTeleop",
-    "KeyboardBimanualEndEffectorTeleopConfig",
-    "KeyboardBimanualEndEffectorTeleop",
+    "TD3Actor",
+    "TD3Critic",
+    "TD3Agent",
+    "TD3ActorConfig",
+    "TD3CriticConfig",
+    "TD3Config",
+    "TD3ConfigConservative",
+    "TD3ConfigAggressive",
+    "TD3ConfigFineTune",
 ]

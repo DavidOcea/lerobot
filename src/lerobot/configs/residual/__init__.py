@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,18 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .configuration_keyboard import (
-    KeyboardEndEffectorTeleopConfig,
-    KeyboardBimanualEndEffectorTeleopConfig,
-    KeyboardTeleopConfig,
+"""Residual RL configuration presets."""
+
+from .preset_configs import (
+    ResidualBoxCleanupConfig,
+    ResidualCanSortConfig,
+    ResidualCoffeeConfig,
+    ResidualFineTuneConfig,
+    ResidualSafeConfig,
+    get_preset_config,
 )
-from .teleop_keyboard import KeyboardBimanualEndEffectorTeleop, KeyboardEndEffectorTeleop, KeyboardTeleop
 
 __all__ = [
-    "KeyboardTeleopConfig",
-    "KeyboardTeleop",
-    "KeyboardEndEffectorTeleopConfig",
-    "KeyboardEndEffectorTeleop",
-    "KeyboardBimanualEndEffectorTeleopConfig",
-    "KeyboardBimanualEndEffectorTeleop",
+    "ResidualCoffeeConfig",
+    "ResidualBoxCleanupConfig",
+    "ResidualCanSortConfig",
+    "ResidualSafeConfig",
+    "ResidualFineTuneConfig",
+    "get_preset_config",
 ]

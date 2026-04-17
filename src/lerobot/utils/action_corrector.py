@@ -19,7 +19,15 @@
 
 提供两种修正源：
 1. LeaderCorrector - Leader 设备辅助修正（状态机设计）
-2. KeyboardCorrector - 键盘辅助修正（平滑精细控制）
+2. KeyboardCorrector - 键盘辅助修正（关节选择模式 + 动态反转）
+
+按键控制模式（方案A改进版）：
+- 数字键 1-6: 选择 joint_1 ~ joint_6
+- 数字键 8-9: 选择 trunk_joint_1, trunk_joint_2
+- A/D: 正向/负向调整（通用）
+- J/K/L: 左臂/双臂/右臂模式
+- U/O: 双臂模式下反转左臂/右臂当前选中关节
+- R: 重置选择状态和反转状态（保留累积修正量）
 
 使用示例：
 ```python
@@ -63,28 +71,34 @@ class LeaderAdjustConfig:
 
 @dataclass
 class KeyAdjustConfig:
-    """键盘微调配置（平滑精细控制）"""
+    """键盘微调配置（关节选择模式 + 动态反转）
+
+    按键映射：
+    - 1-6: 选择 joint_1 ~ joint_6
+    - 8: 选择 trunk_joint_1
+    - 9: 选择 trunk_joint_2
+    - A: 正向调整（+）
+    - D: 负向调整（-）
+    - J: 左臂模式
+    - K: 双臂模式
+    - L: 右臂模式
+    - U: 反转左臂当前关节（双臂模式）
+    - O: 反转右臂当前关节（双臂模式）
+    - R: 重置选择状态和反转状态
+    """
 
     enable: bool = True
 
     # 平滑参数（精细控制）
-    step_per_frame: float = 0.2      # 每帧调整幅度（度）- 增大以提高joint_3可见度
+    step_per_frame: float = 0.2      # 每帧调整幅度（度）
     max_adjustment: float = 5.0      # 单次按键最大累积调整量（度）
 
-    # 双臂控制模式：left / right / both
-    arm_control_mode: str = "both"
+    # 默认状态
+    default_joint: int = 1           # 默认选中 joint_1
+    default_arm_mode: str = "both"   # 默认双臂模式
 
-    # 关节方向反转（解决硬件电机安装方向不一致问题）
+    # 关节方向反转（初始配置，运行时可动态修改）
     joint_inverse: str | dict[str, bool] = field(default_factory=dict)
-
-    # 按键映射
-    keys_joint_1_positive: str = "w"
-    keys_joint_1_negative: str = "x"
-    keys_joint_3_positive: str = "a"
-    keys_joint_3_negative: str = "d"
-    keys_trunk_positive: str = "q"
-    keys_trunk_negative: str = "e"
-    key_mode_toggle: str = "k"
 
 
 @dataclass
@@ -221,36 +235,69 @@ class LeaderCorrector:
 
 
 class KeyboardCorrector:
-    """键盘辅助修正器（平滑精细控制）。
+    """键盘辅助修正器（关节选择模式 + 动态反转）。
 
-    特点：
-    - 每帧渐进调整（而非跳变）
-    - 按键释放时：清零累积器，但保持已微调的位置（applied_offset）
-    - 每次按键独立计算最多5度，但总修正量持续累积
-    - 支持关节方向反转
+    状态管理：
+    - current_joint: 当前选中的关节编号（1-6, 8-9）
+    - arm_mode: 臂模式（left/both/right）
+    - joint_inverse: 动态反转状态（运行时可修改）
+
+    按键功能：
+    - 数字键: 选择关节
+    - A/D: 调整正向/负向
+    - J/K/L: 选择臂模式
+    - U/O: 反转左臂/右臂当前关节
+    - R: 重置选择和反转状态
 
     变量说明：
-    - accumulator: 当前按键会话的临时累积，按键释放时清零
-    - applied_offset: 已应用并保持的修正量，按键释放时合并accumulated值
+    - accumulator: 当前按键会话的临时累积
+    - applied_offset: 已应用并保持的修正量
     """
 
-    # 按键到关节的映射（用于释放时处理）
-    KEY_TO_JOINTS = {
-        "joint_1_positive": ["left_arm_joint_1", "right_arm_joint_1"],
-        "joint_1_negative": ["left_arm_joint_1", "right_arm_joint_1"],
-        "joint_3_positive": ["left_arm_joint_3", "right_arm_joint_3"],
-        "joint_3_negative": ["left_arm_joint_3", "right_arm_joint_3"],
-        "trunk_positive": ["trunk_joint_1"],
-        "trunk_negative": ["trunk_joint_1"],
+    # 关节编号到关节名称的映射
+    JOINT_NAMES = {
+        1: ["left_arm_joint_1", "right_arm_joint_1"],
+        2: ["left_arm_joint_2", "right_arm_joint_2"],
+        3: ["left_arm_joint_3", "right_arm_joint_3"],
+        4: ["left_arm_joint_4", "right_arm_joint_4"],
+        5: ["left_arm_joint_5", "right_arm_joint_5"],
+        6: ["left_arm_joint_6", "right_arm_joint_6"],
+        8: ["trunk_joint_1"],
+        9: ["trunk_joint_2"],
+    }
+
+    # 关节显示名称
+    JOINT_DISPLAY = {
+        1: "Joint_1",
+        2: "Joint_2",
+        3: "Joint_3",
+        4: "Joint_4",
+        5: "Joint_5",
+        6: "Joint_6",
+        8: "Trunk_1",
+        9: "Trunk_2",
     }
 
     def __init__(self, cfg: KeyAdjustConfig):
         self.cfg = cfg
-        self.accumulator: dict[str, float] = {}      # 当前按键会话的临时累积
-        self.applied_offset: dict[str, float] = {}   # 已应用并保持的修正量
+
+        # 状态变量
+        self.current_joint: int = cfg.default_joint
+        self.arm_mode: str = cfg.default_arm_mode
         self._joint_inverse: dict[str, bool] = {}
-        self._prev_key_state: dict[str, bool] = {}   # 存储上一帧按键状态
+
+        # 修正累积
+        self.accumulator: dict[str, float] = {}
+        self.applied_offset: dict[str, float] = {}
+
+        # 按键状态追踪
+        self._prev_key_state: dict[str, bool] = {}
+
+        # 解析初始反转配置
         self._parse_joint_inverse()
+
+        # 打印初始状态
+        self._print_status()
 
     def _parse_joint_inverse(self):
         """解析 joint_inverse 配置"""
@@ -267,15 +314,107 @@ class KeyboardCorrector:
                     logging.warning(f"[KeyboardCorrector] Failed to parse joint_inverse '{raw}': {e}")
                     self._joint_inverse = {}
         else:
-            self._joint_inverse = raw if raw else {}
+            self._joint_inverse = raw.copy() if raw else {}
+
+    def _print_status(self):
+        """打印当前状态"""
+        joint_display = self.JOINT_DISPLAY.get(self.current_joint, f"Joint_{self.current_joint}")
+        mode_display = {"left": "左臂", "both": "双臂", "right": "右臂"}[self.arm_mode]
+
+        # 获取当前关节的反转状态
+        inverse_status = self._get_inverse_status_display()
+
+        print(f"[{joint_display}|{mode_display}] {inverse_status}")
+
+    def _get_inverse_status_display(self) -> str:
+        """获取反转状态显示字符串"""
+        joints = self.JOINT_NAMES.get(self.current_joint, [])
+
+        if self.current_joint in [8, 9]:  # Trunk
+            return ""
+
+        if self.arm_mode == "both":
+            left_joint = joints[0]
+            right_joint = joints[1]
+            left_inverse = self._joint_inverse.get(left_joint, False)
+            right_inverse = self._joint_inverse.get(right_joint, False)
+            return f"左臂反转:{'ON' if left_inverse else 'OFF'}, 右臂反转:{'ON' if right_inverse else 'OFF'}"
+        elif self.arm_mode == "left":
+            left_joint = joints[0]
+            left_inverse = self._joint_inverse.get(left_joint, False)
+            return f"反转:{'ON' if left_inverse else 'OFF'} (单臂模式可用A/D控制方向)"
+        elif self.arm_mode == "right":
+            right_joint = joints[1]
+            right_inverse = self._joint_inverse.get(right_joint, False)
+            return f"反转:{'ON' if right_inverse else 'OFF'} (单臂模式可用A/D控制方向)"
+        return ""
+
+    def select_joint(self, joint_num: int):
+        """选择关节"""
+        if joint_num not in self.JOINT_NAMES:
+            logging.warning(f"[KeyboardCorrector] 无效关节编号: {joint_num}")
+            return
+
+        self.current_joint = joint_num
+        self._print_status()
+
+    def set_arm_mode(self, mode: str):
+        """设置臂模式"""
+        if mode not in ["left", "both", "right"]:
+            logging.warning(f"[KeyboardCorrector] 无效臂模式: {mode}")
+            return
+
+        self.arm_mode = mode
+        self._print_status()
+
+    def toggle_inverse(self, arm: str):
+        """切换指定臂当前选中关节的反转状态
+
+        Args:
+            arm: "left" 或 "right"
+        """
+        if self.current_joint in [8, 9]:  # Trunk 不需要反转
+            print("[提示] 腰部关节不需要反转控制")
+            return
+
+        if self.arm_mode != "both":
+            print("[提示] 单臂模式不需要反转，可用A/D控制正负方向")
+            return
+
+        joints = self.JOINT_NAMES.get(self.current_joint, [])
+        if not joints:
+            return
+
+        if arm == "left":
+            joint_name = joints[0]  # left_arm_joint_X
+        elif arm == "right":
+            joint_name = joints[1]  # right_arm_joint_X
+        else:
+            return
+
+        # Toggle反转状态
+        current = self._joint_inverse.get(joint_name, False)
+        new_state = not current
+        self._joint_inverse[joint_name] = new_state
+
+        arm_display = "左臂" if arm == "left" else "右臂"
+        print(f"[{self.JOINT_DISPLAY[self.current_joint]}|双臂] {arm_display}反转: {'ON' if current else 'OFF'} → {'ON' if new_state else 'OFF'}")
+
+    def reset_state(self):
+        """重置选择状态和反转状态（保留累积修正量）"""
+        self.current_joint = self.cfg.default_joint
+        self.arm_mode = self.cfg.default_arm_mode
+        self._joint_inverse.clear()
+        print(f"[状态重置] 关节={self.JOINT_DISPLAY[self.current_joint]}, 模式={'双臂' if self.arm_mode=='both' else self.arm_mode}, 反转:全部OFF")
 
     def reset(self):
-        """重置所有修正量"""
+        """重置累积修正量（保留选择和反转状态）"""
         self.accumulator.clear()
         self.applied_offset.clear()
+        logging.debug("[KeyboardCorrector] 累积修正量已清零")
 
     def get_accumulator(self) -> dict[str, float]:
-        """获取当前累积修正量（用于调试）"""
+        """获取当前累积修正量"""
         return self.accumulator.copy()
 
     def get_total_offset(self) -> dict[str, float]:
@@ -285,165 +424,138 @@ class KeyboardCorrector:
             total[joint] = total.get(joint, 0.0) + val
         return total
 
+    def get_joint_inverse(self) -> dict[str, bool]:
+        """获取当前反转状态"""
+        return self._joint_inverse.copy()
+
     def update_accumulator(self, events: dict) -> dict[str, float]:
         """根据键盘事件更新累积器。
 
-        每次按键独立计算：按键释放时清零对应关节的累积值，
-        下次按键从0开始重新累加。
-
         Args:
             events: 键盘事件字典，包含:
-                - arm_control_mode: "left"/"right"/"both"
-                - joint_1_positive_held: bool (W键)
-                - joint_1_negative_held: bool (X键)
-                - joint_3_positive_held: bool (A键)
-                - joint_3_negative_held: bool (D键)
-                - trunk_positive_held: bool (Q键)
-                - trunk_negative_held: bool (E键)
+                - joint_selected: int (1-6, 8-9) 关节选择
+                - positive_held: bool (A键) 正向调整
+                - negative_held: bool (D键) 负向调整
+                - arm_mode_left: bool (J键)
+                - arm_mode_both: bool (K键)
+                - arm_mode_right: bool (L键)
+                - inverse_left: bool (U键) 反转左臂
+                - inverse_right: bool (O键) 反转右臂
+                - reset_state: bool (R键) 重置状态
 
         Returns:
             更新后的累积器
         """
-        mode = events.get("arm_control_mode", self.cfg.arm_control_mode)
         step = self.cfg.step_per_frame
         max_adj = self.cfg.max_adjustment
 
-        # === 检测按键释放，保存修正并清零累积器 ===
-        for key_name in self.KEY_TO_JOINTS.keys():
-            event_key = f"{key_name}_held"
+        # === 处理关节选择 ===
+        for i in [1, 2, 3, 4, 5, 6, 8, 9]:
+            if events.get(f"joint_{i}_selected"):
+                self.select_joint(i)
+
+        # === 处理臂模式选择 ===
+        if events.get("arm_mode_left"):
+            self.set_arm_mode("left")
+        if events.get("arm_mode_both"):
+            self.set_arm_mode("both")
+        if events.get("arm_mode_right"):
+            self.set_arm_mode("right")
+
+        # === 处理反转控制 ===
+        if events.get("inverse_left"):
+            self.toggle_inverse("left")
+        if events.get("inverse_right"):
+            self.toggle_inverse("right")
+
+        # === 处理状态重置 ===
+        if events.get("reset_state"):
+            self.reset_state()
+
+        # === 获取当前关节名称 ===
+        joints = self.JOINT_NAMES.get(self.current_joint, [])
+        if not joints:
+            return self.accumulator.copy()
+
+        # === 检测按键释放，保存修正 ===
+        for direction in ["positive", "negative"]:
+            event_key = f"{direction}_held"
             current_state = events.get(event_key, False)
             prev_state = self._prev_key_state.get(event_key, False)
 
             # 检测从 True -> False（按键释放）
             if prev_state and not current_state:
-                joints_to_process = self.KEY_TO_JOINTS[key_name]
-                mode_now = events.get("arm_control_mode", mode)
-                for joint in joints_to_process:
+                for joint in joints:
+                    # 根据臂模式决定处理哪些关节
                     should_process = False
-                    if joint.startswith("left_arm") and mode_now in ["both", "left"]:
+                    if joint.startswith("left_arm") and self.arm_mode in ["both", "left"]:
                         should_process = True
-                    elif joint.startswith("right_arm") and mode_now in ["both", "right"]:
+                    elif joint.startswith("right_arm") and self.arm_mode in ["both", "right"]:
                         should_process = True
                     elif joint.startswith("trunk"):
                         should_process = True
 
                     if should_process and joint in self.accumulator:
-                        # 将当前累积值合并到 applied_offset（保持微调位置）
                         acc_val = self.accumulator[joint]
-                        if abs(acc_val) > 0.001:  # 只处理有意义的修正
+                        if abs(acc_val) > 0.001:
                             self.applied_offset[joint] = self.applied_offset.get(joint, 0.0) + acc_val
-                            logging.debug(f"[KeyboardCorrector] Key released: saved {joint} offset={acc_val:.3f}, total={self.applied_offset[joint]:.3f}")
-                        # 清零累积器（下次按键从0开始）
+                            logging.debug(f"[KeyboardCorrector] Key released: saved {joint} offset={acc_val:.3f}")
                         self.accumulator[joint] = 0.0
 
-            # 更新按键状态记录
             self._prev_key_state[event_key] = current_state
 
-        # === 双臂 joint_1（同向）===
-        if events.get("joint_1_positive_held"):  # W键
-            if mode == "both":
-                acc_left = self.accumulator.get("left_arm_joint_1", 0.0)
-                acc_right = self.accumulator.get("right_arm_joint_1", 0.0)
-                new_left = acc_left + step
-                new_right = acc_right + step
-                if abs(new_left) <= max_adj:
-                    self.accumulator["left_arm_joint_1"] = new_left
-                if abs(new_right) <= max_adj:
-                    self.accumulator["right_arm_joint_1"] = new_right
-            elif mode == "left":
-                acc = self.accumulator.get("left_arm_joint_1", 0.0)
-                new_val = acc + step
-                if abs(new_val) <= max_adj:
-                    self.accumulator["left_arm_joint_1"] = new_val
-            elif mode == "right":
-                acc = self.accumulator.get("right_arm_joint_1", 0.0)
-                new_val = acc + step
-                if abs(new_val) <= max_adj:
-                    self.accumulator["right_arm_joint_1"] = new_val
+        # === 处理正向调整（A键）===
+        if events.get("positive_held"):
+            delta = step
+            for joint in joints:
+                should_adjust = False
+                if joint.startswith("left_arm") and self.arm_mode in ["both", "left"]:
+                    should_adjust = True
+                elif joint.startswith("right_arm") and self.arm_mode in ["both", "right"]:
+                    should_adjust = True
+                elif joint.startswith("trunk"):
+                    should_adjust = True
 
-        if events.get("joint_1_negative_held"):  # X键
-            if mode == "both":
-                acc_left = self.accumulator.get("left_arm_joint_1", 0.0)
-                acc_right = self.accumulator.get("right_arm_joint_1", 0.0)
-                new_left = acc_left - step
-                new_right = acc_right - step
-                if abs(new_left) <= max_adj:
-                    self.accumulator["left_arm_joint_1"] = new_left
-                if abs(new_right) <= max_adj:
-                    self.accumulator["right_arm_joint_1"] = new_right
-            elif mode == "left":
-                acc = self.accumulator.get("left_arm_joint_1", 0.0)
-                new_val = acc - step
-                if abs(new_val) <= max_adj:
-                    self.accumulator["left_arm_joint_1"] = new_val
-            elif mode == "right":
-                acc = self.accumulator.get("right_arm_joint_1", 0.0)
-                new_val = acc - step
-                if abs(new_val) <= max_adj:
-                    self.accumulator["right_arm_joint_1"] = new_val
+                if should_adjust:
+                    acc = self.accumulator.get(joint, 0.0)
+                    # 应用反转
+                    if self._joint_inverse.get(joint, False):
+                        delta_adjusted = -delta
+                    else:
+                        delta_adjusted = delta
 
-        # === 双臂 joint_3（相对方向）===
-        if events.get("joint_3_positive_held"):  # A键
-            if mode == "both":
-                acc_left = self.accumulator.get("left_arm_joint_3", 0.0)
-                acc_right = self.accumulator.get("right_arm_joint_3", 0.0)
-                new_left = acc_left + step
-                new_right = acc_right - step  # 相对方向
-                if abs(new_left) <= max_adj:
-                    self.accumulator["left_arm_joint_3"] = new_left
-                if abs(new_right) <= max_adj:
-                    self.accumulator["right_arm_joint_3"] = new_right
-            elif mode == "left":
-                acc = self.accumulator.get("left_arm_joint_3", 0.0)
-                new_val = acc + step
-                if abs(new_val) <= max_adj:
-                    self.accumulator["left_arm_joint_3"] = new_val
-            elif mode == "right":
-                acc = self.accumulator.get("right_arm_joint_3", 0.0)
-                new_val = acc - step
-                if abs(new_val) <= max_adj:
-                    self.accumulator["right_arm_joint_3"] = new_val
+                    new_val = acc + delta_adjusted
+                    if abs(new_val) <= max_adj:
+                        self.accumulator[joint] = new_val
 
-        if events.get("joint_3_negative_held"):  # D键
-            if mode == "both":
-                acc_left = self.accumulator.get("left_arm_joint_3", 0.0)
-                acc_right = self.accumulator.get("right_arm_joint_3", 0.0)
-                new_left = acc_left - step
-                new_right = acc_right + step  # 相对方向
-                if abs(new_left) <= max_adj:
-                    self.accumulator["left_arm_joint_3"] = new_left
-                if abs(new_right) <= max_adj:
-                    self.accumulator["right_arm_joint_3"] = new_right
-            elif mode == "left":
-                acc = self.accumulator.get("left_arm_joint_3", 0.0)
-                new_val = acc - step
-                if abs(new_val) <= max_adj:
-                    self.accumulator["left_arm_joint_3"] = new_val
-            elif mode == "right":
-                acc = self.accumulator.get("right_arm_joint_3", 0.0)
-                new_val = acc + step
-                if abs(new_val) <= max_adj:
-                    self.accumulator["right_arm_joint_3"] = new_val
+        # === 处理负向调整（D键）===
+        if events.get("negative_held"):
+            delta = -step
+            for joint in joints:
+                should_adjust = False
+                if joint.startswith("left_arm") and self.arm_mode in ["both", "left"]:
+                    should_adjust = True
+                elif joint.startswith("right_arm") and self.arm_mode in ["both", "right"]:
+                    should_adjust = True
+                elif joint.startswith("trunk"):
+                    should_adjust = True
 
-        # === 腰部 trunk ===
-        if events.get("trunk_positive_held"):  # Q键
-            acc = self.accumulator.get("trunk_joint_1", 0.0)
-            new_val = acc + step
-            if abs(new_val) <= max_adj:
-                self.accumulator["trunk_joint_1"] = new_val
+                if should_adjust:
+                    acc = self.accumulator.get(joint, 0.0)
+                    # 应用反转
+                    if self._joint_inverse.get(joint, False):
+                        delta_adjusted = -delta  # 反转后负向变成正向
+                    else:
+                        delta_adjusted = delta
 
-        if events.get("trunk_negative_held"):  # E键
-            acc = self.accumulator.get("trunk_joint_1", 0.0)
-            new_val = acc - step
-            if abs(new_val) <= max_adj:
-                self.accumulator["trunk_joint_1"] = new_val
+                    new_val = acc + delta_adjusted
+                    if abs(new_val) <= max_adj:
+                        self.accumulator[joint] = new_val
 
         return self.accumulator.copy()
 
     def apply_to_action(self, action: dict[str, float]) -> dict[str, float]:
         """将修正量应用到动作。
-
-        应用 applied_offset（保持的修正）+ accumulator（当前按键累积）。
 
         Args:
             action: 原始动作字典（格式如 {"joint_name.pos": value}）
@@ -452,16 +564,12 @@ class KeyboardCorrector:
             修正后的动作字典
         """
         corrected_action = action.copy()
-
-        # 计算总修正量
         total_offset = self.get_total_offset()
 
         for joint_key, adjust in total_offset.items():
             action_key = f"{joint_key}.pos"
             if action_key in corrected_action:
-                # 应用方向反转
-                if joint_key in self._joint_inverse and self._joint_inverse[joint_key]:
-                    adjust = -adjust
+                # 注意：反转已在 update_accumulator 中处理，这里直接添加
                 corrected_action[action_key] += adjust
 
         return corrected_action
@@ -501,25 +609,22 @@ class ActionCorrector:
 
         if config.keyboard.enable:
             self.keyboard_corrector = KeyboardCorrector(config.keyboard)
-            logging.info("[ActionCorrector] 键盘修正已启用")
+            logging.info("[ActionCorrector] 键盘修正已启用（关节选择模式）")
         else:
             self.keyboard_corrector = None
 
     def reset(self):
-        """重置所有修正器状态"""
+        """重置累积修正量（保留选择和反转状态）"""
         if self.leader_corrector:
             self.leader_corrector.reset()
         if self.keyboard_corrector:
             self.keyboard_corrector.reset()
-        logging.debug("[ActionCorrector] 所有修正器已重置")
+        logging.debug("[ActionCorrector] 累积修正量已重置")
 
-    def reset_accumulators(self):
-        """仅重置累积器（保留状态）"""
-        if self.leader_corrector:
-            self.leader_corrector.reset_accumulator()
+    def reset_state(self):
+        """重置选择状态和反转状态"""
         if self.keyboard_corrector:
-            self.keyboard_corrector.reset()
-        logging.debug("[ActionCorrector] 累积器已重置")
+            self.keyboard_corrector.reset_state()
 
     def correct(
         self,
@@ -544,7 +649,6 @@ class ActionCorrector:
 
         # 1. Leader 修正
         if self.leader_corrector:
-            # 获取 Leader 观测
             if leader_obs is None and self.teleop is not None:
                 leader_obs = self.teleop.get_action()
 
@@ -567,6 +671,18 @@ class ActionCorrector:
         if self.leader_corrector:
             return self.leader_corrector.state
         return "disabled"
+
+    def get_keyboard_status(self) -> dict:
+        """获取键盘修正器状态"""
+        if self.keyboard_corrector:
+            return {
+                "current_joint": self.keyboard_corrector.current_joint,
+                "arm_mode": self.keyboard_corrector.arm_mode,
+                "joint_inverse": self.keyboard_corrector.get_joint_inverse(),
+                "accumulator": self.keyboard_corrector.get_accumulator(),
+                "applied_offset": self.keyboard_corrector.applied_offset.copy(),
+            }
+        return {}
 
     def get_accumulators(self) -> dict:
         """获取所有修正器状态"""

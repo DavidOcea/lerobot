@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 # Copyright 2025 The HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,18 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .configuration_keyboard import (
-    KeyboardEndEffectorTeleopConfig,
-    KeyboardBimanualEndEffectorTeleopConfig,
-    KeyboardTeleopConfig,
-)
-from .teleop_keyboard import KeyboardBimanualEndEffectorTeleop, KeyboardEndEffectorTeleop, KeyboardTeleop
+"""Residual policy module combining BC + TD3."""
+
+from .config_residual import ResidualPolicyConfig, ResidualTrainingConfig
+from .modeling_residual import ResidualPolicy, ResidualPolicyEvaluator
 
 __all__ = [
-    "KeyboardTeleopConfig",
-    "KeyboardTeleop",
-    "KeyboardEndEffectorTeleopConfig",
-    "KeyboardEndEffectorTeleop",
-    "KeyboardBimanualEndEffectorTeleopConfig",
-    "KeyboardBimanualEndEffectorTeleop",
+    "ResidualPolicy",
+    "ResidualPolicyEvaluator",
+    "ResidualPolicyConfig",
+    "ResidualTrainingConfig",
 ]
