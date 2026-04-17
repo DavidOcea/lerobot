@@ -245,7 +245,7 @@ def replay_record_loop(
 
     timestamp_mode = "actual" if use_actual_timestamp else "ideal"
     logging.info(f"Replay_record started with noise_std={cfg.noise_std}, timestamp_mode={timestamp_mode}")
-    logging.info(f"Key adjust mode: {cfg.key_adjust.arm_control_mode}, step={cfg.key_adjust.step_per_frame} deg/frame")
+    logging.info(f"Key adjust: joint={cfg.key_adjust.default_joint}, arm_mode={cfg.key_adjust.default_arm_mode}, step={cfg.key_adjust.step_per_frame} deg/frame")
     if cfg.leader_adjust.enable:
         logging.info(f"Leader adjust: trigger={cfg.leader_adjust.trigger_threshold_deg}度, exit={cfg.leader_adjust.exit_threshold_deg}度/{cfg.leader_adjust.exit_frame_count}帧")
 
