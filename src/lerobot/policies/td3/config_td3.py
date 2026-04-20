@@ -16,7 +16,8 @@
 
 from dataclasses import dataclass, field
 
-from lerobot.configs.policies import PreTrainedPolicyConfig
+from lerobot.configs.policies import PreTrainedConfig
+from lerobot.optim.optimizers import OptimizerConfig
 
 
 @dataclass
@@ -56,8 +57,9 @@ class TD3CriticConfig:
     num_q_networks: int = 2
 
 
+@PreTrainedConfig.register_subclass("td3")
 @dataclass
-class TD3Config(PreTrainedPolicyConfig):
+class TD3Config(PreTrainedConfig):
     """Full TD3 configuration."""
 
     # Network configs
@@ -68,6 +70,7 @@ class TD3Config(PreTrainedPolicyConfig):
     actor_lr: float = 1e-6  # Conservative for residual RL
     critic_lr: float = 1e-4
     critic_target_tau: float = 0.005  # Soft update rate
+    gamma: float = 0.99  # Discount factor
 
     # TD3 specific hyperparameters
     policy_delay: int = 2  # Delayed policy updates (TD3 feature)
@@ -90,6 +93,33 @@ class TD3Config(PreTrainedPolicyConfig):
 
     # Device
     device: str = "cuda"
+
+    # Implement abstract methods from PreTrainedConfig
+    @property
+    def observation_delta_indices(self) -> list | None:
+        # TD3 is single-step RL, no temporal observation stacking
+        return None
+
+    @property
+    def action_delta_indices(self) -> list | None:
+        # TD3 is single-step RL, no action chunking
+        return None
+
+    @property
+    def reward_delta_indices(self) -> list | None:
+        # TD3 uses immediate rewards
+        return None
+
+    def get_optimizer_preset(self) -> OptimizerConfig:
+        from lerobot.optim.optimizers import AdamConfig
+        return AdamConfig(lr=self.actor_lr)
+
+    def get_scheduler_preset(self) -> None:
+        return None
+
+    def validate_features(self) -> None:
+        # TD3 is flexible, doesn't require specific feature types
+        pass
 
 
 # Preset configurations for different scenarios

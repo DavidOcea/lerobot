@@ -110,6 +110,10 @@ class ReplayBuffer:
         self.dones = np.zeros((self.buffer_size,), dtype=np.bool_)
         self.priorities = np.ones((self.buffer_size,), dtype=np.float32)
 
+        # For residual RL: store base actions
+        self.base_actions = np.zeros((self.buffer_size, action_dim), dtype=np.float32)
+        self.has_base_actions = False  # Track if we're storing base actions
+
         # Buffer state
         self.size = 0
         self.pointer = 0
@@ -204,6 +208,11 @@ class ReplayBuffer:
         self.dones[self.pointer] = done
         self.priorities[self.pointer] = self.max_priority
 
+        # Store base action if provided (for residual RL)
+        if base_action is not None:
+            self.base_actions[self.pointer] = base_action
+            self.has_base_actions = True
+
         # Update pointer and size
         self.pointer = (self.pointer + 1) % self.buffer_size
         if self.size < self.buffer_size:
@@ -242,6 +251,10 @@ class ReplayBuffer:
             "indices": torch.from_numpy(indices).to(self.device),
             "weights": torch.from_numpy(weights).to(self.device),
         }
+
+        # Add base actions if available (for residual RL)
+        if self.has_base_actions:
+            batch["base_action"] = torch.from_numpy(self.base_actions[indices]).to(self.device)
 
         return batch
 

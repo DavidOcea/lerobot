@@ -55,10 +55,13 @@ from typing import Any
 
 import numpy as np
 import torch
-from draccus import dataclass, field, wrap
+from dataclasses import dataclass, field
+from typing import Any
 
-from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.configs.envs import HILSerlRobotEnvConfig
+import draccus
+
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.envs.configs import HILSerlRobotEnvConfig
 from lerobot.datasets.factory import make_dataset
 from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_policy
@@ -77,7 +80,8 @@ from lerobot.utils.residual.normalize import (
 from lerobot.utils.residual.replay_buffer import ReplayBuffer, ReplayBufferConfig
 from lerobot.utils.residual.utils import EvalMode, schedule_stddev
 from lerobot.utils.robot_utils import busy_wait
-from lerobot.utils.utils import get_safe_torch_device, init_logging, set_seed
+from lerobot.utils.utils import get_safe_torch_device, init_logging
+from lerobot.utils.random_utils import set_seed
 
 
 @dataclass
@@ -85,14 +89,18 @@ class TrainResidualConfig:
     """Configuration for residual RL training."""
 
     # ========================================
+    # Base policy (REQUIRED for both phases)
+    # ========================================
+    base_policy_checkpoint: str  # Path to pre-trained ACT checkpoint (REQUIRED)
+
+    # ========================================
     # Phase selection (REQUIRED)
     # ========================================
     phase: str = "offline"  # "offline" or "online"
 
     # ========================================
-    # Base policy (REQUIRED for both phases)
+    # Base policy config (optional)
     # ========================================
-    base_policy_checkpoint: str  # Path to pre-trained ACT checkpoint
     base_policy_config_path: str | None = None  # Optional: ACT config path
 
     # ========================================
@@ -100,6 +108,7 @@ class TrainResidualConfig:
     # ========================================
     offline_dataset: str | None = None  # Local dataset path or HF repo_id
     offline_dataset_episodes: int | None = None  # Number of episodes to use
+    batch_inference_size: int = 64  # Batch size for ACT inference during data loading
 
     # ========================================
     # Phase 2: Online training parameters
@@ -189,12 +198,6 @@ def train_offline_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoin
     for param in base_policy.parameters():
         param.requires_grad = False
 
-    # Get dimensions
-    state_dim = base_policy.config.state_dim if hasattr(base_policy.config, 'state_dim') else 7
-    action_dim = base_policy.config.action_dim if hasattr(base_policy.config, 'action_dim') else 7
-
-    logging.info(f"Base policy loaded: state_dim={state_dim}, action_dim={action_dim}")
-
     # ========================================
     # 2. Load offline dataset and compute normalization
     # ========================================
@@ -213,6 +216,12 @@ def train_offline_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoin
         dataset=offline_dataset,
         save_dir=normalization_dir,
     )
+
+    # Get dimensions from normalization (computed from actual dataset)
+    state_dim = state_standardizer.state_dim
+    action_dim = action_scaler.action_dim
+
+    logging.info(f"Dimensions: state_dim={state_dim}, action_dim={action_dim}")
 
     # ========================================
     # 3. Create TD3 agent
@@ -270,7 +279,7 @@ def train_offline_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoin
         device=device,
     )
 
-    # Load offline transitions
+    # Load offline transitions with batch inference optimization
     logging.info("Loading offline transitions into replay buffer...")
     load_offline_transitions(
         dataset=offline_dataset,
@@ -279,6 +288,7 @@ def train_offline_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoin
         state_standardizer=state_standardizer,
         base_policy=base_policy,
         device=device,
+        batch_inference_size=cfg.batch_inference_size if hasattr(cfg, 'batch_inference_size') else 64,
     )
 
     logging.info(f"Offline buffer size: {len(offline_rb)}")
@@ -503,7 +513,10 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
             next_state = next_obs["observation.state"].cpu().numpy() if isinstance(next_obs["observation.state"], torch.Tensor) else next_obs["observation.state"]
             residual_np = residual_action.cpu().numpy()
 
-            online_rb.add(state, residual_np, reward, next_state, terminated)
+            # Get base_action from env wrapper (stored in info dict)
+            base_action_np = info.get("base_action", None)
+
+            online_rb.add(state, residual_np, reward, next_state, terminated, base_action=base_action_np)
 
             obs = next_obs
 
@@ -547,7 +560,10 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
         next_state = next_obs["observation.state"].cpu().numpy() if isinstance(next_obs["observation.state"], torch.Tensor) else next_obs["observation.state"]
         residual_np = residual_action.cpu().numpy() if isinstance(residual_action, torch.Tensor) else residual_action
 
-        online_rb.add(state, residual_np, reward, next_state, terminated)
+        # Get base_action from env wrapper (stored in info dict)
+        base_action_np = info.get("base_action", None)
+
+        online_rb.add(state, residual_np, reward, next_state, terminated, base_action=base_action_np)
 
         # Track episode stats
         episode_reward += reward
@@ -720,21 +736,91 @@ def make_policy_from_checkpoint(
     device: torch.device,
 ) -> ACTPolicy:
     """Load ACT policy from checkpoint."""
+    import json
+    from pathlib import Path
     from safetensors.torch import load_file
 
-    # Try to load using make_policy factory first
-    if config_path:
-        # Load config and create policy
+    from lerobot.policies.act.configuration_act import ACTConfig
+    from lerobot.configs.types import FeatureType, NormalizationMode, PolicyFeature
+
+    checkpoint_path = Path(checkpoint_path)
+
+    # Handle both directory and file paths
+    if checkpoint_path.is_file() and checkpoint_path.suffix == '.safetensors':
+        checkpoint_dir = checkpoint_path.parent
+        model_file = checkpoint_path
+    elif checkpoint_path.is_dir():
+        checkpoint_dir = checkpoint_path
+        model_file = checkpoint_dir / "model.safetensors"
+    else:
+        raise ValueError(f"Checkpoint path must be a .safetensors file or directory: {checkpoint_path}")
+
+    # Check for config file
+    config_file = checkpoint_dir / "config.json"
+
+    # Fields that may be incompatible with current ACTConfig
+    incompatible_fields = {
+        'use_relative_action', 'only_first_step', 'label_smoothing',
+        'use_warmup_cosine_scheduler', 'warmup_steps', 'min_lr_ratio',
+        'type',  # 'type' is used for subclass registration, not a direct field
+    }
+
+    if config_file.exists():
+        # Load config and filter incompatible fields
+        with open(config_file, 'r') as f:
+            config_dict = json.load(f)
+
+        # Remove incompatible fields
+        config_dict = {k: v for k, v in config_dict.items() if k not in incompatible_fields}
+
+        # Convert input_features and output_features dicts to PolicyFeature objects
+        if 'input_features' in config_dict:
+            input_features = {}
+            for key, ft_dict in config_dict['input_features'].items():
+                ft_type = FeatureType(ft_dict['type'])
+                ft_shape = tuple(ft_dict['shape'])
+                input_features[key] = PolicyFeature(type=ft_type, shape=ft_shape)
+            config_dict['input_features'] = input_features
+
+        if 'output_features' in config_dict:
+            output_features = {}
+            for key, ft_dict in config_dict['output_features'].items():
+                ft_type = FeatureType(ft_dict['type'])
+                ft_shape = tuple(ft_dict['shape'])
+                output_features[key] = PolicyFeature(type=ft_type, shape=ft_shape)
+            config_dict['output_features'] = output_features
+
+        # Convert normalization_mapping if needed
+        if 'normalization_mapping' in config_dict:
+            norm_mapping = {}
+            for key, mode_str in config_dict['normalization_mapping'].items():
+                norm_mapping[key] = NormalizationMode(mode_str)
+            config_dict['normalization_mapping'] = norm_mapping
+
+        try:
+            config = ACTConfig(**config_dict)
+        except TypeError as e:
+            logging.warning(f"Config loading failed: {e}. Using default config.")
+            config = ACTConfig()
+    elif config_path:
         import yaml
         with open(config_path, 'r') as f:
             config_dict = yaml.safe_load(f)
-
-        from lerobot.policies.act.config_act import ACTConfig
         config = ACTConfig(**config_dict)
-        policy = ACTPolicy(config)
     else:
-        # Try to load from checkpoint directory
-        policy = ACTPolicy.from_pretrained(checkpoint_path)
+        # Use default config
+        config = ACTConfig()
+
+    # Create policy with config
+    policy = ACTPolicy(config)
+
+    # Load weights
+    if model_file.exists():
+        state_dict = load_file(model_file, device=str(device))
+        policy.load_state_dict(state_dict, strict=False)
+        logging.info(f"Loaded weights from: {model_file}")
+    else:
+        raise FileNotFoundError(f"Model file not found: {model_file}")
 
     return policy.to(device)
 
@@ -744,17 +830,33 @@ def load_offline_dataset(
     num_episodes: int | None,
 ) -> LeRobotDataset:
     """Load LeRobot dataset."""
+    from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+
     logging.info(f"Loading dataset: {dataset_path}")
 
-    # Use make_dataset factory
-    from lerobot.configs.default import DatasetConfig
+    # Get dataset metadata to check available episodes
+    meta = LeRobotDatasetMetadata(dataset_path)
+    available_episodes = list(meta.episodes_stats.keys())
+    total_available = len(available_episodes)
 
-    dataset_config = DatasetConfig(
+    logging.info(f"Dataset has {total_available} episodes available")
+
+    # If num_episodes is specified, limit to that number (but not more than available)
+    if num_episodes is not None:
+        if num_episodes > total_available:
+            logging.warning(f"Requested {num_episodes} episodes but only {total_available} available. Using all available.")
+            episodes = available_episodes
+        else:
+            episodes = available_episodes[:num_episodes]
+    else:
+        episodes = None  # Use all episodes
+
+    logging.info(f"Using episodes: {episodes if episodes else 'all'}")
+
+    dataset = LeRobotDataset(
         repo_id=dataset_path,
-        num_episodes=num_episodes,
+        episodes=episodes,
     )
-
-    dataset = make_dataset(dataset_config)
     return dataset
 
 
@@ -762,28 +864,56 @@ def compute_normalization_from_offline_dataset(
     dataset: LeRobotDataset,
     save_dir: Path,
 ) -> tuple[ActionScaler, StateStandardizer]:
-    """Compute normalization from dataset."""
+    """Compute normalization from dataset (using precomputed stats for speed)."""
+    from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata
+
     logging.info("Computing normalization from dataset...")
 
-    # Extract actions and states
-    actions = []
-    states = []
+    # Use precomputed stats from dataset metadata (MUCH faster than iterating)
+    # LeRobotDataset already has stats computed during dataset creation
+    meta = dataset.meta if hasattr(dataset, 'meta') else LeRobotDatasetMetadata(dataset.repo_id, root=dataset.root)
+    stats = meta.stats
 
-    # LeRobotDataset structure varies, need to handle properly
-    # Simplified version here
-    for episode_data in dataset.episode_data_index:
-        # Get episode indices
-        from_idx = episode_data['from']
-        to_idx = episode_data['to']
+    # Get action stats
+    action_stats = stats.get('action', {})
+    if action_stats:
+        action_min = np.array(action_stats['min'])
+        action_max = np.array(action_stats['max'])
+        action_mean = np.array(action_stats['mean'])
+        action_std = np.array(action_stats['std'])
+        logging.info(f"Using precomputed action stats (shape: {action_min.shape})")
+    else:
+        logging.warning("No action stats found, using default")
+        action_min = np.array([-1.0] * 7)
+        action_max = np.array([1.0] * 7)
 
-        # This is simplified - actual implementation needs to match dataset structure
-        pass
+    # Get state stats
+    state_stats = stats.get('observation.state', {})
+    if state_stats:
+        state_mean = np.array(state_stats['mean'])
+        state_std = np.array(state_stats['std'])
+        logging.info(f"Using precomputed state stats (shape: {state_mean.shape})")
+    else:
+        logging.warning("No state stats found, using default")
+        state_mean = np.zeros(7)
+        state_std = np.ones(7)
 
-    # For now, use default normalization
-    action_scaler = ActionScaler.from_env(-1.0, 1.0)
-    state_standardizer = StateStandardizer.from_config(7)
+    # Create ActionScaler (min-max scaling to [-1, 1])
+    # Add small margin to handle values slightly outside dataset range
+    margin = (action_max - action_min) * 0.05
+    action_min = action_min - margin
+    action_max = action_max + margin
+    action_scaler = ActionScaler(action_min=action_min, action_max=action_max)
+
+    # Create StateStandardizer (mean-std standardization)
+    state_std = np.maximum(state_std, 1e-1)  # Prevent division by zero
+    state_standardizer = StateStandardizer(state_mean=state_mean, state_std=state_std)
 
     save_normalization(action_scaler, state_standardizer, save_dir)
+
+    logging.info(f"Action range: {action_scaler.action_range}")
+    logging.info(f"State mean: {state_standardizer.state_mean}")
+    logging.info(f"State std: {state_standardizer.state_std}")
 
     return action_scaler, state_standardizer
 
@@ -795,25 +925,136 @@ def load_offline_transitions(
     state_standardizer: StateStandardizer,
     base_policy: ACTPolicy,
     device: torch.device,
-) -> None:
-    """Load offline transitions into replay buffer."""
-    logging.info("Loading offline transitions...")
+    batch_inference_size: int = 64,
+) -> int:
+    """Load offline transitions into replay buffer with batch inference optimization.
 
-    # Iterate through dataset episodes
-    # Actual implementation depends on dataset structure
+    For imitation learning datasets (no rewards), we:
+    1. Extract (state, action) from each frame
+    2. Compute base_action from frozen ACT policy (BATCH inference for speed)
+    3. Compute residual = normalized_action - base_normalized_action
+    4. Set reward=0 (offline RL with BC-like initialization)
+    5. Use next_state from next frame, done at episode end
+
+    Args:
+        batch_inference_size: Number of frames to process in one ACT inference batch.
+                             Larger = faster but more memory. Default 64 works on most GPUs.
+
+    Returns:
+        Number of transitions loaded
+    """
+    logging.info("Loading offline transitions with batch inference...")
+    base_policy.eval()
+
+    # Get episode boundaries from dataset
+    episode_data_index = dataset.episode_data_index
+    num_episodes = len(dataset.episodes) if hasattr(dataset, 'episodes') else len(episode_data_index['from'])
+    logging.info(f"Processing {num_episodes} episodes...")
+
     count = 0
+    all_frames_data = []  # Collect all frames for batch processing
 
-    # Placeholder - actual implementation needs to:
-    # 1. Extract (state, action, reward, next_state, done) from dataset
-    # 2. Normalize actions using action_scaler
-    # 3. Compute base_action from base_policy
-    # 4. Compute residual = normalized_action - base_normalized_action
-    # 5. Store residual action in replay buffer
+    # Step 1: Collect all frame data first
+    for ep_idx in range(num_episodes):
+        ep_start = episode_data_index['from'][ep_idx].item()
+        ep_end = episode_data_index['to'][ep_idx].item()
 
-    logging.info(f"Loaded {count} transitions")
+        for frame_idx in range(ep_start, ep_end - 1):  # Skip last frame (no next_state)
+            item = dataset[frame_idx]
+            next_item = dataset[frame_idx + 1]
+
+            # Extract data
+            state = item['observation.state'].cpu().numpy()
+            action = item['action'].cpu().numpy()
+            next_state = next_item['observation.state'].cpu().numpy()
+            done = (frame_idx == ep_end - 2)
+
+            # Build observation dict for ACT
+            obs_dict = {}
+            for key in item.keys():
+                if key.startswith('observation.') or 'cam' in key.lower():
+                    obs_dict[key] = item[key]
+
+            all_frames_data.append({
+                'frame_idx': frame_idx,
+                'ep_idx': ep_idx,
+                'state': state,
+                'action': action,
+                'next_state': next_state,
+                'done': done,
+                'obs_dict': obs_dict,
+            })
+
+    total_frames = len(all_frames_data)
+    logging.info(f"Collected {total_frames} frames, computing base actions in batches...")
+
+    # Step 2: Batch compute base_actions using predict_action_chunk (bypass action queue)
+    # IMPORTANT: Use predict_action_chunk directly, not select_action!
+    # select_action has an action_queue mechanism that breaks batch inference.
+    # predict_action_chunk returns (batch_size, n_action_steps, action_dim)
+    # For offline data, we take the first action in each chunk [:, 0, :]
+    all_base_actions = []
+    for batch_start in range(0, total_frames, batch_inference_size):
+        batch_end = min(batch_start + batch_inference_size, total_frames)
+        batch_frames = all_frames_data[batch_start:batch_end]
+
+        # Build batched observation dict
+        batched_obs = {}
+        for key in batch_frames[0]['obs_dict'].keys():
+            tensors = [f['obs_dict'][key] for f in batch_frames]
+            # Stack and move to device
+            batched_obs[key] = torch.stack(tensors).to(device)
+
+        # Batch inference using predict_action_chunk (bypass action queue)
+        with torch.no_grad():
+            # predict_action_chunk returns (batch_size, n_action_steps, action_dim)
+            action_chunks = base_policy.predict_action_chunk(batched_obs)
+            # Take the first action from each chunk for offline data
+            batch_base_actions = action_chunks[:, 0, :]  # (batch_size, action_dim)
+            batch_base_actions = batch_base_actions.cpu()
+
+        all_base_actions.extend(batch_base_actions)
+
+        if (batch_end) % 500 == 0 or batch_end == total_frames:
+            logging.info(f"Computed base actions for {batch_end}/{total_frames} frames...")
+
+    # Step 3: Process and add to replay buffer
+    logging.info("Computing residuals and adding to replay buffer...")
+
+    for i, frame_data in enumerate(all_frames_data):
+        state = frame_data['state']
+        action = frame_data['action']
+        next_state = frame_data['next_state']
+        done = frame_data['done']
+        base_action = all_base_actions[i]
+
+        # Normalize
+        normalized_action = action_scaler.scale(torch.from_numpy(action).float()).numpy()
+        normalized_base_action = action_scaler.scale(base_action).numpy()
+
+        # Compute residual
+        residual_action = normalized_action - normalized_base_action
+
+        # Standardize states
+        standardized_state = state_standardizer.standardize(torch.from_numpy(state).float()).numpy()
+        standardized_next_state = state_standardizer.standardize(torch.from_numpy(next_state).float()).numpy()
+
+        # Add to buffer
+        replay_buffer.add(
+            state=standardized_state,
+            action=residual_action,
+            reward=0.0,
+            next_state=standardized_next_state,
+            done=done,
+            base_action=normalized_base_action,
+        )
+        count += 1
+
+    logging.info(f"Total loaded: {count} transitions")
+    return count
 
 
-@wrap()
+@draccus.wrap()
 def train_residual(cfg: TrainResidualConfig):
     """Main training entry point."""
 

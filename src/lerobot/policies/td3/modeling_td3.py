@@ -383,16 +383,17 @@ class TD3Agent:
         next_state = batch["next_state"]
         done = batch["done"]
         weights = batch.get("weights", None)  # For prioritized replay
+        base_action = batch.get("base_action", None)  # For residual RL
 
         # Critic update
         critic_metrics = self._update_critic(
-            state, action, reward, next_state, done, stddev, weights
+            state, action, reward, next_state, done, stddev, weights, base_action
         )
         metrics.update(critic_metrics)
 
         # Actor update (delayed)
         if update_actor:
-            actor_metrics = self._update_actor(state, action, stddev)
+            actor_metrics = self._update_actor(state, action, stddev, base_action)
             metrics.update(actor_metrics)
 
             # Soft update target networks
@@ -409,16 +410,17 @@ class TD3Agent:
         done: torch.Tensor,
         stddev: float,
         weights: torch.Tensor | None = None,
+        base_action: torch.Tensor | None = None,
     ) -> dict[str, float]:
         """Update critic networks."""
         self.critic_optimizer.zero_grad()
 
         # Compute target Q value
         with torch.no_grad():
-            # Target policy action
+            # Target policy action (for residual actor, need base_action)
             target_action = self.actor_target.act(
                 next_state,
-                base_action=None,  # Target doesn't need base_action for Q computation
+                base_action=base_action,  # Use base_action from batch for target
                 eval_mode=True,
             )
 
@@ -434,7 +436,9 @@ class TD3Agent:
 
             # Target Q value (minimum of twin Q-networks)
             target_q = self.critic_target.q_min(next_state, target_action)
-            target_q = reward + (1 - done) * self.config.critic.gamma * target_q
+            # Compute target with discount (handle bool done tensor)
+            not_done = (~done).float() if done.dtype == torch.bool else (1.0 - done)
+            target_q = reward + not_done * self.config.gamma * target_q
 
         # Compute current Q values
         q1, q2 = self.critic(state, action)
@@ -472,6 +476,7 @@ class TD3Agent:
         state: torch.Tensor,
         action: torch.Tensor,
         stddev: float,
+        base_action: torch.Tensor | None = None,
     ) -> dict[str, float]:
         """Update actor network."""
         self.actor_optimizer.zero_grad()
@@ -479,7 +484,7 @@ class TD3Agent:
         # Actor action (for maximizing Q)
         actor_action = self.actor.act(
             state,
-            base_action=None,  # Actor update doesn't use base_action directly
+            base_action=base_action,  # Use base_action for residual actor
             eval_mode=True,
         )
 
