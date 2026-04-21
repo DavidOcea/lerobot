@@ -152,7 +152,7 @@ teleop:
   type: supre_robot_leader
 
   # Joint configuration file
-  joint_config_path: config_supre_robot_joint.yaml
+  joint_config_file: config_supre_robot_joint.yaml
 
   # Joint direction (14 joints without gripper, from trunk_teleoperate.yaml)
   # left_arm:  1, 1, 1, -1, 1, -1 (6 joints)
