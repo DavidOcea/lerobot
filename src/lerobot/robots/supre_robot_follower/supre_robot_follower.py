@@ -283,6 +283,28 @@ class SupreRobotFollower(Robot):
             raise RuntimeError("Cannot configure while disconnected.")
         logging.debug("Hardware is already configured on connect. Skipping.")
         pass
+
+    def reset(self) -> None:
+        """
+        重置机器人状态，用于 Episode 开始时。
+
+        清除缓存数据，刷新状态。物理复位（移动到初始位置）由外部调用
+        execute_trajectory 或 send_action 完成。
+
+        这个方法是 Robot 接口的一部分，RobotEnv.reset() 会调用它。
+        """
+        if not self.is_connected:
+            raise RuntimeError("Cannot reset while disconnected.")
+
+        # 清除缓存的力数据
+        self._cached_forces = None
+
+        # 刷新硬件状态（可选，确保状态同步）
+        positions, forces = self._hardware_manager.read()
+        self._cached_forces = forces
+
+        logging.debug("SupreRobotFollower reset completed.")
+
     @monitor_performance
     def get_observation(self) -> dict[str, Any]:
         """从机器人获取当前观测值。"""
