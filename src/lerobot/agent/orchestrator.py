@@ -13,6 +13,7 @@ New Features:
 - Emergency stop with action history and rollback
 - Task completion detection
 - State monitoring and logging
+- AGV navigation task support (NEW)
 """
 
 import logging
@@ -47,7 +48,11 @@ from lerobot.safety.emergency_stop_controller import (
     RecoveryAction,
 )
 
-from .config import OrchestratorConfig
+# AGV imports (NEW)
+from lerobot.robots.agv.seer_agv_controller import SeerAGVController, AGVPosition
+from lerobot.tasks.agv_executor import AGVTaskExecutor, AGVExecutionResult, create_task_result_from_agv_result
+
+from .config import OrchestratorConfig, AGVGlobalConfig
 
 if TYPE_CHECKING:
     from lerobot.robots.robot import Robot
@@ -104,6 +109,10 @@ class TaskAgentOrchestrator:
         # New components for interactive and emergency stop
         self.interactive_selector: InteractiveTaskSelector | None = None
         self.emergency_controller: EmergencyStopController | None = None
+
+        # AGV components (NEW)
+        self.agv_controller: SeerAGVController | None = None
+        self.agv_executor: AGVTaskExecutor | None = None
 
         # Execution state
         self.is_initialized = False
@@ -244,6 +253,11 @@ class TaskAgentOrchestrator:
         # 9. Initialize interactive task selector if enabled
         if getattr(self.config, 'enable_interactive_mode', False):
             self._init_interactive_selector()
+
+        # 10. Initialize AGV components if enabled (NEW)
+        agv_config = getattr(self.config, 'agv_config', None)
+        if agv_config and agv_config.enabled:
+            self._init_agv(agv_config)
 
         self.is_initialized = True
         logger.info("Initialization complete (LOCAL mode)")
@@ -465,6 +479,57 @@ class TaskAgentOrchestrator:
         self.emergency_controller.set_stop_callback(self._on_emergency_stop)
 
         logger.info("Emergency stop controller initialized")
+
+    def _init_agv(self, agv_config: AGVGlobalConfig) -> bool:
+        """Initialize AGV controller and executor.
+
+        Args:
+            agv_config: AGV global configuration.
+
+        Returns:
+            True if AGV initialized successfully, False otherwise.
+        """
+        try:
+            logger.info(f"Initializing AGV controller: host={agv_config.host}")
+
+            # Create AGV TCP controller
+            self.agv_controller = SeerAGVController(
+                host=agv_config.host,
+                port=agv_config.port,
+                connection_timeout=agv_config.connection_timeout,
+                read_timeout=agv_config.read_timeout,
+                auto_reconnect=agv_config.auto_reconnect,
+            )
+
+            # Attempt connection
+            if not self.agv_controller.connect():
+                logger.warning("AGV connection failed, AGV tasks will be skipped")
+                self.agv_controller = None
+                return False
+
+            # Set station map if provided
+            if agv_config.station_map:
+                station_map = {
+                    station_id: tuple(coords)  # Convert list to tuple
+                    for station_id, coords in agv_config.station_map.items()
+                }
+                self.agv_controller.set_station_map(station_map)
+
+            # Create AGV executor
+            self.agv_executor = AGVTaskExecutor(
+                agv_controller=self.agv_controller,
+                robot=self.robot,
+                enable_safety_check=agv_config.check_arm_before_move,
+            )
+
+            logger.info("AGV initialized successfully")
+            return True
+
+        except Exception as e:
+            logger.error(f"AGV initialization failed: {e}")
+            self.agv_controller = None
+            self.agv_executor = None
+            return False
 
     def _handle_exit_request(self) -> bool:
         """Handle user request to exit.
@@ -871,12 +936,19 @@ class TaskAgentOrchestrator:
     def _execute_single_task(self, task: TaskConfig) -> TaskResult:
         """Execute a single task with all necessary setup and monitoring.
 
+        Supports both policy tasks and AGV navigation tasks.
+
         Args:
             task: The task configuration to execute.
 
         Returns:
             TaskResult with execution outcome.
         """
+        # Handle AGV tasks separately (NEW)
+        if task.task_type == "agv":
+            return self._execute_agv_task(task)
+
+        # Handle policy tasks (existing logic)
         # Switch cameras for this task
         self._switch_cameras_for_task(task)
 
@@ -948,6 +1020,79 @@ class TaskAgentOrchestrator:
 
         return result
 
+    def _execute_agv_task(self, task: TaskConfig) -> TaskResult:
+        """Execute an AGV navigation task.
+
+        Args:
+            task: Task configuration with agv_config.
+
+        Returns:
+            TaskResult with execution outcome.
+        """
+        logger.info(f"Executing AGV task: {task.name}")
+
+        if not self.agv_executor or not self.agv_controller:
+            logger.warning("AGV executor not initialized, skipping task")
+            return TaskResult(
+                task_name=task.name,
+                status=TaskStatus.SKIPPED,
+                duration=0.0,
+                error_message="AGV not initialized",
+                collision_detected=False,
+                attempts=1,
+            )
+
+        if not self.agv_controller.is_connected():
+            # Try to reconnect
+            if not self.agv_controller.reconnect():
+                return TaskResult(
+                    task_name=task.name,
+                    status=TaskStatus.FAILED,
+                    duration=0.0,
+                    error_message="AGV connection failed",
+                    collision_detected=False,
+                    attempts=1,
+                )
+
+        agv_config = task.agv_config
+        if not agv_config:
+            return TaskResult(
+                task_name=task.name,
+                status=TaskStatus.FAILED,
+                duration=0.0,
+                error_message="No AGV config provided",
+                collision_detected=False,
+                attempts=1,
+            )
+
+        # Execute AGV navigation
+        agv_result = self.agv_executor.execute(
+            task_name=task.name,
+            target_station=agv_config.target_station,
+            target_position=agv_config.target_position,
+            max_duration=agv_config.max_duration,
+            wait_for_arrival=agv_config.wait_for_arrival,
+            arrival_timeout=agv_config.arrival_timeout,
+            arrival_tolerance=agv_config.arrival_tolerance,
+            check_arm_safe=agv_config.check_arm_safe_position,
+            arm_safe_positions=agv_config.arm_safe_positions,
+            retry_on_timeout=agv_config.retry_on_timeout,
+            retry_count=agv_config.retry_count,
+            emergency_stop_on_error=agv_config.emergency_stop_on_error,
+        )
+
+        # Convert to TaskResult
+        result = create_task_result_from_agv_result(task.name, agv_result)
+
+        logger.info(
+            f"AGV task completed: {task.name} -> "
+            f"status={result.status.value}, "
+            f"station={agv_result.arrival_station}, "
+            f"duration={result.duration:.1f}s"
+        )
+
+        return result
+
     def _cleanup(self):
         """Clean up resources after execution."""
         logger.info("Cleaning up...")
@@ -959,6 +1104,13 @@ class TaskAgentOrchestrator:
         # Stop state monitor
         if self.state_monitor is not None:
             self.state_monitor.stop()
+
+        # Disconnect AGV (NEW)
+        if self.agv_controller is not None:
+            agv_config = getattr(self.config, 'agv_config', None)
+            if agv_config and agv_config.auto_disconnect_after_task:
+                logger.info("Disconnecting AGV")
+                self.agv_controller.disconnect()
 
         # Disconnect from robot (local mode)
         if self.robot is not None:

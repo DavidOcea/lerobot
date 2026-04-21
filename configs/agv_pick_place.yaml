@@ -1,0 +1,226 @@
+# AGV + Robot Combined Task Configuration
+#
+# This configuration demonstrates a complete pick-move-place workflow:
+# 1. Robot picks part at station A
+# 2. AGV moves robot to station B
+# 3. Robot places part at station B
+#
+# The AGV uses pure TCP communication (no ROS2 required)
+
+# ========== AGV Global Configuration ==========
+agv_config:
+  enabled: true
+  host: "192.168.1.100"  # AGV IP address - change to your AGV's IP
+  port: 19204  # Default status query port
+  connection_timeout: 5.0  # Seconds
+  read_timeout: 2.0  # Seconds
+
+  # Connection management
+  auto_reconnect: true  # Auto-reconnect on connection loss
+  auto_disconnect_after_task: false  # Keep connection after tasks complete
+
+  # Safety settings
+  emergency_stop_enabled: true
+  check_arm_before_move: true  # Check arm position before AGV moves
+
+  # Station map (optional - for coordinate-based navigation)
+  # Format: station_id: [x, y, theta] (meters, radians)
+  station_map:
+    station_A: [0.0, 0.0, 0.0]
+    station_B: [5.0, 0.0, 0.0]
+    station_C: [10.0, 0.0, 0.0]
+    station_home: [2.5, 2.5, 0.0]
+    charging_station: [0.0, 5.0, 0.0]
+
+# ========== Robot Configuration ==========
+robot_config:
+  type: "supre_robot_follower"
+
+  # Robot connection settings
+  serial_port: "/dev/ttyUSB0"  # Adjust to your setup
+  control_frequency: 30.0  # Hz
+
+  # Force sensing
+  force_sensing_enabled: true
+
+  # Cameras (optional - add as needed)
+  cameras:
+    head_cam:
+      type: "opencv"
+      index: 0
+      width: 640
+      height: 480
+      fps: 30
+
+# ========== Collision Detection Configuration ==========
+collision_config:
+  collision_threshold: 2.0  # Nm - force threshold for collision detection
+  detection_window: 5  # Number of samples to analyze
+  adaptive_mode: true  # Adjust thresholds based on velocity
+  velocity_compensation: true  # Compensate for velocity-induced forces
+  auto_calibrate: true  # Auto-calibrate base torques at startup
+  calibration_samples: 20  # Number of samples for calibration
+
+# ========== Monitoring Configuration ==========
+monitoring_config:
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  enable_prometheus: false  # Prometheus metrics (optional)
+  prometheus_port: 9090
+
+# ========== Task Sequence ==========
+# Pick at Station A -> AGV Move to Station B -> Place at Station B
+
+tasks:
+  # ---------- Phase 1: Pick at Station A ----------
+  - name: "pick_at_station_A"
+    task_type: "policy"
+    policy_path: "/path/to/act_pick_policy"  # CHANGE to your policy path
+    policy_type: "act"
+    max_duration: 25.0  # Maximum pick time (seconds)
+    max_retries: 2  # Retry attempts if pick fails
+    enabled: true
+
+    completion_criteria:
+      type: "composite"  # Multiple conditions for completion
+      conditions:
+        - type: "force"
+          joint_name: "left_arm_joint_7"  # Gripper joint
+          force_threshold: 0.8  # Nm - grip confirmation
+        - type: "stability"
+          stability_window: 5  # Check 5 consecutive samples
+          stability_tolerance: 0.01  # rad - position stability
+
+    cameras:
+      - name: "head_cam"
+        type: "opencv"
+        index: 0
+        width: 640
+        height: 480
+        fps: 30
+
+  # ---------- Phase 2: Robot Arm Home Position (Safety) ----------
+  # IMPORTANT: Move arm to safe position before AGV movement
+  - name: "arm_home_position"
+    task_type: "policy"
+    policy_path: "/path/to/act_home_policy"  # CHANGE to your home policy
+    policy_type: "act"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+
+    completion_criteria:
+      type: "position"
+      target_joint_positions:
+        left_arm_joint_1: 0.0
+        left_arm_joint_2: 0.0
+        left_arm_joint_3: 0.0
+        left_arm_joint_4: 0.0
+        left_arm_joint_5: 0.0
+        left_arm_joint_6: 0.0
+        left_arm_joint_7: 0.3  # Gripper closed (holding part)
+      position_tolerance: 0.05  # rad
+
+  # ---------- Phase 3: AGV Move to Station B ----------
+  - name: "agv_move_to_station_B"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+
+    agv_config:
+      target_station: "station_B"  # Target station ID
+      wait_for_arrival: true  # Wait until AGV arrives
+      arrival_timeout: 60.0  # Maximum wait time (seconds)
+      arrival_tolerance: 0.3  # Distance tolerance (meters)
+
+      # Safety: Check arm position before AGV moves
+      check_arm_safe_position: true
+      arm_safe_positions:
+        left_arm_joint_1: 0.15  # Max absolute position (rad)
+        left_arm_joint_2: 0.15
+        left_arm_joint_3: 0.20
+        left_arm_joint_4: 0.15
+        left_arm_joint_5: 0.20
+        left_arm_joint_6: 0.15
+        left_arm_joint_7: 0.30  # Gripper can be closed
+
+      # Error handling
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # ---------- Phase 4: Place at Station B ----------
+  - name: "place_at_station_B"
+    task_type: "policy"
+    policy_path: "/path/to/act_place_policy"  # CHANGE to your policy
+    policy_type: "act"
+    max_duration: 20.0
+    max_retries: 2
+    enabled: true
+
+    completion_criteria:
+      type: "stability"  # Position stability after release
+      stability_window: 10
+      stability_tolerance: 0.005
+
+    cameras:
+      - name: "head_cam"
+        type: "opencv"
+        index: 0
+        width: 640
+        height: 480
+        fps: 30
+
+  # ---------- Phase 5: Return Home (Optional) ----------
+  - name: "return_home"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 1
+    enabled: false  # Disabled by default - enable if needed
+
+    agv_config:
+      target_station: "station_home"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+
+# ========== Execution Settings ==========
+environment_dt: 1.0 / 30.0  # Control loop timestep
+observation_timeout: 5.0  # Seconds
+action_timeout: 5.0  # Seconds
+reset_duration: 3.0  # Time to reset robot to zero position
+reset_positions: {}  # Custom reset positions (optional)
+
+# ========== Example: Alternative AGV Position Navigation ==========
+# Uncomment to use position-based navigation instead of station ID
+#
+# tasks:
+#   - name: "agv_move_to_position"
+#     task_type: "agv"
+#     agv_config:
+#       target_position: [5.0, 0.0, 0.0]  # [x, y, theta] meters, radians
+#       wait_for_arrival: true
+#       arrival_tolerance: 0.5
+
+# ========== Usage Instructions ==========
+#
+# 1. Install dependencies:
+#    pip install lerobot
+#
+# 2. Update paths:
+#    - Change policy_path to your trained ACT models
+#    - Change AGV host IP to your AGV's actual IP
+#    - Update robot serial_port if needed
+#
+# 3. Run the task sequence:
+#    python -m lerobot.scripts.run_task_agent --config configs/agv_pick_place.yaml
+#
+# 4. Debug mode:
+#    python -m lerobot.scripts.run_task_agent --config configs/agv_pick_place.yaml --debug
+#
+# 5. Interactive mode (prompt before each task):
+#    python -m lerobot.scripts.run_task_agent --config configs/agv_pick_place.yaml --interactive
+#
+# 6. Run specific tasks only:
+#    python -m lerobot.scripts.run_task_agent --config configs/agv_pick_place.yaml --tasks pick_at_station_A,agv_move_to_station_B
