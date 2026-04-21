@@ -434,8 +434,11 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
         logging.info(f"Loading normalization from: {normalization_dir}")
         action_scaler, state_standardizer = load_normalization(normalization_dir)
     else:
-        logging.warning("Normalization not found, using default")
-        action_scaler = ActionScaler.from_env(-1.0, 1.0)
+        logging.warning("Normalization not found, using env action_space")
+        action_scaler = ActionScaler.from_env(
+            base_env.action_space.low,
+            base_env.action_space.high,
+        )
         state_standardizer = StateStandardizer.from_config(state_dim)
 
     # ========================================
