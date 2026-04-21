@@ -405,10 +405,13 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     logging.info("Creating robot environment...")
 
     # Load env config using draccus (handles subclass registration and nested configs)
+    # Parse EnvConfig base class - draccus will auto-select HILSerlRobotEnvConfig
+    # based on 'type: gym_manipulator' in YAML
     if cfg.env_config_path:
         import draccus
+        from lerobot.envs.configs import EnvConfig
         env_config = draccus.parse(
-            config_class=HILSerlRobotEnvConfig,
+            config_class=EnvConfig,
             config_path=cfg.env_config_path,
             args=[],  # No CLI overrides
         )
