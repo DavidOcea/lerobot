@@ -81,13 +81,30 @@ logging.basicConfig(level=logging.INFO)
 
 
 def reset_follower_position(robot_arm, target_position):
+    """Reset follower robot to target position with smooth trajectory.
+
+    Args:
+        robot_arm: Robot instance with bus interface
+        target_position: Either np.ndarray or dict of joint positions
+    """
     current_position_dict = robot_arm.bus.sync_read("Present_Position")
+
+    # Convert target_position to array if it's a dict
+    if isinstance(target_position, dict):
+        target_array = np.array(
+            [target_position.get(name, 0.0) for name in current_position_dict],
+            dtype=np.float32
+        )
+    else:
+        target_array = np.asarray(target_position, dtype=np.float32)
+
     current_position = np.array(
         [current_position_dict[name] for name in current_position_dict], dtype=np.float32
     )
+
     trajectory = torch.from_numpy(
-        np.linspace(current_position, target_position, 50)
-    )  # NOTE: 30 is just an arbitrary number
+        np.linspace(current_position, target_array, 50)
+    )  # NOTE: 50 is just an arbitrary number
     for pose in trajectory:
         action_dict = dict(zip(current_position_dict, pose, strict=False))
         robot_arm.bus.sync_write("Goal_Position", action_dict)
@@ -313,7 +330,8 @@ class RobotEnv(gym.Env):
         self.observation_space = gym.spaces.Dict(observation_spaces)
 
         # Define the action space for joint positions along with setting an intervention flag.
-        action_dim = 3
+        # Action dimension should match the number of motors/joints
+        action_dim = len(self.robot.bus.motors)
         bounds = {}
         bounds["min"] = -np.ones(action_dim)
         bounds["max"] = np.ones(action_dim)
