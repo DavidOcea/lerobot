@@ -30,13 +30,28 @@ robot:
   type: supre_robot_follower
   joint_config_file: trunk_config_supre_robot_joint.yaml
 
+  # Camera configuration - must match ACT model (act_0418_1)
   cameras:
-    cam_top:
+    head_cam:
       type: opencv
       index_or_path: 0
       fps: 20
-      width: 320   # Lower resolution for safety
-      height: 240
+      width: 640
+      height: 480
+      rotation: 0
+    left_wrist_cam:
+      type: opencv
+      index_or_path: 1
+      fps: 20
+      width: 640
+      height: 480
+      rotation: 0
+    right_wrist_cam:
+      type: opencv
+      index_or_path: 2
+      fps: 20
+      width: 640
+      height: 480
       rotation: 0
 
   # Tighter safety limits
@@ -184,11 +199,24 @@ features:
   observation.state:
     type: STATE
     shape: [14]  # Joint positions (no gripper, but trunk included)
-  observation.images.cam_top:
+  observation.force:
+    type: FORCE
+    shape: [14]  # Joint forces/torques
+  # Camera features - must match ACT model (act_0418_1)
+  observation.images.head_cam:
     type: VISUAL
-    shape: [3, 240, 320]
+    shape: [3, 480, 640]
+  observation.images.left_wrist_cam:
+    type: VISUAL
+    shape: [3, 480, 640]
+  observation.images.right_wrist_cam:
+    type: VISUAL
+    shape: [3, 480, 640]
 
 features_map:
   action: action
   observation.state: observation.state
-  observation.images.cam_top: observation.images.cam_top
+  observation.force: observation.force
+  observation.images.head_cam: observation.images.head_cam
+  observation.images.left_wrist_cam: observation.images.left_wrist_cam
+  observation.images.right_wrist_cam: observation.images.right_wrist_cam

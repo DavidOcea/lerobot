@@ -44,26 +44,23 @@ robot:
   # Joint configuration file
   joint_config_file: trunk_config_supre_robot_joint.yaml
 
-  # Camera configuration (adjust based on your setup)
+  # Camera configuration - must match ACT model (act_0418_1)
   cameras:
-    # Example: webcams
-    cam_top:
+    head_cam:
       type: opencv
       index_or_path: 0
       fps: 30
       width: 640
       height: 480
       rotation: 0
-
-    cam_left_hand:
+    left_wrist_cam:
       type: opencv
       index_or_path: 1
       fps: 30
       width: 640
       height: 480
       rotation: 0
-
-    cam_right_hand:
+    right_wrist_cam:
       type: opencv
       index_or_path: 2
       fps: 30
@@ -258,24 +255,30 @@ features:
     type: STATE
     shape: [14]  # Joint positions (no gripper, but trunk included)
 
-  observation.images.cam_top:
+  observation.force:
+    type: FORCE
+    shape: [14]  # Joint forces/torques
+
+  # Camera features - must match ACT model (act_0418_1)
+  observation.images.head_cam:
     type: VISUAL
     shape: [3, 480, 640]
 
-  observation.images.cam_left_hand:
+  observation.images.left_wrist_cam:
     type: VISUAL
     shape: [3, 480, 640]
 
-  observation.images.cam_right_hand:
+  observation.images.right_wrist_cam:
     type: VISUAL
     shape: [3, 480, 640]
 
 features_map:
   action: action
   observation.state: observation.state
-  observation.images.cam_top: observation.images.cam_top
-  observation.images.cam_left_hand: observation.images.cam_left_hand
-  observation.images.cam_right_hand: observation.images.cam_right_hand
+  observation.force: observation.force
+  observation.images.head_cam: observation.images.head_cam
+  observation.images.left_wrist_cam: observation.images.left_wrist_cam
+  observation.images.right_wrist_cam: observation.images.right_wrist_cam
 
 # ===============================================
 # Keyboard Controls (for all modes)
