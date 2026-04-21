@@ -300,7 +300,6 @@ def train_offline_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoin
 
     global_step = 0
     train_start_time = time.time()
-    best_loss = float('inf')
 
     while global_step < cfg.total_timesteps:
         # Sample batch from offline buffer
@@ -319,26 +318,40 @@ def train_offline_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoin
         if global_step % 100 == 0:
             logger.log_metrics(metrics, global_step)
 
-        # Save checkpoint
+        # Save checkpoint at interval
+        # CheckpointManager handles best tracking automatically (loss with min mode)
         if global_step % cfg.checkpoint_interval == 0:
+            current_loss = metrics.get("train/critic_loss", float('inf'))
             checkpoint_mgr.save(
                 agent=td3_agent,
                 step=global_step,
-                metrics={"loss": metrics.get("train/critic_loss", 0)},
+                metrics={"loss": current_loss},
             )
 
         # Progress logging
         if global_step % 1000 == 0:
             elapsed = time.time() - train_start_time
             sps = global_step / elapsed if elapsed > 0 else 0
-            logging.info(f"Step {global_step}/{cfg.total_timesteps} | SPS: {sps:.1f} | Loss: {metrics.get('train/critic_loss', 0):.4f}")
+            current_loss = metrics.get("train/critic_loss", 0)
+            logging.info(
+                f"Step {global_step}/{cfg.total_timesteps} | "
+                f"SPS: {sps:.1f} | "
+                f"Loss: {current_loss:.4f} | "
+                f"Best: {checkpoint_mgr.best_metric_value:.6f} (step {checkpoint_mgr.best_step})"
+            )
 
-    # Final save
+    # ========================================
+    # 6. Final save
+    # ========================================
     logging.info("Phase 1 completed!")
+    logging.info(f"Best loss: {checkpoint_mgr.best_metric_value:.6f} at step {checkpoint_mgr.best_step}")
+
+    # Save final checkpoint (CheckpointManager will update best if needed)
+    final_loss = metrics.get("train/critic_loss", 0)
     checkpoint_mgr.save(
         agent=td3_agent,
         step=global_step,
-        metrics={"loss": metrics.get("train/critic_loss", 0)},
+        metrics={"loss": final_loss},
         force_save=True,
     )
 
@@ -348,6 +361,8 @@ def train_offline_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoin
         "total_steps": global_step,
         "total_time": elapsed,
         "steps_per_second": global_step / elapsed,
+        "best_loss": checkpoint_mgr.best_metric_value,
+        "best_step": checkpoint_mgr.best_step,
     })
 
     return td3_agent
@@ -1078,11 +1093,24 @@ def train_residual(cfg: TrainResidualConfig):
     logger.log_config(cfg.__dict__)
 
     # Initialize checkpoint manager
-    checkpoint_config = CheckpointConfig(
-        checkpoint_dir=str(output_dir / "checkpoints"),
-        max_checkpoints=cfg.max_checkpoints,
-        save_interval=cfg.checkpoint_interval,
-    )
+    # Phase 1 (offline): Track loss (minimize)
+    # Phase 2 (online): Track success_rate (maximize)
+    if cfg.phase == "offline":
+        checkpoint_config = CheckpointConfig(
+            checkpoint_dir=str(output_dir / "checkpoints"),
+            max_checkpoints=cfg.max_checkpoints,
+            save_interval=cfg.checkpoint_interval,
+            best_metric_key="loss",
+            best_metric_mode="min",  # Lower loss is better
+        )
+    else:  # online phase
+        checkpoint_config = CheckpointConfig(
+            checkpoint_dir=str(output_dir / "checkpoints"),
+            max_checkpoints=cfg.max_checkpoints,
+            save_interval=cfg.checkpoint_interval,
+            best_metric_key="success_rate",
+            best_metric_mode="max",  # Higher success rate is better
+        )
     checkpoint_mgr = CheckpointManager(checkpoint_config)
 
     logging.info(f"Residual RL Training")

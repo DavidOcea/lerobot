@@ -39,8 +39,12 @@ class CheckpointConfig:
 
     checkpoint_dir: str = "checkpoints"
     max_checkpoints: int = 5  # Maximum number of checkpoints to keep
-    save_best_only: bool = False  # If True, only save when success rate improves
+    save_best_only: bool = False  # If True, only save when metric improves
     save_interval: int = 10_000  # Save checkpoint every N steps
+
+    # New fields for flexible best tracking
+    best_metric_key: str = "success_rate"  # Metric key to track for best checkpoint
+    best_metric_mode: str = "max"  # "max" for maximize (success_rate), "min" for minimize (loss)
 
 
 class CheckpointManager:
@@ -75,14 +79,19 @@ class CheckpointManager:
         self.checkpoint_dir = Path(config.checkpoint_dir)
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        # Track best success rate
-        self.best_success_rate = 0.0
+        # Track best metric value
+        # Initialize based on mode: max -> 0.0 (or -inf for loss), min -> inf
+        if config.best_metric_mode == "max":
+            self.best_metric_value = 0.0
+        else:
+            self.best_metric_value = float('inf')
         self.best_step = 0
 
         # Load best metrics from existing checkpoints if available
         self._load_best_metrics()
 
         logging.info(f"CheckpointManager initialized at: {self.checkpoint_dir}")
+        logging.info(f"Tracking best metric: {config.best_metric_key} (mode: {config.best_metric_mode})")
 
     def save(
         self,
@@ -97,19 +106,27 @@ class CheckpointManager:
         Args:
             agent: TD3Agent instance with actor, critic, critic_target
             step: Current training step
-            metrics: Dictionary of metrics (e.g., {"success_rate": 0.75})
+            metrics: Dictionary of metrics (e.g., {"success_rate": 0.75, "loss": 0.01})
             force_save: Force save even if save_best_only=True
 
         Returns:
             Path to saved checkpoint, or None if not saved
         """
-        success_rate = metrics.get("success_rate", 0.0)
+        # Get the metric to track for best
+        metric_key = self.config.best_metric_key
+        metric_mode = self.config.best_metric_mode
+        current_metric = metrics.get(metric_key, 0.0 if metric_mode == "max" else float('inf'))
 
         # Check if should save
         should_save = False
 
+        # Determine if this is a new best
+        if metric_mode == "max":
+            is_best = current_metric > self.best_metric_value
+        else:  # "min"
+            is_best = current_metric < self.best_metric_value
+
         # Always save if it's a new best
-        is_best = success_rate > self.best_success_rate
         if is_best:
             should_save = True
 
@@ -142,8 +159,8 @@ class CheckpointManager:
         # Save training state
         training_state = {
             "step": step,
-            "success_rate": success_rate,
-            "best_success_rate": self.best_success_rate,
+            metric_key: current_metric,
+            f"best_{metric_key}": self.best_metric_value,
             "best_step": self.best_step,
             "metrics": metrics,
             "timestamp": time.time(),
@@ -152,10 +169,10 @@ class CheckpointManager:
 
         # Update best if this is best checkpoint
         if is_best:
-            self.best_success_rate = success_rate
+            self.best_metric_value = current_metric
             self.best_step = step
             self._save_best_checkpoint(agent, step, metrics)
-            logging.info(f"🎉 New best success rate: {success_rate:.4f} at step {step}")
+            logging.info(f"🎉 New best {metric_key}: {current_metric:.6f} at step {step}")
 
         logging.info(f"Checkpoint saved: {checkpoint_path}")
 
@@ -206,13 +223,17 @@ class CheckpointManager:
         training_state = torch.load(checkpoint_path / "training_state.pt")
 
         # Update best metrics
-        self.best_success_rate = training_state.get("best_success_rate", 0.0)
+        metric_key = self.config.best_metric_key
+        self.best_metric_value = training_state.get(f"best_{metric_key}",
+            0.0 if self.config.best_metric_mode == "max" else float('inf'))
         self.best_step = training_state.get("best_step", 0)
 
         logging.info(f"Checkpoint loaded: {checkpoint_path}")
         logging.info(f"  Step: {training_state['step']}")
-        logging.info(f"  Success rate: {training_state['success_rate']:.4f}")
-        logging.info(f"  Best success rate: {self.best_success_rate:.4f}")
+        if metric_key in training_state:
+            logging.info(f"  {metric_key}: {training_state[metric_key]:.6f}")
+        if f"best_{metric_key}" in training_state:
+            logging.info(f"  Best {metric_key}: {self.best_metric_value:.6f}")
 
         return training_state
 
@@ -273,10 +294,11 @@ class CheckpointManager:
         torch.save(agent.critic_optimizer.state_dict(), best_path / "critic_optimizer.pt")
 
         # Save training state
+        metric_key = self.config.best_metric_key
         training_state = {
             "step": step,
-            "success_rate": metrics.get("success_rate", 0.0),
-            "best_success_rate": self.best_success_rate,
+            metric_key: metrics.get(metric_key, 0.0),
+            f"best_{metric_key}": self.best_metric_value,
             "best_step": self.best_step,
             "metrics": metrics,
             "timestamp": time.time(),
@@ -292,9 +314,11 @@ class CheckpointManager:
 
         if state_path.exists():
             training_state = torch.load(state_path)
-            self.best_success_rate = training_state.get("best_success_rate", 0.0)
+            metric_key = self.config.best_metric_key
+            self.best_metric_value = training_state.get(f"best_{metric_key}",
+                0.0 if self.config.best_metric_mode == "max" else float('inf'))
             self.best_step = training_state.get("best_step", 0)
-            logging.info(f"Loaded best metrics: success_rate={self.best_success_rate:.4f}, step={self.best_step}")
+            logging.info(f"Loaded best metrics: {metric_key}={self.best_metric_value:.6f}, step={self.best_step}")
 
     def _list_checkpoints(self) -> list[Path]:
         """List all checkpoint directories (excluding 'best')."""
@@ -322,7 +346,11 @@ class CheckpointManager:
         if best_path.exists():
             shutil.rmtree(best_path)
 
-        self.best_success_rate = 0.0
+        # Reset best metrics based on mode
+        if self.config.best_metric_mode == "max":
+            self.best_metric_value = 0.0
+        else:
+            self.best_metric_value = float('inf')
         self.best_step = 0
 
         logging.info("All checkpoints deleted")
