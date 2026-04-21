@@ -6,11 +6,12 @@ This module defines dataclasses and configuration loaders for:
 - CompletionCriteria: Criteria for detecting task completion
 - OrchestratorConfig: Overall orchestrator configuration
 - RobotConfig: Robot-specific configuration
+- AGVTaskConfig: AGV navigation task configuration (NEW)
 """
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import draccus
 import yaml
@@ -65,17 +66,81 @@ class CameraConfig:
 
 
 @dataclass
+class AGVTaskConfig:
+    """AGV移动任务配置.
+
+    用于定义AGV导航任务，支持站点导航和坐标导航两种模式。
+    """
+
+    # 目标定义 (二选一)
+    target_station: str | None = None  # 目标站点ID
+    target_position: tuple[float, float, float] | None = None  # (x, y, theta) 米/弧度
+
+    # 执行参数
+    max_duration: float = 60.0  # 最大执行时间 (秒)
+    wait_for_arrival: bool = True  # 是否等待到达完成
+    arrival_timeout: float = 60.0  # 到达等待超时 (秒)
+
+    # 到达判定
+    arrival_tolerance: float = 0.3  # 距离容差 (米)
+    station_match_required: bool = True  # 必须站点ID匹配才算到达
+
+    # 安全检查
+    check_arm_safe_position: bool = True  # 移动前检查机械臂是否在安全位置
+    arm_safe_positions: dict[str, float] = field(default_factory=dict)  # 安全位置阈值
+
+    # 错误处理
+    retry_on_timeout: bool = True  # 超时是否重试
+    retry_count: int = 2  # 重试次数
+    emergency_stop_on_error: bool = True  # 异常时急停
+
+    def validate(self) -> bool:
+        """验证配置有效性."""
+        if self.target_station is None and self.target_position is None:
+            raise ValueError("AGVTaskConfig: Must specify either target_station or target_position")
+        if self.max_duration <= 0:
+            raise ValueError("AGVTaskConfig: max_duration must be positive")
+        if self.arrival_timeout <= 0:
+            raise ValueError("AGVTaskConfig: arrival_timeout must be positive")
+        return True
+
+
+@dataclass
 class TaskConfig:
-    """Configuration for a single task in the execution sequence."""
+    """Configuration for a single task in the execution sequence.
+
+    Supports multiple task types:
+    - "policy": Execute a learned policy (ACT, etc.)
+    - "agv": Execute AGV navigation task
+    """
 
     name: str
-    policy_path: str
+
+    # 任务类型 (NEW)
+    task_type: Literal["policy", "agv"] = "policy"
+
+    # Policy任务字段 (现有)
+    policy_path: str | None = None
     policy_type: str = "act"
     max_duration: float = 30.0  # Maximum execution time in seconds
     max_retries: int = 3  # Maximum number of retry attempts
     completion_criteria: CompletionCriteria = field(default_factory=CompletionCriteria)
     enabled: bool = True  # Allow disabling specific tasks
     cameras: list[CameraConfig] = field(default_factory=list)  # Active cameras for this task
+
+    # AGV任务字段 (NEW)
+    agv_config: AGVTaskConfig | None = None
+
+    def validate(self) -> bool:
+        """验证任务配置."""
+        if self.task_type == "policy":
+            if self.policy_path is None:
+                raise ValueError(f"Task '{self.name}': policy_path required for policy tasks")
+        elif self.task_type == "agv":
+            if self.agv_config is None:
+                raise ValueError(f"Task '{self.name}': agv_config required for agv tasks")
+            self.agv_config.validate()
+        return True
 
 
 @dataclass
@@ -150,7 +215,10 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     # Parse tasks
     tasks = []
     for task_dict in config_dict.get("tasks", []):
-        # Parse completion criteria if present
+        # Get task type (default to "policy")
+        task_type = task_dict.get("task_type", "policy")
+
+        # Parse completion criteria if present (for policy tasks)
         criteria_dict = task_dict.get("completion_criteria", {})
         if criteria_dict:
             # Convert conditions list to CompletionCriteria objects
@@ -170,10 +238,45 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
         for cam_dict in cameras_list:
             cameras.append(CameraConfig(**cam_dict))
 
-        # Create TaskConfig
-        task_dict["completion_criteria"] = completion_criteria
-        task_dict["cameras"] = cameras
-        tasks.append(TaskConfig(**task_dict))
+        # Parse AGV config if present (for AGV tasks)
+        agv_config_dict = task_dict.get("agv_config", {})
+        agv_config = None
+        if agv_config_dict:
+            # Parse target_position if it's a list
+            if "target_position" in agv_config_dict:
+                pos = agv_config_dict["target_position"]
+                if isinstance(pos, list) and len(pos) >= 2:
+                    # Convert list to tuple
+                    theta = pos[2] if len(pos) >= 3 else 0.0
+                    agv_config_dict["target_position"] = (float(pos[0]), float(pos[1]), float(theta))
+
+            agv_config = AGVTaskConfig(**agv_config_dict)
+
+        # Build TaskConfig with proper fields based on task_type
+        # Remove fields that don't belong to TaskConfig direct attributes
+        task_kwargs = {
+            "name": task_dict["name"],
+            "task_type": task_type,
+            "completion_criteria": completion_criteria,
+            "cameras": cameras,
+            "agv_config": agv_config,
+        }
+
+        # Add policy-specific fields
+        if task_type == "policy":
+            task_kwargs["policy_path"] = task_dict.get("policy_path")
+            task_kwargs["policy_type"] = task_dict.get("policy_type", "act")
+            task_kwargs["max_duration"] = task_dict.get("max_duration", 30.0)
+            task_kwargs["max_retries"] = task_dict.get("max_retries", 3)
+            task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+        # Add AGV-specific fields (some overlap with policy)
+        elif task_type == "agv":
+            task_kwargs["max_duration"] = task_dict.get("max_duration", 60.0)
+            task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
+            task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+        tasks.append(TaskConfig(**task_kwargs))
 
     # Parse robot config using draccus to handle polymorphic types
     robot_config_dict = config_dict.get("robot_config", {})

@@ -21,6 +21,32 @@ from lerobot.tasks.config import (
 
 
 @dataclass
+class AGVGlobalConfig:
+    """AGV全局配置.
+
+    用于配置AGV控制器的连接参数和全局行为。
+    """
+
+    enabled: bool = False  # 是否启用AGV功能
+    host: str = "192.168.1.100"  # AGV IP地址
+    port: int = 19204  # 默认端口
+    connection_timeout: float = 5.0  # 连接超时 (秒)
+    read_timeout: float = 2.0  # 读取超时 (秒)
+
+    # 连接管理
+    auto_reconnect: bool = True  # 是否自动重连
+    auto_disconnect_after_task: bool = False  # 任务完成后是否断开
+
+    # 安全设置
+    emergency_stop_enabled: bool = True  # 是否启用急停
+    check_arm_before_move: bool = True  # AGV移动前检查机械臂位置
+
+    # 站点地图 (可选，用于坐标导航时查找站点坐标)
+    # 格式: {station_id: [x, y, theta]}
+    station_map: dict[str, list[float]] = field(default_factory=dict)
+
+
+@dataclass
 class OrchestratorConfig(TasksOrchestratorConfig):
     """Extended orchestrator configuration with additional agent-specific settings.
 
@@ -36,6 +62,9 @@ class OrchestratorConfig(TasksOrchestratorConfig):
     policy_server_host: str = "localhost"
     policy_server_port: int = 50051
     policy_connection_timeout: float = 10.0  # Seconds
+
+    # AGV configuration (NEW)
+    agv_config: AGVGlobalConfig = field(default_factory=AGVGlobalConfig)
 
     # New feature settings
     enable_interactive_mode: bool = False  # Enable interactive task selection before each task
