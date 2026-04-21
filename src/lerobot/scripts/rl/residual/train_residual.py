@@ -382,31 +382,11 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     logging.info("=" * 60)
 
     # ========================================
-    # 1. Load base ACT policy
+    # 1. Load env config and get dimensions FIRST
     # ========================================
-    logging.info(f"Loading base ACT policy from: {cfg.base_policy_checkpoint}")
+    # We need env dimensions to create TD3 agent correctly
+    logging.info("Loading env config...")
 
-    base_policy = make_policy_from_checkpoint(
-        checkpoint_path=cfg.base_policy_checkpoint,
-        config_path=cfg.base_policy_config_path,
-        device=device,
-    )
-    base_policy.eval()
-
-    for param in base_policy.parameters():
-        param.requires_grad = False
-
-    state_dim = base_policy.config.state_dim if hasattr(base_policy.config, 'state_dim') else 7
-    action_dim = base_policy.config.action_dim if hasattr(base_policy.config, 'action_dim') else 7
-
-    # ========================================
-    # 2. Create real robot environment
-    # ========================================
-    logging.info("Creating robot environment...")
-
-    # Load env config using draccus (handles subclass registration and nested configs)
-    # Parse EnvConfig base class - draccus will auto-select HILSerlRobotEnvConfig
-    # based on 'type: gym_manipulator' in YAML
     if cfg.env_config_path:
         import draccus
         from lerobot.envs.configs import EnvConfig
@@ -423,11 +403,40 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     # Set FPS
     env_config.fps = cfg.fps
 
-    # Create base robot environment
+    # Get dimensions from env config features
+    # Action dim from features.action.shape
+    action_dim = env_config.features["action"].shape[0]
+    # State dim from features.observation.state.shape (if exists)
+    if "observation.state" in env_config.features:
+        state_dim = env_config.features["observation.state"].shape[0]
+    else:
+        state_dim = action_dim  # Fallback to action dim
+
+    logging.info(f"Dimensions from env config: state_dim={state_dim}, action_dim={action_dim}")
+
+    # ========================================
+    # 2. Create real robot environment
+    # ========================================
+    logging.info("Creating robot environment...")
     base_env = make_robot_env(cfg=env_config)
 
     # ========================================
-    # 3. Load normalization (from Phase 1)
+    # 3. Load base ACT policy (for residual action computation)
+    # ========================================
+    logging.info(f"Loading base ACT policy from: {cfg.base_policy_checkpoint}")
+
+    base_policy = make_policy_from_checkpoint(
+        checkpoint_path=cfg.base_policy_checkpoint,
+        config_path=cfg.base_policy_config_path,
+        device=device,
+    )
+    base_policy.eval()
+
+    for param in base_policy.parameters():
+        param.requires_grad = False
+
+    # ========================================
+    # 4. Load normalization (from Phase 1)
     # ========================================
     normalization_dir = Path(cfg.resume_checkpoint).parent / "normalization"
     if normalization_dir.exists():
@@ -442,7 +451,7 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
         state_standardizer = StateStandardizer.from_config(state_dim)
 
     # ========================================
-    # 4. Create TD3 agent and load Phase 1 checkpoint
+    # 5. Create TD3 agent and load Phase 1 checkpoint
     # ========================================
     logging.info("Creating TD3 agent...")
 
@@ -489,7 +498,7 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
         global_step = 0
 
     # ========================================
-    # 5. Wrap environment for residual RL
+    # 6. Wrap environment for residual RL
     # ========================================
     env = ResidualEnvWrapper(
         env=base_env,
@@ -501,7 +510,7 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     )
 
     # ========================================
-    # 6. Create online replay buffer
+    # 7. Create online replay buffer
     # ========================================
     rb_config = ReplayBufferConfig(
         buffer_size=cfg.buffer_size,
@@ -517,7 +526,7 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     )
 
     # ========================================
-    # 7. Warmup phase (random exploration)
+    # 8. Warmup phase (random exploration)
     # ========================================
     if len(online_rb) < cfg.learning_starts:
         logging.info(f"Warmup: collecting {cfg.learning_starts} random transitions...")
@@ -550,7 +559,7 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
         logging.info(f"Warmup complete: buffer size = {len(online_rb)}")
 
     # ========================================
-    # 8. Main online training loop
+    # 9. Main online training loop
     # ========================================
     logging.info(f"Starting online training: {cfg.total_timesteps} steps")
 
@@ -676,7 +685,7 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
             logging.info(f"Step {global_step}/{cfg.total_timesteps} | SPS: {sps:.1f} | Success rate: {best_success_rate:.4f}")
 
     # ========================================
-    # 9. Final save and cleanup
+    # 10. Final save and cleanup
     # ========================================
     logging.info("Phase 2 completed!")
 
