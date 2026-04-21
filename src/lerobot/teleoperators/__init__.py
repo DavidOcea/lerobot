@@ -18,6 +18,9 @@ from .config import TeleoperatorConfig
 from .teleoperator import Teleoperator
 from .utils import make_teleoperator_from_config
 
+# Import supre_robot modules to trigger registration
+from . import supre_robot_leader
+
 # ROS2 leader is optional - only import if ROS2 is available
 try:
     from . import ros2_leader
