@@ -29,6 +29,108 @@ from lerobot.utils.monitor_utils import monitor_performance
 
 logger = logging.getLogger(__name__)
 
+
+# ==================== MotorsBus 兼容层 ====================
+# RobotEnv 等组件期望 robot.bus.motors 和 bus.sync_read/write 接口
+# SupreRobotFollower 使用 SupreRobotHardwareManager，需要适配
+
+class SupreRobotBusCompat:
+    """
+    MotorsBus 接口兼容层。
+
+    将 SupreRobotHardwareManager 的接口适配为标准 MotorsBus 接口，
+    供 RobotEnv 等使用。
+
+    主要方法：
+    - motors: 返回关节名 dict（兼容 MotorsBus.motors）
+    - sync_read(data_type): 同步读取数据
+    - sync_write(data_type, values): 同步写入数据
+    """
+
+    def __init__(self, robot: "SupreRobotFollower"):
+        self._robot = robot
+
+    @property
+    def motors(self) -> dict:
+        """
+        返回关节名字典，模拟 MotorsBus.motors。
+
+        MotorsBus.motors 格式: {"shoulder_pan": Motor(...), ...}
+        这里简化为返回关节名作为 key（RobotEnv 只用 key 列表）。
+        """
+        # 返回 {joint_name: True} 格式，RobotEnv 只需要 key 来迭代
+        return {name: True for name in self._robot.observation_joint_names}
+
+    def sync_read(self, data_type: str) -> dict:
+        """
+        同步读取指定类型的数据。
+
+        Args:
+            data_type: 数据类型，如 "Present_Position", "Present_Current"
+
+        Returns:
+            dict: {motor_name: value} 格式
+        """
+        if not self._robot.is_connected:
+            raise RuntimeError("Robot is not connected.")
+
+        # 从 hardware_manager 读取
+        positions, forces = self._robot._hardware_manager.read()
+
+        if data_type == "Present_Position":
+            # 返回位置数据
+            return {
+                name: positions[i]
+                for i, name in enumerate(self._robot.observation_joint_names)
+            }
+        elif data_type == "Present_Current":
+            # 返回力/电流数据（RobotEnv 用于观察）
+            return {
+                name: forces[i]
+                for i, name in enumerate(self._robot.observation_joint_names)
+            }
+        else:
+            logging.warning(f"Unknown data_type '{data_type}', returning empty dict")
+            return {}
+
+    def sync_write(self, data_type: str, values: dict) -> None:
+        """
+        同步写入指定类型的数据。
+
+        Args:
+            data_type: 数据类型，如 "Goal_Position"
+            values: {motor_name: value} 格式的字典
+        """
+        if not self._robot.is_connected:
+            raise RuntimeError("Robot is not connected.")
+
+        if data_type == "Goal_Position":
+            # 将 dict 转换为列表，按 joint_order 顺序
+            target_positions = [
+                values.get(name, 0.0)
+                for name in self._robot.observation_joint_names
+            ]
+            self._robot._hardware_manager.write(target_positions)
+        elif data_type == "Torque_Enable":
+            # 使能/失能电机，SupreRobotHardwareManager 在 activate 时已处理
+            logging.debug(f"Torque_Enable write ignored (handled by hardware manager): {values}")
+        else:
+            logging.warning(f"Unknown sync_write data_type '{data_type}'")
+
+    def write(self, data_type: str, motor_name: str, value: Any) -> None:
+        """
+        写入单个电机的数据。
+
+        Args:
+            data_type: 数据类型
+            motor_name: 电机名
+            value: 值
+        """
+        # 对于 PID 参数等，SupreRobot 使用不同的配置方式
+        # 这里提供兼容接口但可能不实际生效
+        logging.debug(f"Single motor write: {data_type} -> {motor_name} = {value} (compat mode)")
+
+
 # 2. 实现 Robot 接口
 
 class SupreRobotFollower(Robot):
@@ -88,6 +190,10 @@ class SupreRobotFollower(Robot):
         # 缓存最新的力数据，避免 get_force_feedback() 重复调用硬件读取
         self._cached_forces: Optional[List[float]] = None
 
+        # ==================== MotorsBus 兼容层 ====================
+        # RobotEnv 等组件使用 robot.bus 接口，这里提供兼容
+        self._bus_compat: Optional[SupreRobotBusCompat] = None
+
     @cached_property
     def observation_features(self) -> dict[str, type | tuple]:
         return {**self._motors_ft, **self._cameras_ft, **self._force_ft}
@@ -95,6 +201,18 @@ class SupreRobotFollower(Robot):
     @cached_property
     def action_features(self) -> dict[str, type]:
         return self._motors_ft
+
+    @property
+    def bus(self) -> SupreRobotBusCompat:
+        """
+        MotorsBus 兼容层接口。
+
+        RobotEnv 等组件期望 robot.bus.motors 和 bus.sync_read/write。
+        返回 SupreRobotBusCompat 对象，提供这些接口。
+        """
+        if self._bus_compat is None:
+            self._bus_compat = SupreRobotBusCompat(self)
+        return self._bus_compat
 
     @property
     def is_connected(self) -> bool:
