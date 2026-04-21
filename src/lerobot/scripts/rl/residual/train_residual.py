@@ -404,12 +404,14 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     # ========================================
     logging.info("Creating robot environment...")
 
-    # Load env config
+    # Load env config using draccus (handles subclass registration and nested configs)
     if cfg.env_config_path:
-        import yaml
-        with open(cfg.env_config_path, 'r') as f:
-            env_config_dict = yaml.safe_load(f)
-        env_config = HILSerlRobotEnvConfig(**env_config_dict)
+        import draccus
+        env_config = draccus.parse(
+            config_class=HILSerlRobotEnvConfig,
+            config_path=cfg.env_config_path,
+            args=[],  # No CLI overrides
+        )
     elif cfg.env_config:
         env_config = cfg.env_config
     else:
