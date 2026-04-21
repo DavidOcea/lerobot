@@ -251,23 +251,23 @@ wrapper:
 # Total: 14 joints
 features:
   action:
-    type: action
+    type: ACTION
     shape: [14]  # 6 joints x 2 arms + 2 trunk joints (gripper removed)
 
   observation.state:
-    type: state
+    type: STATE
     shape: [14]  # Joint positions (no gripper, but trunk included)
 
   observation.images.cam_top:
-    type: visual
+    type: VISUAL
     shape: [3, 480, 640]
 
   observation.images.cam_left_hand:
-    type: visual
+    type: VISUAL
     shape: [3, 480, 640]
 
   observation.images.cam_right_hand:
-    type: visual
+    type: VISUAL
     shape: [3, 480, 640]
 
 features_map:
