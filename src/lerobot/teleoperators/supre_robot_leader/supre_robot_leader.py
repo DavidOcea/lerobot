@@ -19,6 +19,62 @@ from .supre_robot_leader_config import SupreRobotLeaderConfig
 from functools import cached_property
 from lerobot.utils.prometheus_manager import prometheus_manager
 
+
+class SupreRobotLeaderBusCompat:
+    """
+    Compatibility layer that provides MotorsBus-like interface for SupreRobotLeader.
+
+    This allows SupreRobotLeader to work with code that expects robot.bus interface,
+    such as ResetWrapper in gym_manipulator.py.
+
+    Similar to SupreRobotBusCompat in supre_robot_follower.py.
+    """
+
+    def __init__(self, leader: "SupreRobotLeader"):
+        self._leader = leader
+
+    @property
+    def motors(self) -> dict:
+        """Return dict of motor names (for interface compatibility)."""
+        if not self._leader._hardware_manager:
+            return {}
+        return {name: True for name in self._leader.observation_joint_names}
+
+    def sync_read(self, data_type: str) -> dict:
+        """Read data from all motors synchronously."""
+        if not self._leader._hardware_manager:
+            raise RuntimeError("Hardware not connected")
+
+        positions, forces = self._leader._hardware_manager.read()
+
+        if data_type == "Present_Position":
+            return {f"{name}.pos": positions[i] for i, name in enumerate(self._leader.observation_joint_names)}
+        elif data_type == "Present_Current":
+            return {f"{name}.force": forces[i] for i, name in enumerate(self._leader.observation_joint_names)}
+        else:
+            raise ValueError(f"Unknown data_type: {data_type}")
+
+    def sync_write(self, data_type: str, values: dict) -> None:
+        """Write data to motors synchronously."""
+        if not self._leader._hardware_manager:
+            raise RuntimeError("Hardware not connected")
+
+        if data_type == "Goal_Position":
+            target_positions = [
+                values.get(f"{name}.pos", values.get(name, 0.0))
+                for name in self._leader.observation_joint_names
+            ]
+            self._leader._hardware_manager.write(target_positions)
+
+        elif data_type == "Torque_Enable":
+            # SupreRobotLeader motors stay enabled for teleoperation
+            # Compatibility stub - no action needed
+            pass
+
+        else:
+            raise ValueError(f"Unsupported sync_write data_type: {data_type}")
+
+
 # 2. 实现 Robot 接口
 class SupreRobotLeader(Teleoperator):
     """
@@ -34,6 +90,7 @@ class SupreRobotLeader(Teleoperator):
         self.config = config
         self._hardware_manager: Optional[SupreRobotHardwareManager] = None
         self._is_connected_flag = False
+        self._bus_compat: Optional[SupreRobotLeaderBusCompat] = None  # Bus compatibility layer
 
         # 为了让 observation_features 和 action_features 可以在 connect() 之前被调用，
         # 我们需要提前加载关节顺序。
@@ -78,6 +135,13 @@ class SupreRobotLeader(Teleoperator):
     def is_connected(self) -> bool:
         """返回机器人是否已连接。"""
         return self._is_connected_flag
+
+    @property
+    def bus(self) -> SupreRobotLeaderBusCompat:
+        """MotorsBus compatibility layer for ResetWrapper and other components."""
+        if self._bus_compat is None:
+            self._bus_compat = SupreRobotLeaderBusCompat(self)
+        return self._bus_compat
 
     def connect(self, calibrate: bool = True) -> None:
         """建立与机器人的通信。"""
