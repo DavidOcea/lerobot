@@ -1,0 +1,574 @@
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 348, in <module>
+    main()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 344, in main
+    train()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/configs/parser.py", line 224, in wrapper_inner
+    cfg = draccus.parse(config_class=argtype, config_path=config_path, args=cli_args)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 211, in parse
+    return parser.parse_args(args)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 102, in parse_args
+    args, _ = self.parse_known_args(args, namespace, is_parse_args=True)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 136, in parse_known_args
+    parsed_t = self._postprocessing(parsed_args)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 180, in _postprocessing
+    cfg = decoding.decode(self.config_class, deflat_d)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/parsers/registry_utils.py", line 78, in wrapper
+    return base_func(*args, **kw)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/parsers/decoding.py", line 48, in decode
+    return get_decoding_fn(cls)(raw_value, ())  # type: ignore
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/parsers/decoding.py", line 157, in decode_dataclass
+    raise DecodingError(path, f"Missing required field(s) {formatted_keys} for {stringify_type(cls)}")
+draccus.utils.DecodingError: Missing required field(s) `dataset` for TrainPipelineConfig
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 348, in <module>
+    main()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 344, in main
+    train()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/configs/parser.py", line 224, in wrapper_inner
+    cfg = draccus.parse(config_class=argtype, config_path=config_path, args=cli_args)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 211, in parse
+    return parser.parse_args(args)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 102, in parse_args
+    args, _ = self.parse_known_args(args, namespace, is_parse_args=True)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 136, in parse_known_args
+    parsed_t = self._postprocessing(parsed_args)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 180, in _postprocessing
+    cfg = decoding.decode(self.config_class, deflat_d)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/parsers/registry_utils.py", line 78, in wrapper
+    return base_func(*args, **kw)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/parsers/decoding.py", line 48, in decode
+    return get_decoding_fn(cls)(raw_value, ())  # type: ignore
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/parsers/decoding.py", line 157, in decode_dataclass
+    raise DecodingError(path, f"Missing required field(s) {formatted_keys} for {stringify_type(cls)}")
+draccus.utils.DecodingError: Missing required field(s) `dataset` for TrainPipelineConfig
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 348, in <module>
+    main()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 344, in main
+    train()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/configs/parser.py", line 224, in wrapper_inner
+    cfg = draccus.parse(config_class=argtype, config_path=config_path, args=cli_args)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 204, in parse
+    parser = ArgumentParser(
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 73, in __init__
+    self._set_dataclass(config_class)  # type: ignore
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/argparsing.py", line 87, in _set_dataclass
+    new_wrapper.register_actions(parser=self.parser)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/wrappers/dataclass_wrapper.py", line 69, in register_actions
+    child.register_actions(parser)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/wrappers/choice_wrapper.py", line 208, in register_actions
+    child.register_actions(parser)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/wrappers/choice_wrapper.py", line 83, in register_actions
+    child.register_actions(parser)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/wrappers/dataclass_wrapper.py", line 71, in register_actions
+    child.add_action(group)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/wrappers/field_wrapper.py", line 309, in add_action
+    logger.debug(f"Arg options for field '{self.name}': {self.arg_options}")
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/wrappers/field_wrapper.py", line 85, in arg_options
+    options = self.get_arg_options()
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/wrappers/field_wrapper.py", line 111, in get_arg_options
+    if self.help:
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/wrappers/field_wrapper.py", line 258, in help
+    self._docstring = docstring.get_attribute_docstring(self.parent.dataclass, self.field.name)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/draccus/wrappers/docstring.py", line 63, in get_attribute_docstring
+    source = inspect.getsource(some_dataclass)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/inspect.py", line 1139, in getsource
+    lines, lnum = getsourcelines(object)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/inspect.py", line 1121, in getsourcelines
+    lines, lnum = findsource(object)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/inspect.py", line 966, in findsource
+    tree = ast.parse(source)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/ast.py", line 50, in parse
+    return compile(source, filename, mode, flags,
+KeyboardInterrupt
+usage: train.py [-h] [--config_path str] [--dataset str]
+                [--dataset.repo_id str] [--dataset.root str]
+                [--dataset.episodes str] [--image_transforms str]
+                [--dataset.image_transforms.enable str]
+                [--dataset.image_transforms.max_num_transforms str]
+                [--dataset.image_transforms.random_order str]
+                [--dataset.image_transforms.tfs str] [--dataset.revision str]
+                [--dataset.use_imagenet_stats str]
+                [--dataset.video_backend str]
+                [--dataset.customer_transforms str]
+                [--dataset.only_head_transforms str]
+                [--dataset.customer_transforms_cfg str] [--env str]
+                [--env.type {aloha,pusht,xarm,gym_manipulator,hil}]
+                [--env.obs_type str] [--env.render_mode str]
+                [--env.visualization_width str]
+                [--env.visualization_height str] [--robot str]
+                [--env.robot.type str] [--teleop str] [--env.teleop.type str]
+                [--env.task str] [--env.fps str] [--env.features str]
+                [--env.features_map str] [--env.name str]
+                [--env.use_viewer str] [--env.gripper_penalty str]
+                [--env.use_gamepad str] [--env.state_dim str]
+                [--env.action_dim str] [--env.episode_length str]
+                [--video_record str] [--env.video_record.enabled str]
+                [--env.video_record.record_dir str]
+                [--env.video_record.trajectory_name str]
+                [--env.reward_classifier_pretrained_path str]
+                [--robot_config str] [--env.robot_config.type str]
+                [--teleop_config str] [--env.teleop_config.type str]
+                [--wrapper str] [--env.wrapper.control_mode str]
+                [--env.wrapper.display_cameras str]
+                [--env.wrapper.add_joint_velocity_to_observation str]
+                [--env.wrapper.add_current_to_observation str]
+                [--env.wrapper.add_ee_pose_to_observation str]
+                [--env.wrapper.crop_params_dict str]
+                [--env.wrapper.resize_size str]
+                [--env.wrapper.control_time_s str]
+                [--env.wrapper.fixed_reset_joint_positions str]
+                [--env.wrapper.reset_time_s str]
+                [--env.wrapper.use_gripper str]
+                [--env.wrapper.gripper_quantization_threshold str]
+                [--env.wrapper.gripper_penalty str]
+                [--env.wrapper.gripper_penalty_in_reward str] [--env.mode str]
+                [--env.repo_id str] [--env.dataset_root str]
+                [--env.num_episodes str] [--env.episode str]
+                [--env.device str] [--env.push_to_hub str]
+                [--env.pretrained_policy_name_or_path str]
+                [--env.number_of_steps_after_success str] [--policy str]
+                [--policy.type {act,diffusion,pi0,smolvla,tdmpc,vqbet,pi05,pi0fast,sac,reward_classifier}]
+                [--policy.state_dropout str] [--policy.head_dropout str]
+                [--policy.use_robot_position str]
+                [--policy.img_cross_atten str] [--policy.use_head_img str]
+                [--policy.only_first_step str]
+                [--policy.replace_final_stride_with_dilation str]
+                [--policy.pre_norm str] [--policy.dim_model str]
+                [--policy.n_heads str] [--policy.dim_feedforward str]
+                [--policy.feedforward_activation str]
+                [--policy.n_encoder_layers str]
+                [--policy.n_decoder_layers str] [--policy.use_vae str]
+                [--policy.n_vae_encoder_layers str]
+                [--policy.temporal_ensemble_coeff str]
+                [--policy.kl_weight str] [--policy.label_smoothing str]
+                [--policy.optimizer_lr_backbone str]
+                [--policy.use_warmup_cosine_scheduler str]
+                [--policy.warmup_steps str] [--policy.min_lr_ratio str]
+                [--policy.drop_n_last_frames str]
+                [--policy.use_separate_rgb_encoder_per_camera str]
+                [--policy.down_dims str] [--policy.kernel_size str]
+                [--policy.n_groups str]
+                [--policy.diffusion_step_embed_dim str]
+                [--policy.use_film_scale_modulation str]
+                [--policy.noise_scheduler_type str]
+                [--policy.num_train_timesteps str]
+                [--policy.beta_schedule str] [--policy.beta_start str]
+                [--policy.beta_end str] [--policy.prediction_type str]
+                [--policy.clip_sample str] [--policy.clip_sample_range str]
+                [--policy.do_mask_loss_for_padding str]
+                [--policy.scheduler_name str]
+                [--policy.attention_implementation str]
+                [--policy.use_state str] [--policy.use_relative_action str]
+                [--policy.num_steps str] [--policy.train_expert_only str]
+                [--policy.train_state_proj str] [--policy.vlm_model_name str]
+                [--policy.load_vlm_weights str]
+                [--policy.add_image_special_tokens str]
+                [--policy.attention_mode str] [--policy.prefix_length str]
+                [--policy.pad_language_to str]
+                [--policy.num_expert_layers str] [--policy.num_vlm_layers str]
+                [--policy.self_attn_every_n_layers str]
+                [--policy.expert_width_multiplier str]
+                [--policy.n_action_repeats str] [--policy.horizon str]
+                [--policy.q_ensemble_size str] [--policy.mlp_dim str]
+                [--policy.use_mpc str] [--policy.cem_iterations str]
+                [--policy.max_std str] [--policy.min_std str]
+                [--policy.n_gaussian_samples str] [--policy.n_pi_samples str]
+                [--policy.uncertainty_regularizer_coeff str]
+                [--policy.n_elites str]
+                [--policy.elite_weighting_temperature str]
+                [--policy.gaussian_mean_momentum str]
+                [--policy.max_random_shift_ratio str]
+                [--policy.reward_coeff str] [--policy.expectile_weight str]
+                [--policy.value_coeff str] [--policy.consistency_coeff str]
+                [--policy.advantage_scaling str] [--policy.pi_coeff str]
+                [--policy.temporal_decay_coeff str]
+                [--policy.target_model_momentum str]
+                [--policy.n_action_pred_token str]
+                [--policy.action_chunk_size str]
+                [--policy.vision_backbone str] [--policy.crop_shape str]
+                [--policy.crop_is_random str]
+                [--policy.pretrained_backbone_weights str]
+                [--policy.use_group_norm str]
+                [--policy.spatial_softmax_num_keypoints str]
+                [--policy.n_vqvae_training_steps str]
+                [--policy.vqvae_n_embed str]
+                [--policy.vqvae_embedding_dim str]
+                [--policy.vqvae_enc_hidden_dim str]
+                [--policy.gpt_block_size str] [--policy.gpt_input_dim str]
+                [--policy.gpt_output_dim str] [--policy.gpt_n_layer str]
+                [--policy.gpt_n_head str] [--policy.gpt_hidden_dim str]
+                [--policy.dropout str] [--policy.mlp_hidden_dim str]
+                [--policy.offset_loss_weight str]
+                [--policy.primary_code_loss_weight str]
+                [--policy.secondary_code_loss_weight str]
+                [--policy.bet_softmax_temperature str]
+                [--policy.sequentially_select str]
+                [--policy.optimizer_vqvae_lr str]
+                [--policy.optimizer_vqvae_weight_decay str]
+                [--policy.paligemma_variant str]
+                [--policy.action_expert_variant str] [--policy.dtype str]
+                [--policy.num_inference_steps str]
+                [--policy.time_sampling_beta_alpha str]
+                [--policy.time_sampling_beta_beta str]
+                [--policy.time_sampling_scale str]
+                [--policy.time_sampling_offset str] [--policy.min_period str]
+                [--policy.max_period str] [--policy.image_resolution str]
+                [--policy.gradient_checkpointing str]
+                [--policy.compile_model str] [--policy.compile_mode str]
+                [--policy.optimizer_grad_clip_norm str]
+                [--policy.chunk_size str] [--policy.n_action_steps str]
+                [--policy.max_state_dim str] [--policy.max_action_dim str]
+                [--policy.resize_imgs_with_padding str]
+                [--policy.interpolate_like_pi str]
+                [--policy.empty_cameras str] [--policy.adapt_to_pi_aloha str]
+                [--policy.use_delta_joint_actions_aloha str]
+                [--policy.tokenizer_max_length str] [--policy.proj_width str]
+                [--policy.max_decoding_steps str]
+                [--policy.fast_skip_tokens str]
+                [--policy.max_input_seq_len str] [--policy.use_cache str]
+                [--policy.freeze_lm_head str] [--policy.optimizer_lr str]
+                [--policy.optimizer_betas str] [--policy.optimizer_eps str]
+                [--policy.optimizer_weight_decay str]
+                [--policy.scheduler_warmup_steps str]
+                [--policy.scheduler_decay_steps str]
+                [--policy.scheduler_decay_lr str]
+                [--policy.checkpoint_path str] [--policy.padding_side str]
+                [--policy.precision str]
+                [--policy.relaxed_action_decoding str]
+                [--policy.dataset_stats str] [--policy.storage_device str]
+                [--policy.vision_encoder_name str]
+                [--policy.freeze_vision_encoder str]
+                [--policy.image_encoder_hidden_dim str]
+                [--policy.shared_encoder str]
+                [--policy.num_discrete_actions str]
+                [--policy.online_steps str] [--policy.online_env_seed str]
+                [--policy.online_buffer_capacity str]
+                [--policy.offline_buffer_capacity str]
+                [--policy.async_prefetch str]
+                [--policy.online_step_before_learning str]
+                [--policy.policy_update_freq str] [--policy.discount str]
+                [--policy.temperature_init str] [--policy.num_critics str]
+                [--policy.num_subsample_critics str] [--policy.critic_lr str]
+                [--policy.actor_lr str] [--policy.temperature_lr str]
+                [--policy.critic_target_update_weight str]
+                [--policy.utd_ratio str]
+                [--policy.state_encoder_hidden_dim str]
+                [--policy.target_entropy str]
+                [--policy.use_backup_entropy str]
+                [--critic_network_kwargs str]
+                [--policy.critic_network_kwargs.hidden_dims str]
+                [--policy.critic_network_kwargs.activate_final str]
+                [--policy.critic_network_kwargs.final_activation str]
+                [--actor_network_kwargs str]
+                [--policy.actor_network_kwargs.hidden_dims str]
+                [--policy.actor_network_kwargs.activate_final str]
+                [--policy_kwargs str]
+                [--policy.policy_kwargs.use_tanh_squash str]
+                [--policy.policy_kwargs.std_min str]
+                [--policy.policy_kwargs.std_max str]
+                [--policy.policy_kwargs.init_final str]
+                [--discrete_critic_network_kwargs str]
+                [--policy.discrete_critic_network_kwargs.hidden_dims str]
+                [--policy.discrete_critic_network_kwargs.activate_final str]
+                [--policy.discrete_critic_network_kwargs.final_activation str]
+                [--actor_learner_config str]
+                [--policy.actor_learner_config.learner_host str]
+                [--policy.actor_learner_config.learner_port str]
+                [--policy.actor_learner_config.policy_parameters_push_frequency str]
+                [--policy.actor_learner_config.queue_get_timeout str]
+                [--concurrency str] [--policy.concurrency.actor str]
+                [--policy.concurrency.learner str]
+                [--policy.use_torch_compile str] [--policy.n_obs_steps str]
+                [--policy.normalization_mapping str]
+                [--policy.input_features str] [--policy.output_features str]
+                [--policy.device str] [--policy.use_amp str]
+                [--policy.push_to_hub str] [--policy.repo_id str]
+                [--policy.private str] [--policy.tags str]
+                [--policy.license str] [--policy.name str]
+                [--policy.num_classes str] [--policy.hidden_dim str]
+                [--policy.latent_dim str]
+                [--policy.image_embedding_pooling_dim str]
+                [--policy.dropout_rate str] [--policy.model_name str]
+                [--policy.model_type str] [--policy.num_cameras str]
+                [--policy.learning_rate str] [--policy.weight_decay str]
+                [--policy.grad_clip_norm str] [--output_dir str]
+                [--job_name str] [--resume str] [--seed str]
+                [--num_workers str] [--batch_size str] [--steps str]
+                [--eval_freq str] [--log_freq str] [--save_checkpoint str]
+                [--save_freq str] [--use_policy_training_preset str]
+                [--optimizer str]
+                [--optimizer.type {adam,adamw,sgd,multi_adam}]
+                [--optimizer.betas str] [--optimizer.eps str]
+                [--optimizer.momentum str] [--optimizer.dampening str]
+                [--optimizer.nesterov str] [--optimizer.lr str]
+                [--optimizer.weight_decay str]
+                [--optimizer.grad_clip_norm str]
+                [--optimizer.optimizer_groups str] [--scheduler str]
+                [--scheduler.type {diffuser,vqbet,cosine_decay_with_warmup,warmup_cosine_act}]
+                [--scheduler.name str]
+                [--scheduler.num_vqvae_training_steps str]
+                [--scheduler.num_cycles str] [--scheduler.num_decay_steps str]
+                [--scheduler.peak_lr str] [--scheduler.decay_lr str]
+                [--scheduler.num_warmup_steps str]
+                [--scheduler.min_lr_ratio str] [--eval str]
+                [--eval.n_episodes str] [--eval.batch_size str]
+                [--eval.use_async_envs str] [--wandb str] [--wandb.enable str]
+                [--wandb.disable_artifact str] [--wandb.project str]
+                [--wandb.entity str] [--wandb.notes str] [--wandb.run_id str]
+                [--wandb.mode str] [--save_heat_map str]
+train.py: error: unrecognized arguments:  
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 348, in <module>
+    main()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 344, in main
+    train()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/configs/parser.py", line 225, in wrapper_inner
+    response = fn(cfg, *args, **kwargs)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 111, in train
+    cfg.validate()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/configs/train.py", line 121, in validate
+    raise ValueError(
+ValueError: 'policy.repo_id' argument missing. Please specify it to push the model to the hub.
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 348, in <module>
+    main()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 344, in main
+    train()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/configs/parser.py", line 225, in wrapper_inner
+    response = fn(cfg, *args, **kwargs)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 111, in train
+    cfg.validate()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/configs/train.py", line 121, in validate
+    raise ValueError(
+ValueError: 'policy.repo_id' argument missing. Please specify it to push the model to the hub.
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 348, in <module>
+    main()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 344, in main
+    train()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/configs/parser.py", line 225, in wrapper_inner
+    response = fn(cfg, *args, **kwargs)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 111, in train
+    cfg.validate()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/configs/train.py", line 121, in validate
+    raise ValueError(
+ValueError: 'policy.repo_id' argument missing. Please specify it to push the model to the hub.
+INFO 2026-04-14 07:07:00 ts/train.py:112 {'batch_size': 32,
+ 'dataset': {'customer_transforms': True,
+             'customer_transforms_cfg': {'random_rotation': {'degrees': [-6, 6],
+                                                             'expand': False,
+                                                             'fill': [255,
+                                                                      255,
+                                                                      255],
+                                                             'interpolation': 2}},
+             'episodes': None,
+             'image_transforms': {'enable': False,
+                                  'max_num_transforms': 3,
+                                  'random_order': False,
+                                  'tfs': {'brightness': {'kwargs': {'brightness': [0.8,
+                                                                                   1.2]},
+                                                         'type': 'ColorJitter',
+                                                         'weight': 1.0},
+                                          'contrast': {'kwargs': {'contrast': [0.8,
+                                                                               1.2]},
+                                                       'type': 'ColorJitter',
+                                                       'weight': 1.0},
+                                          'hue': {'kwargs': {'hue': [-0.05,
+                                                                     0.05]},
+                                                  'type': 'ColorJitter',
+                                                  'weight': 1.0},
+                                          'saturation': {'kwargs': {'saturation': [0.5,
+                                                                                   1.5]},
+                                                         'type': 'ColorJitter',
+                                                         'weight': 1.0},
+                                          'sharpness': {'kwargs': {'sharpness': [0.5,
+                                                                                 1.5]},
+                                                        'type': 'SharpnessJitter',
+                                                        'weight': 1.0}}},
+             'only_head_transforms': True,
+             'repo_id': 'dataset_0414_carry',
+             'revision': None,
+             'root': '/root/data2/dc_dir/datasets/dataset_0414_carry',
+             'tolerance_s': 0.1,
+             'use_imagenet_stats': True,
+             'video_backend': 'torchcodec'},
+ 'env': None,
+ 'eval': {'batch_size': 50, 'n_episodes': 50, 'use_async_envs': False},
+ 'eval_freq': 20000,
+ 'job_name': 'act_0414_1',
+ 'log_freq': 200,
+ 'num_workers': 4,
+ 'optimizer': {'betas': [0.9, 0.999],
+               'eps': 1e-08,
+               'grad_clip_norm': 10.0,
+               'lr': 1e-05,
+               'type': 'adamw',
+               'weight_decay': 0.0001},
+ 'output_dir': 'outputs/train/act_0414_1',
+ 'policy': {'chunk_size': 100,
+            'device': 'cuda',
+            'dim_feedforward': 3200,
+            'dim_model': 512,
+            'dropout': 0.1,
+            'feedforward_activation': 'relu',
+            'head_dropout': 0.0,
+            'img_cross_atten': False,
+            'input_features': {},
+            'kl_weight': 10.0,
+            'label_smoothing': 0.0,
+            'latent_dim': 32,
+            'license': None,
+            'min_lr_ratio': 0.1,
+            'n_action_steps': 100,
+            'n_decoder_layers': 1,
+            'n_encoder_layers': 8,
+            'n_heads': 8,
+            'n_obs_steps': 1,
+            'n_vae_encoder_layers': 4,
+            'normalization_mapping': {'ACTION': <NormalizationMode.MEAN_STD: 'MEAN_STD'>,
+                                      'FORCE': <NormalizationMode.MEAN_STD: 'MEAN_STD'>,
+                                      'STATE': <NormalizationMode.MEAN_STD: 'MEAN_STD'>,
+                                      'VISUAL': <NormalizationMode.MEAN_STD: 'MEAN_STD'>},
+            'only_first_step': False,
+            'optimizer_lr': 1e-05,
+            'optimizer_lr_backbone': 1e-05,
+            'optimizer_weight_decay': 0.0001,
+            'output_features': {},
+            'pre_norm': False,
+            'pretrained_backbone_weights': 'ResNet18_Weights.IMAGENET1K_V1',
+            'private': None,
+            'push_to_hub': False,
+            'replace_final_stride_with_dilation': False,
+            'repo_id': None,
+            'state_dropout': 0.3,
+            'tags': None,
+            'temporal_ensemble_coeff': None,
+            'type': 'act',
+            'use_amp': False,
+            'use_head_img': True,
+            'use_relative_action': False,
+            'use_robot_position': False,
+            'use_state': True,
+            'use_vae': True,
+            'use_warmup_cosine_scheduler': False,
+            'vision_backbone': 'resnet18',
+            'warmup_steps': 2000},
+ 'resume': False,
+ 'save_checkpoint': True,
+ 'save_freq': 40000,
+ 'save_heat_map': True,
+ 'scheduler': None,
+ 'seed': 1000,
+ 'steps': 200000,
+ 'use_policy_training_preset': True,
+ 'wandb': {'disable_artifact': False,
+           'enable': False,
+           'entity': None,
+           'mode': None,
+           'notes': None,
+           'project': 'lerobot',
+           'run_id': None}}
+INFO 2026-04-14 07:07:00 ts/train.py:118 Logs will be saved locally.
+INFO 2026-04-14 07:07:00 ts/train.py:128 Creating dataset
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 0: Detected actual timestamps. Using decode_fps=24.70 (frames=1211, max_ts=49.03s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 1: Detected actual timestamps. Using decode_fps=24.69 (frames=1383, max_ts=56.01s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 2: Detected actual timestamps. Using decode_fps=24.69 (frames=1288, max_ts=52.18s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 3: Detected actual timestamps. Using decode_fps=24.68 (frames=1204, max_ts=48.79s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 4: Detected actual timestamps. Using decode_fps=24.70 (frames=1267, max_ts=51.29s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 5: Detected actual timestamps. Using decode_fps=24.71 (frames=1211, max_ts=49.00s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 6: Detected actual timestamps. Using decode_fps=24.69 (frames=1170, max_ts=47.38s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 7: Detected actual timestamps. Using decode_fps=24.70 (frames=990, max_ts=40.08s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 8: Detected actual timestamps. Using decode_fps=24.68 (frames=1124, max_ts=45.54s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 9: Detected actual timestamps. Using decode_fps=24.65 (frames=1231, max_ts=49.93s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 10: Detected actual timestamps. Using decode_fps=24.70 (frames=1149, max_ts=46.52s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 11: Detected actual timestamps. Using decode_fps=24.69 (frames=1172, max_ts=47.46s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 12: Detected actual timestamps. Using decode_fps=24.69 (frames=1250, max_ts=50.63s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 13: Detected actual timestamps. Using decode_fps=24.71 (frames=1097, max_ts=44.40s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 14: Detected actual timestamps. Using decode_fps=24.71 (frames=1244, max_ts=50.34s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 15: Detected actual timestamps. Using decode_fps=24.69 (frames=1098, max_ts=44.48s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 16: Detected actual timestamps. Using decode_fps=24.69 (frames=1088, max_ts=44.07s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 17: Detected actual timestamps. Using decode_fps=24.70 (frames=1077, max_ts=43.60s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 18: Detected actual timestamps. Using decode_fps=24.71 (frames=1398, max_ts=56.58s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 19: Detected actual timestamps. Using decode_fps=24.70 (frames=1148, max_ts=46.49s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 20: Detected actual timestamps. Using decode_fps=24.68 (frames=1263, max_ts=51.17s)
+INFO 2026-04-14 07:07:04 _dataset.py:703 Episode 21: Detected actual timestamps. Using decode_fps=24.68 (frames=1251, max_ts=50.70s)
+INFO 2026-04-14 07:07:04 ts/train.py:139 Creating policy
+INFO 2026-04-14 07:07:06 ts/train.py:145 Creating optimizer and scheduler
+INFO 2026-04-14 07:07:06 ts/train.py:157 Output dir: outputs/train/act_0414_1
+INFO 2026-04-14 07:07:06 ts/train.py:160 cfg.steps=200000 (200K)
+INFO 2026-04-14 07:07:06 ts/train.py:161 dataset.num_frames=26314 (26K)
+INFO 2026-04-14 07:07:06 ts/train.py:162 dataset.num_episodes=22
+INFO 2026-04-14 07:07:06 ts/train.py:163 num_learnable_params=68954510 (69M)
+INFO 2026-04-14 07:07:06 ts/train.py:164 num_total_params=68954640 (69M)
+INFO 2026-04-14 07:07:06 ts/train.py:203 Start offline training on a fixed dataset
+state_dropout =  0.3
+Traceback (most recent call last):
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 348, in <module>
+    main()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 344, in main
+    train()
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/configs/parser.py", line 225, in wrapper_inner
+    response = fn(cfg, *args, **kwargs)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/scripts/train.py", line 206, in train
+    batch = next(dl_iter)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/datasets/utils.py", line 640, in cycle
+    yield next(iterator)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 733, in __next__
+    data = self._next_data()
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1515, in _next_data
+    return self._process_data(data, worker_id)
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1550, in _process_data
+    data.reraise()
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/torch/_utils.py", line 750, in reraise
+    raise exception
+AssertionError: Caught AssertionError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/torch/utils/data/_utils/worker.py", line 349, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/root/miniconda3/envs/lerobot/lib/python3.10/site-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
+    data = [self.dataset[idx] for idx in possibly_batched_index]
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/datasets/lerobot_dataset.py", line 795, in __getitem__
+    video_frames = self._query_videos(query_timestamps, ep_idx)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/datasets/lerobot_dataset.py", line 765, in _query_videos
+    frames = decode_video_frames(
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/datasets/video_utils.py", line 69, in decode_video_frames
+    return decode_video_frames_torchcodec(video_path, timestamps, tolerance_s, decode_fps)
+  File "/root/workspace/dc_dir/lerobot/src/lerobot/datasets/video_utils.py", line 244, in decode_video_frames_torchcodec
+    assert is_within_tol.all(), (
+AssertionError: One or several query timestamps unexpectedly violate the tolerance (tensor([1.7571]) > tolerance_s=0.1).It means that the closest frame that can be loaded from the video is too far away in time.This might be due to synchronization issues with timestamps during data collection.To be safe, we advise to ignore this item during training.
+queried timestamps: tensor([9.8571])
+loaded timestamps: tensor([8.1000])
+video: /root/data2/dc_dir/datasets/dataset_0414_carry/videos/chunk-000/observation.images.head_cam/episode_000009.mp4
+

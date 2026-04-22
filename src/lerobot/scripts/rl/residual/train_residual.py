@@ -386,30 +386,62 @@ def _get_expected_action_range_from_env_cfg(env_cfg) -> dict[str, tuple[float, f
     return expected_range
 
 
-def _validate_action_scaler(action_scaler, expected_range: dict[str, tuple[float, float]], min_range: float = 10.0):
+def _validate_action_scaler(
+    action_scaler,
+    expected_range: dict[str, tuple[float, float]],
+    min_range_error: float = 0.5,  # Below this = error (truly broken)
+    min_range_warning: float = 10.0,  # Below this = warning (small but possibly legitimate)
+):
     """
     Validate loaded ActionScaler parameters for safety.
 
     Checks:
-    1. Each dimension's range must be >= min_range (degrees)
-    2. Loaded range should match expected range from env config (within tolerance)
+    1. Each dimension's range must be >= min_range_error (truly broken loading)
+    2. Small ranges < min_range_warning trigger warnings (may be legitimate)
+    3. Loaded range should match expected range from env config (within tolerance)
 
-    Raises RuntimeError if validation fails.
+    Raises RuntimeError only for truly broken cases (range < min_range_error).
+    Logs warnings for small but possibly legitimate ranges.
     """
     logging.info("Validating ActionScaler parameters for safety...")
 
     action_range = action_scaler.action_range
 
-    # Check 1: Minimum range per dimension
+    # Track small-range dimensions for reporting
+    small_range_dims = []
+
+    # Check 1: Minimum range per dimension - error vs warning thresholds
     for i, range_val in enumerate(action_range):
-        if range_val < min_range:
+        # Check against joint name if available
+        joint_name = list(expected_range.keys())[i] if i < len(expected_range) else f"dim_{i}"
+
+        if range_val < min_range_error:
+            # Truly broken - range is too small to be legitimate
             raise RuntimeError(
-                f"SAFETY ERROR: Action dimension {i} has range {range_val:.2f}° "
-                f"which is below minimum safe range {min_range}°.\n"
+                f"SAFETY ERROR: Action dimension {i} ({joint_name}) has range {range_val:.2f}° "
+                f"which is below minimum error threshold {min_range_error}°.\n"
                 f"This indicates normalization was loaded incorrectly.\n"
                 f"Action range should be the actual joint range (e.g., 120°), not normalized range (e.g., 2°).\n"
                 f"Refusing to start for safety."
             )
+        elif range_val < min_range_warning:
+            # Small but possibly legitimate - log warning but continue
+            small_range_dims.append((i, joint_name, range_val))
+
+    # Log warnings for small-range dimensions
+    if small_range_dims:
+        logging.warning(
+            f"Small action ranges detected (may be legitimate for joints that barely moved during training):"
+        )
+        for i, joint_name, range_val in small_range_dims:
+            logging.warning(
+                f"  Dimension {i} ({joint_name}): {range_val:.2f}° range - "
+                f"residual actions on this joint will have minimal effect"
+            )
+        logging.info(
+            "Small ranges are allowed because they represent actual training data. "
+            "If this joint should move more, consider collecting new training data with more movement."
+        )
 
     # Check 2: Compare with expected range from env config
     if expected_range:
@@ -427,7 +459,7 @@ def _validate_action_scaler(action_scaler, expected_range: dict[str, tuple[float
                     f"differs from expected {expected_range_val:.1f}° by more than {tolerance:.1f}°"
                 )
 
-    logging.info(f"ActionScaler validation passed: all ranges >= {min_range}°")
+    logging.info(f"ActionScaler validation passed: all ranges >= {min_range_error}°")
 
 
 def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint_mgr: CheckpointManager):
