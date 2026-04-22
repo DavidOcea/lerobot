@@ -860,11 +860,16 @@ class ConvertToLeRobotObservation(gym.ObservationWrapper):
             The processed observation with normalized images and proper tensor formats.
         """
         observation = preprocess_observation(observation)
-        observation = {
-            key: observation[key].to(self.device, non_blocking=self.device.type == "cuda")
-            for key in observation
-        }
-        return observation
+        # Handle both tensors and lists (observation.images is a list)
+        processed_obs = {}
+        for key in observation:
+            val = observation[key]
+            if isinstance(val, list):
+                # observation.images is a list of tensors
+                processed_obs[key] = [t.to(self.device, non_blocking=self.device.type == "cuda") for t in val]
+            else:
+                processed_obs[key] = val.to(self.device, non_blocking=self.device.type == "cuda")
+        return processed_obs
 
 
 class ResetWrapper(gym.Wrapper):
