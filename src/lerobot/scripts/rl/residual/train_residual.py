@@ -504,7 +504,7 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     normalization_dir = Path(cfg.resume_checkpoint).parent.parent / "normalization"
 
     # Get expected action range from env config for safety validation
-    expected_action_range = _get_expected_action_range_from_env_cfg(env_cfg)
+    expected_action_range = _get_expected_action_range_from_env_cfg(env_config)
 
     if normalization_dir.exists():
         logging.info(f"Loading normalization from: {normalization_dir}")
