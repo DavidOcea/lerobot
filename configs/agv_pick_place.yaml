@@ -105,6 +105,7 @@ tasks:
 
   # ---------- Phase 2: Robot Arm Home Position (Safety) ----------
   # IMPORTANT: Move arm to safe position before AGV movement
+  # Recommended values from /root/workspace/dc_dir/0420.log
   - name: "arm_home_position"
     task_type: "policy"
     policy_path: "/path/to/act_home_policy"  # CHANGE to your home policy
@@ -116,14 +117,25 @@ tasks:
     completion_criteria:
       type: "position"
       target_joint_positions:
-        left_arm_joint_1: 0.0
-        left_arm_joint_2: 0.0
-        left_arm_joint_3: 0.0
-        left_arm_joint_4: 0.0
-        left_arm_joint_5: 0.0
-        left_arm_joint_6: 0.0
+        # Left Arm - home position (degrees)
+        left_arm_joint_1: -40.3
+        left_arm_joint_2: -4.0
+        left_arm_joint_3: -0.5
+        left_arm_joint_4: -58.6
+        left_arm_joint_5: -2.0
+        left_arm_joint_6: 11.8
         left_arm_joint_7: 0.3  # Gripper closed (holding part)
-      position_tolerance: 0.05  # rad
+        # Right Arm - home position (degrees)
+        right_arm_joint_1: 40.3
+        right_arm_joint_2: 4.0
+        right_arm_joint_3: 0.8
+        right_arm_joint_4: 58.6
+        right_arm_joint_5: 2.0
+        right_arm_joint_6: -11.8
+        # Trunk - centered position (degrees)
+        trunk_joint_1: 0.0
+        trunk_joint_2: 0.0
+      position_tolerance: 3.0  # degrees (allow some tolerance for safety check)
 
   # ---------- Phase 3: AGV Move to Station B ----------
   - name: "agv_move_to_station_B"
@@ -139,15 +151,25 @@ tasks:
       arrival_tolerance: 0.3  # Distance tolerance (meters)
 
       # Safety: Check arm position before AGV moves
+      # Verify arm is near home position (max deviation from home)
       check_arm_safe_position: true
       arm_safe_positions:
-        left_arm_joint_1: 0.15  # Max absolute position (rad)
-        left_arm_joint_2: 0.15
-        left_arm_joint_3: 0.20
-        left_arm_joint_4: 0.15
-        left_arm_joint_5: 0.20
-        left_arm_joint_6: 0.15
-        left_arm_joint_7: 0.30  # Gripper can be closed
+        # Max absolute deviation from home position (degrees)
+        left_arm_joint_1: 5.0   # Home: -40.3, allow ±5°
+        left_arm_joint_2: 5.0   # Home: -4.0
+        left_arm_joint_3: 5.0   # Home: -0.5
+        left_arm_joint_4: 5.0   # Home: -58.6
+        left_arm_joint_5: 5.0   # Home: -2.0
+        left_arm_joint_6: 5.0   # Home: 11.8
+        left_arm_joint_7: 0.5   # Gripper should be closed (holding part, near 0.3)
+        right_arm_joint_1: 5.0  # Home: 40.3
+        right_arm_joint_2: 5.0  # Home: 4.0
+        right_arm_joint_3: 5.0  # Home: 0.8
+        right_arm_joint_4: 5.0  # Home: 58.6
+        right_arm_joint_5: 5.0  # Home: 2.0
+        right_arm_joint_6: 5.0  # Home: -11.8
+        trunk_joint_1: 3.0      # Home: 0.0
+        trunk_joint_2: 3.0      # Home: 0.0
 
       # Error handling
       retry_on_timeout: true
@@ -178,6 +200,7 @@ tasks:
 
   # ---------- Phase 5: Robot Arm Home Position (Safety) ----------
   # IMPORTANT: Move arm to safe position before AGV returns to A
+  # Recommended values from /root/workspace/dc_dir/0420.log
   - name: "arm_home_after_place"
     task_type: "policy"
     policy_path: "/path/to/act_home_policy"  # CHANGE to your home policy
@@ -189,14 +212,25 @@ tasks:
     completion_criteria:
       type: "position"
       target_joint_positions:
-        left_arm_joint_1: 0.0
-        left_arm_joint_2: 0.0
-        left_arm_joint_3: 0.0
-        left_arm_joint_4: 0.0
-        left_arm_joint_5: 0.0
-        left_arm_joint_6: 0.0
+        # Left Arm - home position (degrees)
+        left_arm_joint_1: -40.3
+        left_arm_joint_2: -4.0
+        left_arm_joint_3: -0.5
+        left_arm_joint_4: -58.6
+        left_arm_joint_5: -2.0
+        left_arm_joint_6: 11.8
         left_arm_joint_7: 0.0  # Gripper open (released part)
-      position_tolerance: 0.05  # rad
+        # Right Arm - home position (degrees)
+        right_arm_joint_1: 40.3
+        right_arm_joint_2: 4.0
+        right_arm_joint_3: 0.8
+        right_arm_joint_4: 58.6
+        right_arm_joint_5: 2.0
+        right_arm_joint_6: -11.8
+        # Trunk - centered position (degrees)
+        trunk_joint_1: 0.0
+        trunk_joint_2: 0.0
+      position_tolerance: 3.0  # degrees
 
   # ---------- Phase 6: AGV Return to Station A ----------
   # Return to starting position for next cycle
@@ -212,14 +246,24 @@ tasks:
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
       check_arm_safe_position: true
+      # Safety check: verify arm is near home position (max deviation from home)
       arm_safe_positions:
-        left_arm_joint_1: 0.15
-        left_arm_joint_2: 0.15
-        left_arm_joint_3: 0.20
-        left_arm_joint_4: 0.15
-        left_arm_joint_5: 0.20
-        left_arm_joint_6: 0.15
-        left_arm_joint_7: 0.30
+        # Max absolute deviation from home position (degrees)
+        left_arm_joint_1: 5.0   # Home: -40.3, allow ±5°
+        left_arm_joint_2: 5.0   # Home: -4.0
+        left_arm_joint_3: 5.0   # Home: -0.5
+        left_arm_joint_4: 5.0   # Home: -58.6
+        left_arm_joint_5: 5.0   # Home: -2.0
+        left_arm_joint_6: 5.0   # Home: 11.8
+        left_arm_joint_7: 0.5   # Gripper should be open (near 0)
+        right_arm_joint_1: 5.0  # Home: 40.3
+        right_arm_joint_2: 5.0  # Home: 4.0
+        right_arm_joint_3: 5.0  # Home: 0.8
+        right_arm_joint_4: 5.0  # Home: 58.6
+        right_arm_joint_5: 5.0  # Home: 2.0
+        right_arm_joint_6: 5.0  # Home: -11.8
+        trunk_joint_1: 3.0      # Home: 0.0
+        trunk_joint_2: 3.0      # Home: 0.0
       retry_on_timeout: true
       retry_count: 2
       emergency_stop_on_error: true

@@ -79,27 +79,51 @@ class AGVTaskExecutor:
         self.robot = robot
         self.enable_safety_check = enable_safety_check
 
-        # 默认安全位置阈值 (关节角度容差)
+        # 默认home位置 (推荐值，单位：度)
+        # 来源: /root/workspace/dc_dir/0420.log
+        self._default_home_positions = {
+            # 左臂
+            "left_arm_joint_1": -40.3,
+            "left_arm_joint_2": -4.0,
+            "left_arm_joint_3": -0.5,
+            "left_arm_joint_4": -58.6,
+            "left_arm_joint_5": -2.0,
+            "left_arm_joint_6": 11.8,
+            "left_arm_joint_7": 0.3,  # gripper (closed, holding)
+            # 右臂
+            "right_arm_joint_1": 40.3,
+            "right_arm_joint_2": 4.0,
+            "right_arm_joint_3": 0.8,
+            "right_arm_joint_4": 58.6,
+            "right_arm_joint_5": 2.0,
+            "right_arm_joint_6": -11.8,
+            "right_arm_joint_7": 0.3,  # gripper (closed, holding)
+            # 躯干
+            "trunk_joint_1": 0.0,
+            "trunk_joint_2": 0.0,
+        }
+
+        # 默认安全偏差阈值 (关节从home位置的最大偏差，单位：度)
         self._default_safe_thresholds = {
             # 左臂
-            "left_arm_joint_1": 0.15,  # rad
-            "left_arm_joint_2": 0.15,
-            "left_arm_joint_3": 0.20,
-            "left_arm_joint_4": 0.15,
-            "left_arm_joint_5": 0.20,
-            "left_arm_joint_6": 0.15,
-            "left_arm_joint_7": 0.30,  # gripper
+            "left_arm_joint_1": 5.0,  # 允许从home偏差±5°
+            "left_arm_joint_2": 5.0,
+            "left_arm_joint_3": 5.0,
+            "left_arm_joint_4": 5.0,
+            "left_arm_joint_5": 5.0,
+            "left_arm_joint_6": 5.0,
+            "left_arm_joint_7": 0.5,  # gripper
             # 右臂
-            "right_arm_joint_1": 0.15,
-            "right_arm_joint_2": 0.15,
-            "right_arm_joint_3": 0.20,
-            "right_arm_joint_4": 0.15,
-            "right_arm_joint_5": 0.20,
-            "right_arm_joint_6": 0.15,
-            "right_arm_joint_7": 0.30,  # gripper
+            "right_arm_joint_1": 5.0,
+            "right_arm_joint_2": 5.0,
+            "right_arm_joint_3": 5.0,
+            "right_arm_joint_4": 5.0,
+            "right_arm_joint_5": 5.0,
+            "right_arm_joint_6": 5.0,
+            "right_arm_joint_7": 0.5,  # gripper
             # 躯干
-            "trunk_joint_1": 0.10,
-            "trunk_joint_2": 0.10,
+            "trunk_joint_1": 3.0,
+            "trunk_joint_2": 3.0,
         }
 
         # 统计信息
@@ -118,6 +142,7 @@ class AGVTaskExecutor:
         arrival_tolerance: float = 0.3,
         check_arm_safe: bool = True,
         arm_safe_positions: dict[str, float] | None = None,
+        arm_home_positions: dict[str, float] | None = None,
         retry_on_timeout: bool = True,
         retry_count: int = 2,
         emergency_stop_on_error: bool = True,
@@ -133,7 +158,9 @@ class AGVTaskExecutor:
             arrival_timeout: 到达等待超时
             arrival_tolerance: 距离容差 (米)
             check_arm_safe: 是否检查机械臂安全位置
-            arm_safe_positions: 安全位置阈值字典
+            arm_safe_positions: 安全偏差阈值字典 {joint_name: max_deviation}
+            arm_home_positions: home位置字典 {joint_name: home_position}
+                              如果为None，使用默认home位置
             retry_on_timeout: 超时是否重试
             retry_count: 重试次数
             emergency_stop_on_error: 异常时是否急停
@@ -190,7 +217,8 @@ class AGVTaskExecutor:
             # ========== Phase 3: 机械臂安全检查 ==========
             if check_arm_safe and self.robot and self.enable_safety_check:
                 safe_thresholds = arm_safe_positions or self._default_safe_thresholds
-                if not self._check_arm_safe_position(safe_thresholds):
+                home_positions = arm_home_positions or self._default_home_positions
+                if not self._check_arm_safe_position(safe_thresholds, home_positions):
                     result.error = "Arm not in safe position for AGV movement"
                     logger.warning(f"[AGVExecutor] {result.error}")
                     # 可以尝试先归位机械臂，或者返回错误让上层处理
@@ -306,13 +334,20 @@ class AGVTaskExecutor:
 
         return result
 
-    def _check_arm_safe_position(self, safe_thresholds: dict[str, float]) -> bool:
+    def _check_arm_safe_position(
+        self,
+        safe_thresholds: dict[str, float],
+        home_positions: dict[str, float] | None = None,
+    ) -> bool:
         """检查机械臂是否在安全位置.
 
         AGV移动时机械臂需要收起，避免碰撞。
 
         Args:
-            safe_thresholds: {joint_name: max_abs_position} 字典
+            safe_thresholds: {joint_name: max_deviation} 字典，最大允许偏差
+            home_positions: {joint_name: home_position} 字典，home位置参考
+                           如果为None，则使用绝对位置检查（阈值检查abs(pos)）
+                           如果提供，则检查偏差 abs(pos - home_position)
 
         Returns:
             True if all joints within safe limits
@@ -329,17 +364,41 @@ class AGVTaskExecutor:
                 pos_key = f"{joint_name}.pos"
                 if pos_key in observation:
                     pos = observation[pos_key]
-                    if abs(pos) > threshold:
-                        unsafe_joints.append((joint_name, pos, threshold))
+
+                    # 检查方式：基于home偏差 vs 绝对位置
+                    if home_positions and joint_name in home_positions:
+                        # 基于home位置偏差检查
+                        home_pos = home_positions[joint_name]
+                        deviation = abs(pos - home_pos)
+                        if deviation > threshold:
+                            unsafe_joints.append((joint_name, pos, home_pos, deviation, threshold))
+                    else:
+                        # 绝对位置检查（旧逻辑）
+                        if abs(pos) > threshold:
+                            unsafe_joints.append((joint_name, pos, None, abs(pos), threshold))
 
             if unsafe_joints:
+                # 格式化警告消息
+                if home_positions:
+                    msg_parts = [
+                        f"{j}: pos={p:.1f}°, home={h:.1f}°, deviation={d:.1f}° > threshold={t:.1f}°"
+                        for j, p, h, d, t in unsafe_joints if h is not None
+                    ]
+                    msg_parts.extend([
+                        f"{j}: pos={p:.1f}° > threshold={t:.1f}°"
+                        for j, p, h, d, t in unsafe_joints if h is None
+                    ])
+                else:
+                    msg_parts = [
+                        f"{j}: pos={p:.1f}° > threshold={t:.1f}°"
+                        for j, p, _, _, t in unsafe_joints
+                    ]
                 logger.warning(
-                    f"[AGVExecutor] Unsafe arm positions: "
-                    f"{[(j, f'{p:.3f}', f'{t:.3f}') for j, p, t in unsafe_joints]}"
+                    f"[AGVExecutor] Unsafe arm positions:\n  " + "\n  ".join(msg_parts)
                 )
                 return False
 
-            logger.debug("[AGVExecutor] Arm position check passed")
+            logger.info("[AGVExecutor] Arm position check passed - arm is in safe home position")
             return True
 
         except Exception as e:
