@@ -626,7 +626,11 @@ class RewardWrapper(gym.Wrapper):
         images = {}
         for key in observation:
             if "image" in key:
-                images[key] = observation[key].to(self.device, non_blocking=(self.device == "cuda"))
+                val = observation[key]
+                # Skip list type (observation.images) - not a single image tensor
+                if isinstance(val, list):
+                    continue
+                images[key] = val.to(self.device, non_blocking=(self.device == "cuda"))
                 if images[key].dim() == 3:
                     images[key] = images[key].unsqueeze(0)
 
