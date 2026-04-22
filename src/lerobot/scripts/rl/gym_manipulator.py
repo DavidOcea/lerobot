@@ -291,10 +291,14 @@ class RobotEnv(gym.Env):
         """
         Helper to convert robot observation dict to standardized format.
 
-        Returns observation dict with keys matching ACT model expectations:
-        - observation.state: joint positions
-        - observation.force: joint forces/torques
-        - observation.images.*: camera images
+        Returns observation dict with BOTH legacy and standardized keys for backward compatibility:
+        - Legacy keys (for preprocess_observation):
+          - "agent_pos": joint positions
+          - "pixels": dict of images
+        - Standardized keys (for direct access):
+          - "observation.state": joint positions
+          - "observation.force": joint forces/torques
+          - "observation.images.*": camera images
         """
         obs_dict = self.robot.get_observation()
 
@@ -307,17 +311,22 @@ class RobotEnv(gym.Env):
         # Extract images with proper key naming
         images = {}
         for key in self._image_keys:
-            # Map camera key to observation.images.* format
             images[key] = obs_dict[key]
 
-        # Build observation dict with standardized keys
+        # Build observation dict with BOTH legacy and standardized keys
         self.current_observation = {
+            # Legacy keys for preprocess_observation() compatibility
+            "agent_pos": joint_positions,  # → observation.state after preprocessing
+            "pixels": images,  # → observation.images.* after preprocessing
+            # Standardized keys for direct access
             "observation.state": joint_positions,
             "observation.force": joint_forces,
         }
         # Add images with observation.images.* prefix
         for key, img in images.items():
             self.current_observation[f"observation.images.{key}"] = img
+
+        return self.current_observation
 
     def _setup_spaces(self):
         """
