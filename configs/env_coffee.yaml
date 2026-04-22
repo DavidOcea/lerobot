@@ -190,10 +190,6 @@ wrapper:
   # For supre_robot without URDF, use "leader_joint"
   control_mode: leader_joint
 
-  # Intervention thresholds (only for leader_auto mode)
-  intervention_threshold: 10.0     # Error variance threshold to trigger intervention
-  release_threshold: 0.01          # Error variance threshold to release intervention
-
   # Display cameras during training
   display_cameras: true
 
