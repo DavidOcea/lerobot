@@ -368,6 +368,67 @@ def train_offline_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoin
     return td3_agent
 
 
+# ========================================
+# Safety validation helpers for Phase2
+# ========================================
+
+def _get_expected_action_range_from_env_cfg(env_cfg) -> dict[str, tuple[float, float]]:
+    """Extract expected action range from environment config calibration."""
+    expected_range = {}
+    if hasattr(env_cfg, 'robot') and hasattr(env_cfg.robot, 'calibration'):
+        for calib in env_cfg.robot.calibration:
+            joint_name = calib.get('joint_name')
+            min_pos = calib.get('min_position', -180.0)
+            max_pos = calib.get('max_position', 180.0)
+            if joint_name:
+                expected_range[joint_name] = (min_pos, max_pos)
+    return expected_range
+
+
+def _validate_action_scaler(action_scaler, expected_range: dict[str, tuple[float, float]], min_range: float = 10.0):
+    """
+    Validate loaded ActionScaler parameters for safety.
+
+    Checks:
+    1. Each dimension's range must be >= min_range (degrees)
+    2. Loaded range should match expected range from env config (within tolerance)
+
+    Raises RuntimeError if validation fails.
+    """
+    logging.info("Validating ActionScaler parameters for safety...")
+
+    action_range = action_scaler.action_range
+
+    # Check 1: Minimum range per dimension
+    for i, range_val in enumerate(action_range):
+        if range_val < min_range:
+            raise RuntimeError(
+                f"SAFETY ERROR: Action dimension {i} has range {range_val:.2f}° "
+                f"which is below minimum safe range {min_range}°.\n"
+                f"This indicates normalization was loaded incorrectly.\n"
+                f"Action range should be the actual joint range (e.g., 120°), not normalized range (e.g., 2°).\n"
+                f"Refusing to start for safety."
+            )
+
+    # Check 2: Compare with expected range from env config
+    if expected_range:
+        for i, (joint_name, (exp_min, exp_max)) in enumerate(expected_range.items()):
+            if i >= len(action_range):
+                break
+            expected_range_val = exp_max - exp_min
+            loaded_range_val = action_range[i]
+
+            # Allow 20% tolerance for difference
+            tolerance = 0.2 * expected_range_val
+            if abs(loaded_range_val - expected_range_val) > tolerance:
+                logging.warning(
+                    f"Dimension {i} ({joint_name}): loaded range {loaded_range_val:.1f}° "
+                    f"differs from expected {expected_range_val:.1f}° by more than {tolerance:.1f}°"
+                )
+
+    logging.info(f"ActionScaler validation passed: all ranges >= {min_range}°")
+
+
 def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint_mgr: CheckpointManager):
     """
     Phase 2: Online fine-tuning with real robot.
@@ -441,16 +502,25 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     # Checkpoint path structure: phase1/checkpoints/checkpoint_step_*
     # Normalization is at: phase1/normalization/
     normalization_dir = Path(cfg.resume_checkpoint).parent.parent / "normalization"
+
+    # Get expected action range from env config for safety validation
+    expected_action_range = _get_expected_action_range_from_env_cfg(env_cfg)
+
     if normalization_dir.exists():
         logging.info(f"Loading normalization from: {normalization_dir}")
         action_scaler, state_standardizer = load_normalization(normalization_dir)
+
+        # Safety validation: check if loaded normalization is reasonable
+        _validate_action_scaler(action_scaler, expected_action_range)
     else:
-        logging.warning(f"Normalization not found at {normalization_dir}, using env action_space")
-        action_scaler = ActionScaler.from_env(
-            base_env.action_space.low,
-            base_env.action_space.high,
+        error_msg = (
+            f"CRITICAL SAFETY ERROR: Normalization not found at {normalization_dir}!\n"
+            f"Without proper normalization, robot actions will have large deviations.\n"
+            f"Please ensure Phase1 has saved normalization files.\n"
+            f"Refusing to start for safety."
         )
-        state_standardizer = StateStandardizer.from_config(state_dim)
+        logging.error(error_msg)
+        raise RuntimeError(error_msg)
 
     # ========================================
     # 5. Create TD3 agent and load Phase 1 checkpoint
