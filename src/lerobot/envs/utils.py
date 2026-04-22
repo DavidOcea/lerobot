@@ -37,6 +37,46 @@ def preprocess_observation(observations: dict[str, np.ndarray]) -> dict[str, Ten
     """
     # map to expected inputs for the policy
     return_observations = {}
+    image_keys = []  # Track image keys for observation.images list
+
+    # First, process keys that are already in standardized format (observation.*)
+    # These are added by custom environments like RobotEnv
+    for key in observations:
+        if key.startswith("observation.images."):
+            # Process standardized image keys - need special handling
+            val = observations[key]
+            if isinstance(val, np.ndarray):
+                img = torch.from_numpy(val)
+                # Add batch dimension if needed
+                if img.ndim == 3:
+                    img = img.unsqueeze(0)
+                # Check if channel last and convert to channel first
+                _, h, w, c = img.shape
+                if c < h and c < w:
+                    # Channel last, need to rearrange
+                    img = einops.rearrange(img, "b h w c -> b c h w").contiguous()
+                # Normalize uint8 to float32 0-1 if needed
+                if img.dtype == torch.uint8:
+                    img = img.type(torch.float32)
+                    img /= 255
+                return_observations[key] = img
+                image_keys.append(key)
+        elif key.startswith("observation.") and not key.startswith("observation.images."):
+            # Non-image standardized keys (observation.state, observation.force, etc.)
+            val = observations[key]
+            if isinstance(val, np.ndarray):
+                val = torch.from_numpy(val).float()
+                if val.dim() == 1:
+                    val = val.unsqueeze(0)
+            return_observations[key] = val
+
+    # Create observation.images list from individual camera keys (for ACT model)
+    if image_keys:
+        # Sort keys to ensure consistent order
+        image_keys.sort()
+        return_observations["observation.images"] = [return_observations[k] for k in image_keys]
+
+    # Then process legacy keys (pixels, agent_pos, environment_state)
     if "pixels" in observations:
         if isinstance(observations["pixels"], dict):
             imgs = {f"observation.images.{key}": img for key, img in observations["pixels"].items()}
