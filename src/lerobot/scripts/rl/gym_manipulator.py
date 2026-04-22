@@ -278,6 +278,7 @@ class RobotEnv(gym.Env):
         self.episode_data = None
 
         self._joint_names = [f"{key}.pos" for key in self.robot.bus.motors]
+        self._force_names = [f"{key}.force" for key in self.robot.bus.motors]  # Force keys
         self._image_keys = self.robot.cameras.keys()
 
         self.current_observation = None
@@ -287,43 +288,74 @@ class RobotEnv(gym.Env):
         self._setup_spaces()
 
     def _get_observation(self) -> dict[str, np.ndarray]:
-        """Helper to convert a dictionary from bus.sync_read to an ordered numpy array."""
-        obs_dict = self.robot.get_observation()
-        joint_positions = np.array([obs_dict[name] for name in self._joint_names])
+        """
+        Helper to convert robot observation dict to standardized format.
 
-        images = {key: obs_dict[key] for key in self._image_keys}
-        self.current_observation = {"agent_pos": joint_positions, "pixels": images}
+        Returns observation dict with keys matching ACT model expectations:
+        - observation.state: joint positions
+        - observation.force: joint forces/torques
+        - observation.images.*: camera images
+        """
+        obs_dict = self.robot.get_observation()
+
+        # Extract joint positions (from .pos keys)
+        joint_positions = np.array([obs_dict[name] for name in self._joint_names], dtype=np.float32)
+
+        # Extract joint forces (from .force keys)
+        joint_forces = np.array([obs_dict.get(name, 0.0) for name in self._force_names], dtype=np.float32)
+
+        # Extract images with proper key naming
+        images = {}
+        for key in self._image_keys:
+            # Map camera key to observation.images.* format
+            images[key] = obs_dict[key]
+
+        # Build observation dict with standardized keys
+        self.current_observation = {
+            "observation.state": joint_positions,
+            "observation.force": joint_forces,
+        }
+        # Add images with observation.images.* prefix
+        for key, img in images.items():
+            self.current_observation[f"observation.images.{key}"] = img
 
     def _setup_spaces(self):
         """
         Dynamically configure the observation and action spaces based on the robot's capabilities.
 
         Observation Space:
-            - For keys with "image": A Box space with pixel values ranging from 0 to 255.
-            - For non-image keys: A nested Dict space is created under 'observation.state' with a suitable range.
+            - observation.images.*: Camera images (Box space with pixel values 0-255)
+            - observation.state: Joint positions
+            - observation.force: Joint forces/torques
 
         Action Space:
-            - The action space is defined as a Box space representing joint position commands. It is defined as relative (delta)
-              or absolute, based on the configuration.
+            - The action space is defined as a Box space representing joint position commands.
         """
         self._get_observation()
 
         observation_spaces = {}
 
-        # Define observation spaces for images and other states.
-        if "pixels" in self.current_observation:
-            prefix = "observation.images"
-            observation_spaces = {
-                f"{prefix}.{key}": gym.spaces.Box(
-                    low=0, high=255, shape=self.current_observation["pixels"][key].shape, dtype=np.uint8
+        # Define observation spaces for images
+        for key in self.current_observation:
+            if key.startswith("observation.images."):
+                img = self.current_observation[key]
+                observation_spaces[key] = gym.spaces.Box(
+                    low=0, high=255, shape=img.shape, dtype=np.uint8
                 )
-                for key in self.current_observation["pixels"]
-            }
 
+        # Define observation space for joint positions
         observation_spaces["observation.state"] = gym.spaces.Box(
-            low=0,
-            high=10,
-            shape=self.current_observation["agent_pos"].shape,
+            low=-200.0,  # Joint position range in degrees
+            high=200.0,
+            shape=self.current_observation["observation.state"].shape,
+            dtype=np.float32,
+        )
+
+        # Define observation space for joint forces
+        observation_spaces["observation.force"] = gym.spaces.Box(
+            low=-10.0,  # Force/torque range (Nm)
+            high=10.0,
+            shape=self.current_observation["observation.force"].shape,
             dtype=np.float32,
         )
 
