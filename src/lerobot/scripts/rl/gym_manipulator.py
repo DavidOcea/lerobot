@@ -480,7 +480,11 @@ class RobotEnv(gym.Env):
         image_keys = [key for key in self.current_observation if "image" in key]
 
         for key in image_keys:
-            cv2.imshow(key, cv2.cvtColor(self.current_observation[key].numpy(), cv2.COLOR_RGB2BGR))
+            img = self.current_observation[key]
+            # Handle both numpy array and torch tensor
+            if hasattr(img, 'numpy'):
+                img = img.numpy()
+            cv2.imshow(key, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
             cv2.waitKey(1)
 
     def close(self):
