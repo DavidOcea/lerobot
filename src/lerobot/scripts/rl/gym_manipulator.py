@@ -969,12 +969,16 @@ class BatchCompatibleWrapper(gym.ObservationWrapper):
             Dictionary of observation tensors with batch dimensions.
         """
         for key in observation:
-            if "image" in key and observation[key].dim() == 3:
-                observation[key] = observation[key].unsqueeze(0)
-            if "state" in key and observation[key].dim() == 1:
-                observation[key] = observation[key].unsqueeze(0)
-            if "velocity" in key and observation[key].dim() == 1:
-                observation[key] = observation[key].unsqueeze(0)
+            val = observation[key]
+            # Skip list type (observation.images) - items already have batch dimension from preprocess_observation
+            if isinstance(val, list):
+                continue
+            if "image" in key and val.dim() == 3:
+                observation[key] = val.unsqueeze(0)
+            if "state" in key and val.dim() == 1:
+                observation[key] = val.unsqueeze(0)
+            if "velocity" in key and val.dim() == 1:
+                observation[key] = val.unsqueeze(0)
         return observation
 
 
