@@ -377,9 +377,10 @@ def _get_expected_action_range_from_env_cfg(env_cfg) -> dict[str, tuple[float, f
     expected_range = {}
     if hasattr(env_cfg, 'robot') and hasattr(env_cfg.robot, 'calibration'):
         for calib in env_cfg.robot.calibration:
-            joint_name = calib.get('joint_name')
-            min_pos = calib.get('min_position', -180.0)
-            max_pos = calib.get('max_position', 180.0)
+            # MotorCalibration is a dataclass, use attribute access
+            joint_name = calib.joint_name
+            min_pos = calib.min_position
+            max_pos = calib.max_position
             if joint_name:
                 expected_range[joint_name] = (min_pos, max_pos)
     return expected_range
