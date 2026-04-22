@@ -220,22 +220,27 @@ class TorchActionWrapper(gym.Wrapper):
             device=torch.device("cpu"),
         )
 
-    def step(self, action: torch.Tensor):
+    def step(self, action: torch.Tensor | np.ndarray):
         """
-        Step the environment with a PyTorch tensor action.
+        Step the environment with a PyTorch tensor or numpy array action.
 
         This method handles conversion from PyTorch tensors to NumPy arrays
         for compatibility with the underlying environment.
 
         Args:
-            action: PyTorch tensor action to take.
+            action: PyTorch tensor or numpy array action to take.
 
         Returns:
             Tuple of (observation, reward, terminated, truncated, info).
         """
-        if action.dim() == 2:
-            action = action.squeeze(0)
-        action = action.detach().cpu().numpy()
+        # Handle both torch.Tensor and numpy.ndarray
+        if isinstance(action, torch.Tensor):
+            if action.dim() == 2:
+                action = action.squeeze(0)
+            action = action.detach().cpu().numpy()
+        elif isinstance(action, np.ndarray):
+            if action.ndim == 2:
+                action = action.squeeze(0)
         return self.env.step(action)
 
 
