@@ -745,7 +745,7 @@ class TaskAgentOrchestrator:
             return None
 
     def run(self) -> ExecutionSummary:
-        """Execute the complete task sequence.
+        """Execute the complete task sequence with optional cycle support.
 
         Returns:
             ExecutionSummary with results for all tasks.
@@ -757,11 +757,96 @@ class TaskAgentOrchestrator:
         self.is_running = True
         self.total_collision_count = 0
 
+        # Get cycle configuration
+        max_cycles = getattr(self.config, 'max_cycles', 1)
+        cycle_delay = getattr(self.config, 'cycle_delay', 2.0)
+        enable_cycle_prompt = getattr(self.config, 'enable_cycle_prompt', True)
+
         logger.info(f"Starting task sequence with {len(self.config.tasks)} tasks")
+        if max_cycles > 1:
+            logger.info(f"Cycle mode enabled: max_cycles={max_cycles}")
+        elif max_cycles == -1:
+            logger.info(f"Infinite cycle mode enabled (press Ctrl+C to stop)")
+
+        cycle_count = 0
+        all_results = []
 
         try:
-            # Execute tasks with safety monitoring
-            summary = self._execute_with_safety()
+            # Execute tasks with cycle support
+            while True:
+                cycle_count += 1
+
+                # Check cycle limit
+                if max_cycles != -1 and cycle_count > max_cycles:
+                    logger.info(f"Completed {max_cycles} cycles, stopping")
+                    break
+
+                # Log cycle start
+                if max_cycles > 1 or max_cycles == -1:
+                    logger.info(f"=== Starting Cycle {cycle_count} ===")
+
+                # Reset task index for new cycle
+                if self.interactive_selector is not None:
+                    self.interactive_selector.current_task_index = 0
+
+                # Execute one cycle
+                summary = self._execute_with_safety()
+                all_results.extend(summary.task_results)
+
+                # Check for fatal failure - don't continue cycles
+                if summary.overall_success == False and any(
+                    r.status == TaskStatus.FATAL_FAILURE for r in summary.task_results
+                ):
+                    logger.error("Fatal failure occurred, stopping cycles")
+                    break
+
+                # Cycle complete prompt (interactive mode)
+                if max_cycles > 1 or max_cycles == -1:
+                    logger.info(f"=== Cycle {cycle_count} Completed ===")
+                    logger.info(f"  Completed: {summary.completed_tasks}, Failed: {summary.failed_tasks}")
+
+                    # Prompt for next cycle if interactive
+                    if enable_cycle_prompt and self.config.enable_interactive_mode:
+                        try:
+                            prompt_msg = f"\n循环 {cycle_count} 完成。"
+                            if max_cycles != -1:
+                                prompt_msg += f" 还有 {max_cycles - cycle_count} 个循环待执行。"
+                            prompt_msg += "\n按 Enter 继续下一循环，输入 'q' 退出: "
+                            user_input = input(prompt_msg)
+                            if user_input.lower() == 'q':
+                                logger.info("User requested to stop cycles")
+                                break
+                        except (EOFError, KeyboardInterrupt):
+                            logger.info("User interrupted, stopping cycles")
+                            break
+
+                    # Delay between cycles
+                    if cycle_delay > 0:
+                        logger.info(f"Waiting {cycle_delay}s before next cycle...")
+                        import time
+                        time.sleep(cycle_delay)
+
+                # For single cycle mode, exit after one execution
+                if max_cycles == 1:
+                    break
+
+            # Build final summary
+            if all_results:
+                completed = sum(1 for r in all_results if r.status == TaskStatus.COMPLETED)
+                failed = sum(1 for r in all_results if r.status == TaskStatus.FAILED)
+                fatal = sum(1 for r in all_results if r.status == TaskStatus.FATAL_FAILURE)
+
+                return ExecutionSummary(
+                    total_tasks=len(self.config.tasks) * cycle_count,
+                    completed_tasks=completed,
+                    failed_tasks=failed + fatal,
+                    skipped_tasks=0,
+                    total_duration=sum(r.duration for r in all_results),
+                    task_results=all_results,
+                    overall_success=(fatal == 0 and completed > 0),
+                    collision_count=self.total_collision_count,
+                    total_retries=sum(r.attempts - 1 for r in all_results),
+                )
 
             return summary
 

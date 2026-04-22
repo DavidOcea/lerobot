@@ -77,6 +77,14 @@ class OrchestratorConfig(TasksOrchestratorConfig):
     continue_on_collision: bool = True  # Continue task sequence after collision
     max_total_collisions: int = 10  # Maximum collisions before abort
 
+    # ========================================
+    # Cycle/Loop execution settings (循环执行配置)
+    # ========================================
+    # Enable repeating the entire task sequence multiple times
+    max_cycles: int = 1  # Number of cycles to run (1 = single execution, -1 = infinite loop)
+    cycle_delay: float = 2.0  # Delay between cycles (seconds)
+    enable_cycle_prompt: bool = True  # Prompt user before each cycle (interactive mode)
+
     # Task settings overrides
     override_max_retries: int | None = None  # Override task-specific retry counts
     override_max_duration: float | None = None  # Override task-specific durations
