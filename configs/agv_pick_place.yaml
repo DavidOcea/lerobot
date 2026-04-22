@@ -1,9 +1,14 @@
 # AGV + Robot Combined Task Configuration
 #
-# This configuration demonstrates a complete pick-move-place workflow:
+# This configuration demonstrates a complete pick-move-place-return workflow:
 # 1. Robot picks part at station A
-# 2. AGV moves robot to station B
-# 3. Robot places part at station B
+# 2. Robot arm moves to safe position
+# 3. AGV moves robot to station B
+# 4. Robot places part at station B
+# 5. Robot arm moves to safe position
+# 6. AGV returns to station A (for next cycle)
+#
+# Cycle mode: Repeat the entire sequence multiple times
 #
 # The AGV uses pure TCP communication (no ROS2 required)
 
@@ -171,21 +176,68 @@ tasks:
         height: 480
         fps: 30
 
-  # ---------- Phase 5: Return Home (Optional) ----------
-  - name: "return_home"
+  # ---------- Phase 5: Robot Arm Home Position (Safety) ----------
+  # IMPORTANT: Move arm to safe position before AGV returns to A
+  - name: "arm_home_after_place"
+    task_type: "policy"
+    policy_path: "/path/to/act_home_policy"  # CHANGE to your home policy
+    policy_type: "act"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+
+    completion_criteria:
+      type: "position"
+      target_joint_positions:
+        left_arm_joint_1: 0.0
+        left_arm_joint_2: 0.0
+        left_arm_joint_3: 0.0
+        left_arm_joint_4: 0.0
+        left_arm_joint_5: 0.0
+        left_arm_joint_6: 0.0
+        left_arm_joint_7: 0.0  # Gripper open (released part)
+      position_tolerance: 0.05  # rad
+
+  # ---------- Phase 6: AGV Return to Station A ----------
+  # Return to starting position for next cycle
+  - name: "agv_return_to_station_A"
     task_type: "agv"
     max_duration: 60.0
-    max_retries: 1
-    enabled: false  # Disabled by default - enable if needed
+    max_retries: 2
+    enabled: true  # ENABLED for cycle mode
 
     agv_config:
-      target_station: "station_home"
+      target_station: "station_A"  # Return to starting station
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
       check_arm_safe_position: true
+      arm_safe_positions:
+        left_arm_joint_1: 0.15
+        left_arm_joint_2: 0.15
+        left_arm_joint_3: 0.20
+        left_arm_joint_4: 0.15
+        left_arm_joint_5: 0.20
+        left_arm_joint_6: 0.15
+        left_arm_joint_7: 0.30
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
 
-# ========== Execution Settings ==========
+# ========== Cycle Execution Settings ==========
+# Configure how many times to repeat the entire task sequence
+#
+# max_cycles:
+#   - 1: Execute once (default)
+#   - N: Execute N times
+#   - -1: Infinite loop (press Ctrl+C or 'q' to stop)
+#
+# cycle_delay: Seconds to wait between cycles
+# enable_cycle_prompt: Ask user before each cycle (interactive mode)
+
+max_cycles: 5          # Execute 5 cycles (pick-move-place-return × 5)
+cycle_delay: 3.0       # Wait 3 seconds between cycles
+enable_cycle_prompt: true  # Prompt user before each cycle
 environment_dt: 1.0 / 30.0  # Control loop timestep
 observation_timeout: 5.0  # Seconds
 action_timeout: 5.0  # Seconds
