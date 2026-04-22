@@ -437,10 +437,18 @@ class RobotEnv(gym.Env):
                 - truncated (bool): True if the episode was truncated (e.g., time constraints).
                 - info (dict): Additional debugging information including intervention status.
         """
-        action_dict = {"delta_x": action[0], "delta_y": action[1], "delta_z": action[2]}
+        # Convert numpy array to joint position dict
+        # self._joint_names = ['left_arm_joint_1.pos', 'left_arm_joint_2.pos', ...]
+        if isinstance(action, np.ndarray):
+            action_dict = {name: float(action[i]) for i, name in enumerate(self._joint_names)}
+        elif isinstance(action, dict):
+            action_dict = action
+        else:
+            action_dict = {name: float(action[i]) for i, name in enumerate(self._joint_names)}
 
-        # 1.0 action corresponds to no-op action
-        action_dict["gripper"] = action[3] if self.use_gripper else 1.0
+        if self.use_gripper:
+            # Add gripper command if enabled
+            action_dict["gripper"] = float(action[-1]) if isinstance(action, (np.ndarray, list)) else 1.0
 
         self.robot.send_action(action_dict)
 
