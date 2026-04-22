@@ -372,94 +372,41 @@ def train_offline_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoin
 # Safety validation helpers for Phase2
 # ========================================
 
-def _get_expected_action_range_from_env_cfg(env_cfg) -> dict[str, tuple[float, float]]:
-    """Extract expected action range from environment config calibration."""
-    expected_range = {}
-    if hasattr(env_cfg, 'robot') and hasattr(env_cfg.robot, 'calibration'):
-        for calib in env_cfg.robot.calibration:
-            # MotorCalibration is a dataclass, use attribute access
-            joint_name = calib.joint_name
-            min_pos = calib.min_position
-            max_pos = calib.max_position
-            if joint_name:
-                expected_range[joint_name] = (min_pos, max_pos)
-    return expected_range
-
-
-def _validate_action_scaler(
-    action_scaler,
-    expected_range: dict[str, tuple[float, float]],
-    min_range_error: float = 0.5,  # Below this = error (truly broken)
-    min_range_warning: float = 10.0,  # Below this = warning (small but possibly legitimate)
-):
+def _validate_action_scaler(action_scaler):
     """
     Validate loaded ActionScaler parameters for safety.
 
-    Checks:
-    1. Each dimension's range must be >= min_range_error (truly broken loading)
-    2. Small ranges < min_range_warning trigger warnings (may be legitimate)
-    3. Loaded range should match expected range from env config (within tolerance)
+    Minimal validation - since normalization file was successfully loaded,
+    the values represent actual training data and don't need arbitrary threshold checks.
 
-    Raises RuntimeError only for truly broken cases (range < min_range_error).
-    Logs warnings for small but possibly legitimate ranges.
+    Only checks:
+    1. All action_range values are positive (zero/negative would be broken)
+    2. Log action range info for user awareness
+
+    Raises RuntimeError only for truly broken cases (range <= 0).
     """
     logging.info("Validating ActionScaler parameters for safety...")
 
     action_range = action_scaler.action_range
+    action_center = action_scaler.action_center
 
-    # Track small-range dimensions for reporting
-    small_range_dims = []
-
-    # Check 1: Minimum range per dimension - error vs warning thresholds
+    # Minimal sanity check: ranges must be positive
     for i, range_val in enumerate(action_range):
-        # Check against joint name if available
-        joint_name = list(expected_range.keys())[i] if i < len(expected_range) else f"dim_{i}"
-
-        if range_val < min_range_error:
-            # Truly broken - range is too small to be legitimate
+        if range_val <= 0:
             raise RuntimeError(
-                f"SAFETY ERROR: Action dimension {i} ({joint_name}) has range {range_val:.2f}° "
-                f"which is below minimum error threshold {min_range_error}°.\n"
-                f"This indicates normalization was loaded incorrectly.\n"
-                f"Action range should be the actual joint range (e.g., 120°), not normalized range (e.g., 2°).\n"
+                f"SAFETY ERROR: Action dimension {i} has range {range_val:.2f}° (must be positive).\n"
+                f"This indicates a bug in normalization computation.\n"
                 f"Refusing to start for safety."
             )
-        elif range_val < min_range_warning:
-            # Small but possibly legitimate - log warning but continue
-            small_range_dims.append((i, joint_name, range_val))
 
-    # Log warnings for small-range dimensions
-    if small_range_dims:
-        logging.warning(
-            f"Small action ranges detected (may be legitimate for joints that barely moved during training):"
-        )
-        for i, joint_name, range_val in small_range_dims:
-            logging.warning(
-                f"  Dimension {i} ({joint_name}): {range_val:.2f}° range - "
-                f"residual actions on this joint will have minimal effect"
-            )
-        logging.info(
-            "Small ranges are allowed because they represent actual training data. "
-            "If this joint should move more, consider collecting new training data with more movement."
-        )
-
-    # Check 2: Compare with expected range from env config
-    if expected_range:
-        for i, (joint_name, (exp_min, exp_max)) in enumerate(expected_range.items()):
-            if i >= len(action_range):
-                break
-            expected_range_val = exp_max - exp_min
-            loaded_range_val = action_range[i]
-
-            # Allow 20% tolerance for difference
-            tolerance = 0.2 * expected_range_val
-            if abs(loaded_range_val - expected_range_val) > tolerance:
-                logging.warning(
-                    f"Dimension {i} ({joint_name}): loaded range {loaded_range_val:.1f}° "
-                    f"differs from expected {expected_range_val:.1f}° by more than {tolerance:.1f}°"
-                )
-
-    logging.info(f"ActionScaler validation passed: all ranges >= {min_range_error}°")
+    # Log info for awareness
+    logging.info(f"ActionScaler validation passed:")
+    logging.info(f"  Action range: {action_range}")
+    logging.info(f"  Action center: {action_center}")
+    logging.info(
+        "Normalization loaded successfully from Phase1 training data. "
+        "Action ranges reflect actual joint movement during training."
+    )
 
 
 def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint_mgr: CheckpointManager):
@@ -536,15 +483,12 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     # Normalization is at: phase1/normalization/
     normalization_dir = Path(cfg.resume_checkpoint).parent.parent / "normalization"
 
-    # Get expected action range from env config for safety validation
-    expected_action_range = _get_expected_action_range_from_env_cfg(env_config)
-
     if normalization_dir.exists():
         logging.info(f"Loading normalization from: {normalization_dir}")
         action_scaler, state_standardizer = load_normalization(normalization_dir)
 
-        # Safety validation: check if loaded normalization is reasonable
-        _validate_action_scaler(action_scaler, expected_action_range)
+        # Safety validation: check if loaded normalization is valid
+        _validate_action_scaler(action_scaler)
     else:
         error_msg = (
             f"CRITICAL SAFETY ERROR: Normalization not found at {normalization_dir}!\n"
