@@ -81,46 +81,48 @@ class AGVTaskExecutor:
 
         # 默认home位置 (推荐值，单位：度)
         # 来源: /root/workspace/dc_dir/0420.log
+        # NOTE: Gripper joints (joint_7) temporarily removed
         self._default_home_positions = {
-            # 左臂
+            # 左臂 - 6 joints (gripper removed)
             "left_arm_joint_1": -40.3,
             "left_arm_joint_2": -4.0,
             "left_arm_joint_3": -0.5,
             "left_arm_joint_4": -58.6,
             "left_arm_joint_5": -2.0,
             "left_arm_joint_6": 11.8,
-            "left_arm_joint_7": 0.3,  # gripper (closed, holding)
-            # 右臂
+            # "left_arm_joint_7": 0.3,  # Gripper - DISABLED (temporarily removed)
+            # 右臂 - 6 joints (gripper removed)
             "right_arm_joint_1": 40.3,
             "right_arm_joint_2": 4.0,
             "right_arm_joint_3": 0.8,
             "right_arm_joint_4": 58.6,
             "right_arm_joint_5": 2.0,
             "right_arm_joint_6": -11.8,
-            "right_arm_joint_7": 0.3,  # gripper (closed, holding)
+            # "right_arm_joint_7": 0.3,  # Gripper - DISABLED (temporarily removed)
             # 躯干
             "trunk_joint_1": 0.0,
             "trunk_joint_2": 0.0,
         }
 
         # 默认安全偏差阈值 (关节从home位置的最大偏差，单位：度)
+        # NOTE: Gripper joints (joint_7) temporarily removed
         self._default_safe_thresholds = {
-            # 左臂
+            # 左臂 - 6 joints (gripper removed)
             "left_arm_joint_1": 5.0,  # 允许从home偏差±5°
             "left_arm_joint_2": 5.0,
             "left_arm_joint_3": 5.0,
             "left_arm_joint_4": 5.0,
             "left_arm_joint_5": 5.0,
             "left_arm_joint_6": 5.0,
-            "left_arm_joint_7": 0.5,  # gripper
-            # 右臂
+            # "left_arm_joint_7": 0.5,  # Gripper - DISABLED (temporarily removed)
+            # 右臂 - 6 joints (gripper removed)
             "right_arm_joint_1": 5.0,
             "right_arm_joint_2": 5.0,
             "right_arm_joint_3": 5.0,
             "right_arm_joint_4": 5.0,
             "right_arm_joint_5": 5.0,
             "right_arm_joint_6": 5.0,
-            "right_arm_joint_7": 0.5,  # gripper
+            # "right_arm_joint_7": 0.5,  # Gripper - DISABLED (temporarily removed)
             # 躯干
             "trunk_joint_1": 3.0,
             "trunk_joint_2": 3.0,

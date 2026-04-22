@@ -3,6 +3,9 @@
 #
 # How to use:
 #   python teleoperate.py --config_path /path/to/this/file.yaml
+#
+# NOTE: Gripper joints (joint_7) temporarily removed - will restore later
+# Current: 12 arm joints + 2 trunk joints = 14 total
 # -----------------------------------------------------------------
 
 # ===============================================
@@ -19,23 +22,30 @@ teleop:
 
   # Direction multipliers for each joint.
   # Corresponds to: joint_direction: list
+  # NOTE: Gripper directions removed - 14 joints now (was 16)
+  # Old: 7 left + 7 right + 2 trunk = 16
+  # New: 6 left + 6 right + 2 trunk = 14
   joint_direction:
-    - -1
-    - -1
-    - 1
-    - 1
-    - 1
-    - -1
-    - 1
-    - -1
-    - -1
-    - 1
-    - 1
-    - 1
-    - -1
-    - 1
-    - 1
-    - 1
+    # Left arm (6 joints, gripper removed)
+    - -1      # left_arm_joint_1
+    - -1      # left_arm_joint_2
+    - 1       # left_arm_joint_3
+    - 1       # left_arm_joint_4
+    - 1       # left_arm_joint_5
+    - -1      # left_arm_joint_6
+    # - 1      # left_arm_joint_7 (gripper) - DISABLED
+    # Right arm (6 joints, gripper removed)
+    - -1      # right_arm_joint_1
+    - -1      # right_arm_joint_2
+    - 1       # right_arm_joint_3
+    - 1       # right_arm_joint_4
+    - 1       # right_arm_joint_5
+    - -1      # right_arm_joint_6
+    # - 1      # right_arm_joint_7 (gripper) - DISABLED
+    # Trunk (2 joints)
+    - 1       # trunk_joint_1
+    - 1       # trunk_joint_2
+
 # ===============================================
 # Robot (Follower) Configuration
 # ===============================================
@@ -52,8 +62,6 @@ robot:
   # Corresponds to: cameras: dict[str, CameraConfig]
   cameras: {}
 
-
-
   # Maximum relative joint movement in degrees per control step.
   # Corresponds to: max_relative_joint_move: float
   max_relative_joint_move: 30.0
@@ -68,8 +76,9 @@ robot:
 
   # List of motor calibration settings for each joint.
   # Corresponds to: calibration: list[MotorCalibration]
+  # NOTE: Gripper calibration removed - temporarily removed
   calibration:
-    # --- Left Arm ---
+    # --- Left Arm (6 joints, gripper removed) ---
     - joint_name: "left_arm_joint_1"
       min_position: -160.0
       max_position: 160.0
@@ -88,11 +97,11 @@ robot:
     - joint_name: "left_arm_joint_6"
       min_position: -90.0
       max_position: 90.0
-    - joint_name: "left_arm_joint_7"
-      min_position: 0.0
-      max_position: 1.0
+    # - joint_name: "left_arm_joint_7"  # Gripper - DISABLED
+    #   min_position: 0.0
+    #   max_position: 1.0
 
-    # --- Right Arm ---
+    # --- Right Arm (6 joints, gripper removed) ---
     - joint_name: "right_arm_joint_1"
       min_position: -160.0
       max_position: 160.0
@@ -111,10 +120,10 @@ robot:
     - joint_name: "right_arm_joint_6"
       min_position: -90.0
       max_position: 90.0
-    - joint_name: "right_arm_joint_7"
-      min_position: 0.0
-      max_position: 1.0
-      
+    # - joint_name: "right_arm_joint_7"  # Gripper - DISABLED
+    #   min_position: 0.0
+    #   max_position: 1.0
+
     # --- Trunk ---
     - joint_name: "trunk_joint_1"
       min_position: -45.0

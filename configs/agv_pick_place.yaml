@@ -11,6 +11,8 @@
 # Cycle mode: Repeat the entire sequence multiple times
 #
 # The AGV uses pure TCP communication (no ROS2 required)
+#
+# NOTE: Gripper joints (joint_7) temporarily removed - will restore later
 
 # ========== AGV Global Configuration ==========
 agv_config:
@@ -74,6 +76,7 @@ monitoring_config:
 
 # ========== Task Sequence ==========
 # Pick at Station A -> AGV Move to Station B -> Place at Station B
+# NOTE: Gripper joints removed - 12 arm joints + 2 trunk joints = 14 total
 
 tasks:
   # ---------- Phase 1: Pick at Station A ----------
@@ -86,14 +89,14 @@ tasks:
     enabled: true
 
     completion_criteria:
-      type: "composite"  # Multiple conditions for completion
-      conditions:
-        - type: "force"
-          joint_name: "left_arm_joint_7"  # Gripper joint
-          force_threshold: 0.8  # Nm - grip confirmation
-        - type: "stability"
-          stability_window: 5  # Check 5 consecutive samples
-          stability_tolerance: 0.01  # rad - position stability
+      type: "stability"  # Position stability for pick completion
+      stability_window: 5  # Check 5 consecutive samples
+      stability_tolerance: 0.01  # rad - position stability
+      # NOTE: Gripper force check disabled - gripper temporarily removed
+      # conditions:
+      #   - type: "force"
+      #     joint_name: "left_arm_joint_7"  # Gripper joint
+      #     force_threshold: 0.8  # Nm - grip confirmation
 
     cameras:
       - name: "head_cam"
@@ -106,6 +109,7 @@ tasks:
   # ---------- Phase 2: Robot Arm Home Position (Safety) ----------
   # IMPORTANT: Move arm to safe position before AGV movement
   # Recommended values from /root/workspace/dc_dir/0420.log
+  # NOTE: Gripper joints (joint_7) commented out - temporarily removed
   - name: "arm_home_position"
     task_type: "policy"
     policy_path: "/path/to/act_home_policy"  # CHANGE to your home policy
@@ -117,21 +121,22 @@ tasks:
     completion_criteria:
       type: "position"
       target_joint_positions:
-        # Left Arm - home position (degrees)
+        # Left Arm - home position (degrees) - 6 joints (gripper removed)
         left_arm_joint_1: -40.3
         left_arm_joint_2: -4.0
         left_arm_joint_3: -0.5
         left_arm_joint_4: -58.6
         left_arm_joint_5: -2.0
         left_arm_joint_6: 11.8
-        left_arm_joint_7: 0.3  # Gripper closed (holding part)
-        # Right Arm - home position (degrees)
+        # left_arm_joint_7: 0.3  # Gripper - DISABLED (temporarily removed)
+        # Right Arm - home position (degrees) - 6 joints (gripper removed)
         right_arm_joint_1: 40.3
         right_arm_joint_2: 4.0
         right_arm_joint_3: 0.8
         right_arm_joint_4: 58.6
         right_arm_joint_5: 2.0
         right_arm_joint_6: -11.8
+        # right_arm_joint_7: 0.3  # Gripper - DISABLED (temporarily removed)
         # Trunk - centered position (degrees)
         trunk_joint_1: 0.0
         trunk_joint_2: 0.0
@@ -152,22 +157,26 @@ tasks:
 
       # Safety: Check arm position before AGV moves
       # Verify arm is near home position (max deviation from home)
+      # NOTE: Gripper joints (joint_7) commented out - temporarily removed
       check_arm_safe_position: true
       arm_safe_positions:
-        # Max absolute deviation from home position (degrees)
+        # Left Arm - Max absolute deviation from home position (degrees)
         left_arm_joint_1: 5.0   # Home: -40.3, allow ±5°
         left_arm_joint_2: 5.0   # Home: -4.0
         left_arm_joint_3: 5.0   # Home: -0.5
         left_arm_joint_4: 5.0   # Home: -58.6
         left_arm_joint_5: 5.0   # Home: -2.0
         left_arm_joint_6: 5.0   # Home: 11.8
-        left_arm_joint_7: 0.5   # Gripper should be closed (holding part, near 0.3)
+        # left_arm_joint_7: 0.5  # Gripper - DISABLED (temporarily removed)
+        # Right Arm - Max absolute deviation from home position (degrees)
         right_arm_joint_1: 5.0  # Home: 40.3
         right_arm_joint_2: 5.0  # Home: 4.0
         right_arm_joint_3: 5.0  # Home: 0.8
         right_arm_joint_4: 5.0  # Home: 58.6
         right_arm_joint_5: 5.0  # Home: 2.0
         right_arm_joint_6: 5.0  # Home: -11.8
+        # right_arm_joint_7: 0.5  # Gripper - DISABLED (temporarily removed)
+        # Trunk - Max deviation (degrees)
         trunk_joint_1: 3.0      # Home: 0.0
         trunk_joint_2: 3.0      # Home: 0.0
 
@@ -201,6 +210,7 @@ tasks:
   # ---------- Phase 5: Robot Arm Home Position (Safety) ----------
   # IMPORTANT: Move arm to safe position before AGV returns to A
   # Recommended values from /root/workspace/dc_dir/0420.log
+  # NOTE: Gripper joints (joint_7) commented out - temporarily removed
   - name: "arm_home_after_place"
     task_type: "policy"
     policy_path: "/path/to/act_home_policy"  # CHANGE to your home policy
@@ -212,21 +222,22 @@ tasks:
     completion_criteria:
       type: "position"
       target_joint_positions:
-        # Left Arm - home position (degrees)
+        # Left Arm - home position (degrees) - 6 joints (gripper removed)
         left_arm_joint_1: -40.3
         left_arm_joint_2: -4.0
         left_arm_joint_3: -0.5
         left_arm_joint_4: -58.6
         left_arm_joint_5: -2.0
         left_arm_joint_6: 11.8
-        left_arm_joint_7: 0.0  # Gripper open (released part)
-        # Right Arm - home position (degrees)
+        # left_arm_joint_7: 0.0  # Gripper - DISABLED (temporarily removed)
+        # Right Arm - home position (degrees) - 6 joints (gripper removed)
         right_arm_joint_1: 40.3
         right_arm_joint_2: 4.0
         right_arm_joint_3: 0.8
         right_arm_joint_4: 58.6
         right_arm_joint_5: 2.0
         right_arm_joint_6: -11.8
+        # right_arm_joint_7: 0.0  # Gripper - DISABLED (temporarily removed)
         # Trunk - centered position (degrees)
         trunk_joint_1: 0.0
         trunk_joint_2: 0.0
@@ -247,21 +258,25 @@ tasks:
       arrival_tolerance: 0.3
       check_arm_safe_position: true
       # Safety check: verify arm is near home position (max deviation from home)
+      # NOTE: Gripper joints (joint_7) commented out - temporarily removed
       arm_safe_positions:
-        # Max absolute deviation from home position (degrees)
+        # Left Arm - Max absolute deviation from home position (degrees)
         left_arm_joint_1: 5.0   # Home: -40.3, allow ±5°
         left_arm_joint_2: 5.0   # Home: -4.0
         left_arm_joint_3: 5.0   # Home: -0.5
         left_arm_joint_4: 5.0   # Home: -58.6
         left_arm_joint_5: 5.0   # Home: -2.0
         left_arm_joint_6: 5.0   # Home: 11.8
-        left_arm_joint_7: 0.5   # Gripper should be open (near 0)
+        # left_arm_joint_7: 0.5  # Gripper - DISABLED (temporarily removed)
+        # Right Arm - Max absolute deviation from home position (degrees)
         right_arm_joint_1: 5.0  # Home: 40.3
         right_arm_joint_2: 5.0  # Home: 4.0
         right_arm_joint_3: 5.0  # Home: 0.8
         right_arm_joint_4: 5.0  # Home: 58.6
         right_arm_joint_5: 5.0  # Home: 2.0
         right_arm_joint_6: 5.0  # Home: -11.8
+        # right_arm_joint_7: 0.5  # Gripper - DISABLED (temporarily removed)
+        # Trunk - Max deviation (degrees)
         trunk_joint_1: 3.0      # Home: 0.0
         trunk_joint_2: 3.0      # Home: 0.0
       retry_on_timeout: true
@@ -287,17 +302,6 @@ observation_timeout: 5.0  # Seconds
 action_timeout: 5.0  # Seconds
 reset_duration: 3.0  # Time to reset robot to zero position
 reset_positions: {}  # Custom reset positions (optional)
-
-# ========== Example: Alternative AGV Position Navigation ==========
-# Uncomment to use position-based navigation instead of station ID
-#
-# tasks:
-#   - name: "agv_move_to_position"
-#     task_type: "agv"
-#     agv_config:
-#       target_position: [5.0, 0.0, 0.0]  # [x, y, theta] meters, radians
-#       wait_for_arrival: true
-#       arrival_tolerance: 0.5
 
 # ========== Usage Instructions ==========
 #

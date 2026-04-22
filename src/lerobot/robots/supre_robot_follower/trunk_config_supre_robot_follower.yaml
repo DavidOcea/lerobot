@@ -1,6 +1,9 @@
 # -----------------------------------------------------------------
 # Configuration for the SupreRobot Follower
 # This file corresponds to the `SupreRobotFollowerConfig` dataclass.
+#
+# NOTE: Gripper joints (joint_7) temporarily removed - will restore later
+# Current: 12 arm joints + 2 trunk joints = 14 total
 # -----------------------------------------------------------------
 
 # [IMPORTANT] Specifies which subclass of RobotConfig to use.
@@ -26,11 +29,9 @@ joint_config_file: "trunk_config_supre_robot_joint.yaml"
 #     device_id: 1
 cameras: {}
 
-
-
 # Maximum relative joint movement in degrees per control step.
 # Corresponds to: max_relative_joint_move: float
-max_relative_joint_move: 10.0 #30.0
+max_relative_joint_move: 10.0  # 30.0
 
 # Port for the Prometheus monitoring server. Use `null` for None.
 # Corresponds to: prometheus_port: int | None
@@ -42,8 +43,9 @@ control_frequency: 30
 
 # List of motor calibration settings for each joint.
 # Corresponds to: calibration: list[MotorCalibration]
+# NOTE: Gripper calibration removed - temporarily removed
 calibration:
-  # --- Left Arm ---
+  # --- Left Arm (6 joints, gripper removed) ---
   - joint_name: "left_arm_joint_1"
     min_position: -160.0
     max_position: 160.0
@@ -62,11 +64,11 @@ calibration:
   - joint_name: "left_arm_joint_6"
     min_position: -90.0
     max_position: 90.0
-  - joint_name: "left_arm_joint_7"
-    min_position: 0.0
-    max_position: 1.0
+  # - joint_name: "left_arm_joint_7"  # Gripper - DISABLED
+  #   min_position: 0.0
+  #   max_position: 1.0
 
-  # --- Right Arm ---
+  # --- Right Arm (6 joints, gripper removed) ---
   - joint_name: "right_arm_joint_1"
     min_position: -160.0
     max_position: 160.0
@@ -85,10 +87,11 @@ calibration:
   - joint_name: "right_arm_joint_6"
     min_position: -90.0
     max_position: 90.0
-  - joint_name: "right_arm_joint_7"
-    min_position: 0.0
-    max_position: 1.0
-#trunk
+  # - joint_name: "right_arm_joint_7"  # Gripper - DISABLED
+  #   min_position: 0.0
+  #   max_position: 1.0
+
+  # --- Trunk ---
   - joint_name: "trunk_joint_1"
     min_position: -45.0
     max_position: 45.0

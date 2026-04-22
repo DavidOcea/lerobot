@@ -1,7 +1,9 @@
-
 # ===============================================
 # Robot (Follower) Configuration
 # ===============================================
+# NOTE: Gripper joints (joint_7) temporarily removed - will restore later
+# Current: 12 arm joints + 2 trunk joints = 14 total
+
 robot:
   # Specifies which subclass of RobotConfig to use.
   # This matches the name in `@RobotConfig.register_subclass("supre_robot_follower")`
@@ -18,14 +20,10 @@ robot:
     # Head camera (main overview camera)
     head_cam:
       type: opencv
-      # Use index 0 for head camera
       index: 0
       width: 640
       height: 480
       fps: 30
-      # Optional: rotation, exposure, etc.
-      # rotation: 0
-      # exposure: -1  # Auto exposure
 
     # Left wrist cameras (for left arm manipulation tasks)
     left_wrist_cam:
@@ -57,11 +55,9 @@ robot:
       height: 480
       fps: 30
 
-
-
   # Maximum relative joint movement in degrees per control step.
   # Corresponds to: max_relative_joint_move: float
-  max_relative_joint_move: 10.0 #30.0
+  max_relative_joint_move: 10.0  # 30.0
 
   # Port for the Prometheus monitoring server. Use `null` for None.
   # Corresponds to: prometheus_port: int | None
@@ -73,8 +69,9 @@ robot:
 
   # List of motor calibration settings for each joint.
   # Corresponds to: calibration: list[MotorCalibration]
+  # NOTE: Gripper calibration removed - temporarily removed
   calibration:
-    # --- Left Arm ---
+    # --- Left Arm (6 joints, gripper removed) ---
     - joint_name: "left_arm_joint_1"
       min_position: -160.0
       max_position: 160.0
@@ -93,11 +90,11 @@ robot:
     - joint_name: "left_arm_joint_6"
       min_position: -90.0
       max_position: 90.0
-    - joint_name: "left_arm_joint_7"
-      min_position: 0.0
-      max_position: 1.0
+    # - joint_name: "left_arm_joint_7"  # Gripper - DISABLED
+    #   min_position: 0.0
+    #   max_position: 1.0
 
-    # --- Right Arm ---
+    # --- Right Arm (6 joints, gripper removed) ---
     - joint_name: "right_arm_joint_1"
       min_position: -160.0
       max_position: 160.0
@@ -116,10 +113,10 @@ robot:
     - joint_name: "right_arm_joint_6"
       min_position: -90.0
       max_position: 90.0
-    - joint_name: "right_arm_joint_7"
-      min_position: 0.0
-      max_position: 1.0
-      
+    # - joint_name: "right_arm_joint_7"  # Gripper - DISABLED
+    #   min_position: 0.0
+    #   max_position: 1.0
+
     # --- Trunk ---
     - joint_name: "trunk_joint_1"
       min_position: -45.0
