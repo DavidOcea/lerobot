@@ -165,8 +165,12 @@ class ActionScaler:
         if isinstance(action, np.ndarray):
             action = torch.from_numpy(action).float()
 
+        # Convert normalization params to tensors on same device as action
+        action_center = torch.from_numpy(self.action_center).to(action.device, dtype=action.dtype)
+        action_range = torch.from_numpy(self.action_range).to(action.device, dtype=action.dtype)
+
         # Normalize: (action - center) / (range / 2)
-        normalized = (action - self.action_center) / (self.action_range / 2.0)
+        normalized = (action - action_center) / (action_range / 2.0)
 
         # Clip to [-1, 1] for safety
         normalized = torch.clamp(normalized, -1.0, 1.0)
@@ -186,8 +190,12 @@ class ActionScaler:
         if isinstance(normalized_action, np.ndarray):
             normalized_action = torch.from_numpy(normalized_action).float()
 
+        # Convert normalization params to tensors on same device as action
+        action_center = torch.from_numpy(self.action_center).to(normalized_action.device, dtype=normalized_action.dtype)
+        action_range = torch.from_numpy(self.action_range).to(normalized_action.device, dtype=normalized_action.dtype)
+
         # Unnormalize: normalized * (range / 2) + center
-        action = normalized_action * (self.action_range / 2.0) + self.action_center
+        action = normalized_action * (action_range / 2.0) + action_center
 
         return action
 
@@ -334,8 +342,12 @@ class StateStandardizer:
         if isinstance(state, np.ndarray):
             state = torch.from_numpy(state).float()
 
+        # Convert normalization params to tensors on same device as state
+        state_mean = torch.from_numpy(self.state_mean).to(state.device, dtype=state.dtype)
+        state_std = torch.from_numpy(self.state_std).to(state.device, dtype=state.dtype)
+
         # Standardize: (state - mean) / std
-        standardized = (state - self.state_mean) / self.state_std
+        standardized = (state - state_mean) / state_std
 
         return standardized
 
@@ -352,8 +364,12 @@ class StateStandardizer:
         if isinstance(standardized_state, np.ndarray):
             standardized_state = torch.from_numpy(standardized_state).float()
 
+        # Convert normalization params to tensors on same device as state
+        state_mean = torch.from_numpy(self.state_mean).to(standardized_state.device, dtype=standardized_state.dtype)
+        state_std = torch.from_numpy(self.state_std).to(standardized_state.device, dtype=standardized_state.dtype)
+
         # Unstandardize: standardized * std + mean
-        state = standardized_state * self.state_std + self.state_mean
+        state = standardized_state * state_std + state_mean
 
         return state
 
