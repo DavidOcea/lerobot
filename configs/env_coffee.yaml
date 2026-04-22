@@ -214,6 +214,34 @@ wrapper:
   # gripper_penalty_in_reward: false
   use_gripper: false
 
+  # ========================================
+  # Keyboard adjustment sensitivity (for leader_joint mode)
+  # ========================================
+  # Controls how sensitive keyboard fine-tuning is (A/D keys)
+  # - key_step_per_frame: Degrees per frame when holding A/D (higher = faster)
+  # - key_max_adjustment: Max cumulative adjustment per key press (degrees)
+  #
+  # Recommended values:
+  # - Fine control: step=0.1, max=3.0
+  # - Default:      step=0.2, max=5.0
+  # - Fast adjust:  step=0.5, max=10.0
+  # - High speed:   step=1.0, max=15.0
+  key_step_per_frame: 0.2
+  key_max_adjustment: 5.0
+
+  # ========================================
+  # Leader arm intervention sensitivity (for leader_joint mode)
+  # ========================================
+  # Controls when leader arm movement triggers intervention
+  # - leader_trigger_threshold: Degrees - leader change > this triggers adjustment
+  # - leader_adjust_alpha: Correction factor (follower_delta = leader_delta * alpha)
+  # - leader_exit_threshold: Degrees - leader change < this starts exit countdown
+  # - leader_exit_frame_count: Frames to wait before exiting adjustment mode
+  leader_trigger_threshold: 5.0
+  leader_adjust_alpha: 0.3
+  leader_exit_threshold: 1.0
+  leader_exit_frame_count: 5
+
   # Reset positions (recommended home position from 0226log.log)
   fixed_reset_joint_positions:
     # Left Arm

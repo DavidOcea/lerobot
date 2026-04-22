@@ -189,6 +189,22 @@ class EnvTransformConfig:
     gripper_penalty: float = 0.0
     gripper_penalty_in_reward: bool = False
 
+    # ========================================
+    # Keyboard adjustment parameters (for leader_joint mode)
+    # ========================================
+    # Controls sensitivity of keyboard fine-tuning (A/D keys)
+    key_step_per_frame: float = 0.2  # Degrees per frame when holding A/D
+    key_max_adjustment: float = 5.0  # Max cumulative adjustment per key press (degrees)
+
+    # ========================================
+    # Leader arm adjustment parameters (for leader_joint mode)
+    # ========================================
+    # Controls when leader arm intervention triggers and how strong the correction is
+    leader_trigger_threshold: float = 5.0  # Degrees - leader change > this triggers adjustment
+    leader_adjust_alpha: float = 0.3       # Correction factor (follower_delta = leader_delta * alpha)
+    leader_exit_threshold: float = 1.0     # Degrees - leader change < this starts exit countdown
+    leader_exit_frame_count: int = 5       # Frames to wait before exiting adjustment mode
+
 
 @EnvConfig.register_subclass(name="gym_manipulator")
 @dataclass

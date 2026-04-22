@@ -2024,6 +2024,7 @@ class JointLeaderControlWrapper(gym.Wrapper):
         leader_adjust_config: LeaderAdjustConfig = None,
         key_adjust_config: KeyAdjustConfig = None,
         auto_reset=False,
+        wrapper_config=None,  # EnvTransformConfig for reading parameters
     ):
         """
         Initialize the joint-space leader control wrapper.
@@ -2035,6 +2036,7 @@ class JointLeaderControlWrapper(gym.Wrapper):
             leader_adjust_config: Leader correction config (trigger threshold, alpha, etc.)
             key_adjust_config: Keyboard correction config (step size, etc.)
             auto_reset: Whether to auto reset when episode ends.
+            wrapper_config: EnvTransformConfig containing keyboard/leader adjustment params.
         """
         super().__init__(env)
         self.robot_leader = teleop_device
@@ -2042,25 +2044,46 @@ class JointLeaderControlWrapper(gym.Wrapper):
         self.use_gripper = use_gripper
         self.auto_reset = auto_reset
 
-        # Default configs
+        # Default configs - use wrapper_config if provided
         if leader_adjust_config is None:
-            leader_adjust_config = LeaderAdjustConfig(
-                enable=True,
-                trigger_threshold_deg=5.0,
-                trigger_alpha=0.3,
-                exit_threshold_deg=1.0,
-                exit_frame_count=5,
-                adjust_alpha=0.3,
-            )
+            # Read from wrapper_config or use defaults
+            if wrapper_config is not None:
+                leader_adjust_config = LeaderAdjustConfig(
+                    enable=True,
+                    trigger_threshold_deg=wrapper_config.leader_trigger_threshold,
+                    trigger_alpha=wrapper_config.leader_adjust_alpha,
+                    exit_threshold_deg=wrapper_config.leader_exit_threshold,
+                    exit_frame_count=wrapper_config.leader_exit_frame_count,
+                    adjust_alpha=wrapper_config.leader_adjust_alpha,
+                )
+            else:
+                leader_adjust_config = LeaderAdjustConfig(
+                    enable=True,
+                    trigger_threshold_deg=5.0,
+                    trigger_alpha=0.3,
+                    exit_threshold_deg=1.0,
+                    exit_frame_count=5,
+                    adjust_alpha=0.3,
+                )
 
         if key_adjust_config is None:
-            key_adjust_config = KeyAdjustConfig(
-                enable=True,
-                step_per_frame=0.2,
-                max_adjustment=5.0,
-                default_joint=1,
-                default_arm_mode="both",
-            )
+            # Read from wrapper_config or use defaults
+            if wrapper_config is not None:
+                key_adjust_config = KeyAdjustConfig(
+                    enable=True,
+                    step_per_frame=wrapper_config.key_step_per_frame,
+                    max_adjustment=wrapper_config.key_max_adjustment,
+                    default_joint=1,
+                    default_arm_mode="both",
+                )
+            else:
+                key_adjust_config = KeyAdjustConfig(
+                    enable=True,
+                    step_per_frame=0.2,
+                    max_adjustment=5.0,
+                    default_joint=1,
+                    default_arm_mode="both",
+                )
 
         # Create ActionCorrector
         corrector_config = ActionCorrectorConfig(
@@ -2509,10 +2532,12 @@ def make_robot_env(cfg: EnvConfig) -> gym.Env:
     elif control_mode == "leader_joint":
         # Joint-space incremental control (no URDF/kinematics needed)
         # Uses ActionCorrector for gradual corrections
+        # Parameters from wrapper_config: key_step_per_frame, key_max_adjustment, etc.
         env = JointLeaderControlWrapper(
             env=env,
             teleop_device=teleop_device,
             use_gripper=cfg.wrapper.use_gripper,
+            wrapper_config=cfg.wrapper,
         )
     else:
         raise ValueError(f"Invalid control mode: {control_mode}")
