@@ -1284,7 +1284,8 @@ class TaskAgentOrchestrator:
             # Check for collision
             if self.collision_detector:
                 observation = self.robot.get_observation()
-                if self.collision_detector.detect(observation):
+                collision_result = self.collision_detector.check_collision(observation, target_action)
+                if collision_result.is_detected:
                     logger.warning(f"Collision detected during position task {task.name}")
                     success = False
                     break
