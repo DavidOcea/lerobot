@@ -17,7 +17,7 @@
 # ========== AGV Global Configuration ==========
 agv_config:
   enabled: true
-  host: "192.168.1.100"  # AGV IP address - change to your AGV's IP
+  host: "192.168.2.210"  # AGV IP address - change to your AGV's IP
   port: 19204  # Default status query port
   connection_timeout: 5.0  # Seconds
   read_timeout: 2.0  # Seconds
@@ -33,31 +33,50 @@ agv_config:
   # Station map (optional - for coordinate-based navigation)
   # Format: station_id: [x, y, theta] (meters, radians)
   station_map:
-    station_A: [0.0, 0.0, 0.0]
-    station_B: [5.0, 0.0, 0.0]
-    station_C: [10.0, 0.0, 0.0]
-    station_home: [2.5, 2.5, 0.0]
-    charging_station: [0.0, 5.0, 0.0]
+    test_station: [1.500, 0.800, 0.000]
+    b: [0.172, 0.020, 0.652]
+    a: [0.172, 0.020, 0.652]
+    station_B: [-3.100, -0.821, 1.587]
+    station_A: [0.172, 0.020, 0.652]
 
 # ========== Robot Configuration ==========
 robot_config:
   type: "supre_robot_follower"
-
-  # Robot connection settings
-  serial_port: "/dev/ttyUSB0"  # Adjust to your setup
-  control_frequency: 30.0  # Hz
-
-  # Force sensing
-  force_sensing_enabled: true
-
-  # Cameras (optional - add as needed)
+  control_frequency: 50  # Higher frequency for smoother motion
+  prometheus_port: 8000
+  max_relative_joint_move: 2.0  # Smaller steps for smoother motion
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
   cameras:
     head_cam:
-      type: "opencv"
+      type: opencv
       index: 0
       width: 640
       height: 480
       fps: 30
+    left_wrist_cam:
+      type: opencv
+      index: 2
+      width: 640
+      height: 480
+      fps: 30
+    right_wrist_cam:
+      type: opencv
+      index: 4
+      width: 640
+      height: 480
+      fps: 30
+    # right_wrist_cam:
+    #   type: opencv
+    #   index: 6
+    #   width: 640
+    #   height: 480
+    #   fps: 30
+    # right_wrist_cam2:
+    #   type: opencv
+    #   index: 8
+    #   width: 640
+    #   height: 480
+    #   fps: 30
 
 # ========== Collision Detection Configuration ==========
 collision_config:
@@ -82,22 +101,11 @@ tasks:
   # ---------- Phase 1: Pick at Station A ----------
   - name: "pick_at_station_A"
     task_type: "policy"
-    policy_path: "/path/to/act_pick_policy"  # CHANGE to your policy path
+    policy_path: "/home/t/workspace/dc_dir/models/act_0421_1/checkpoints/120000/pretrained_model"  # CHANGE to your policy path
     policy_type: "act"
-    max_duration: 25.0  # Maximum pick time (seconds)
-    max_retries: 2  # Retry attempts if pick fails
+    max_duration: 8.0  # Maximum pick time (seconds)
+    max_retries: 1  # Retry attempts if pick fails
     enabled: true
-
-    completion_criteria:
-      type: "stability"  # Position stability for pick completion
-      stability_window: 5  # Check 5 consecutive samples
-      stability_tolerance: 0.01  # rad - position stability
-      # NOTE: Gripper force check disabled - gripper temporarily removed
-      # conditions:
-      #   - type: "force"
-      #     joint_name: "left_arm_joint_7"  # Gripper joint
-      #     force_threshold: 0.8  # Nm - grip confirmation
-
     cameras:
       - name: "head_cam"
         type: "opencv"
@@ -105,6 +113,27 @@ tasks:
         width: 640
         height: 480
         fps: 30
+      - name: "left_wrist_cam"
+        type: "opencv"
+        index: 2
+        width: 640
+        height: 480
+        fps: 30
+      - name: "right_wrist_cam"
+        type: "opencv"
+        index: 4
+        width: 640
+        height: 480
+        fps: 30
+    completion_criteria:
+      type: "composite"  # Use multiple conditions for completion detection
+      conditions:
+        # - type: "force"
+        #   joint_name: "right_arm_joint_7"  # RIGHT gripper joint
+        #   force_threshold: 0.2  # Nm - user specified threshold
+        - type: "stability"
+          stability_window: 5  # Number of steps to check - user specified
+          stability_tolerance: 0.05  # Max position variance
 
   # ---------- Phase 2: Robot Arm Home Position (Safety) ----------
   # IMPORTANT: Move arm to safe position before AGV movement
@@ -187,17 +216,11 @@ tasks:
   # ---------- Phase 4: Place at Station B ----------
   - name: "place_at_station_B"
     task_type: "policy"
-    policy_path: "/path/to/act_place_policy"  # CHANGE to your policy
+    policy_path: "/home/t/workspace/dc_dir/models/act_0421_2/checkpoints/120000/pretrained_model"  # CHANGE to your policy
     policy_type: "act"
-    max_duration: 20.0
-    max_retries: 2
+    max_duration: 10.0
+    max_retries: 1
     enabled: true
-
-    completion_criteria:
-      type: "stability"  # Position stability after release
-      stability_window: 10
-      stability_tolerance: 0.005
-
     cameras:
       - name: "head_cam"
         type: "opencv"
@@ -205,6 +228,27 @@ tasks:
         width: 640
         height: 480
         fps: 30
+      - name: "left_wrist_cam"
+        type: "opencv"
+        index: 2
+        width: 640
+        height: 480
+        fps: 30
+      - name: "right_wrist_cam"
+        type: "opencv"
+        index: 4
+        width: 640
+        height: 480
+        fps: 30
+    completion_criteria:
+      type: "composite"  # Use multiple conditions for completion detection
+      conditions:
+        # - type: "force"
+        #   joint_name: "right_arm_joint_7"  # RIGHT gripper joint
+        #   force_threshold: 0.2  # Nm - user specified threshold
+        - type: "stability"
+          stability_window: 5  # Number of steps to check - user specified
+          stability_tolerance: 0.05  # Max position variance
 
   # ---------- Phase 5: Robot Arm Home Position (Safety) ----------
   # IMPORTANT: Move arm to safe position before AGV returns to A
