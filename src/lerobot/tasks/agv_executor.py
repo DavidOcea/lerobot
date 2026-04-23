@@ -40,6 +40,8 @@ class AGVExecutionResult:
     error: str | None
     distance_traveled: float = 0.0
     battery_level: int = 0
+    nav_detail: dict | None = None
+    task_progress: dict | None = None
 
 
 class AGVTaskExecutor:
@@ -201,6 +203,11 @@ class AGVTaskExecutor:
                 f"moving={initial_status.is_moving}"
             )
 
+            # 障碍物检查
+            obstacle = self.agv.get_obstacle_status()
+            if obstacle.get('blocked', False):
+                logger.warning(f"[AGVExecutor] AGV blocked at start: ({obstacle['block_x']:.2f}, {obstacle['block_y']:.2f})")
+
             # 电量检查
             if initial_status.battery < 15:
                 result.error = f"Low battery: {initial_status.battery}%"
@@ -297,11 +304,17 @@ class AGVTaskExecutor:
             final_status = self.agv.get_status(use_cache=False)
             elapsed = time.time() - start_time
 
+            # 获取最终导航详情
+            nav_detail = self.agv.get_navigation_detail()
+            task_progress = self.agv.get_task_progress()
+
             result.success = True
             result.arrival_station = final_status.current_station
             result.duration = elapsed
             result.final_status = final_status
             result.battery_level = final_status.battery
+            result.nav_detail = nav_detail
+            result.task_progress = task_progress
 
             # 计算移动距离 (如果有初始位置)
             if initial_status.position and final_status.position:
@@ -448,6 +461,11 @@ class AGVTaskExecutor:
                     f"{status.error_code} - {status.error_message}"
                 )
                 return False
+
+            # 检查障碍物
+            obstacle = self.agv.get_obstacle_status()
+            if obstacle.get('blocked', False):
+                logger.warning(f"[AGVExecutor] AGV blocked by obstacle at ({obstacle['block_x']:.2f}, {obstacle['block_y']:.2f})")
 
             # 检查是否已停止但未到达
             if not status.is_moving and status.status_code == 0:

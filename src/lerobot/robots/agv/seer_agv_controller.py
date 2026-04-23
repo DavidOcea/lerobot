@@ -980,6 +980,8 @@ class SeerAGVController:
     ) -> bool:
         """等待到达目标站点.
 
+        使用导航详情API (0x03FC) 和任务进度API (0x0456) 增强到达判定。
+
         Args:
             target_station: 目标站点ID
             timeout: 最大等待时间 (秒)
@@ -1011,6 +1013,24 @@ class SeerAGVController:
                     logger.info(f"Arrived near {target_station}: distance={distance:.3f}m")
                     self._current_navigation_target = None
                     return True
+
+            # 使用导航详情检查目标是否匹配
+            nav_detail = self.get_navigation_detail()
+            target_id = nav_detail.get('target_id', '')
+            target_dist = nav_detail.get('target_dist', -1)
+            if target_id:
+                logger.debug(f"Navigation detail: target_id={target_id}, dist={target_dist:.2f}m")
+
+            # 使用障碍物检测检查是否被阻挡
+            obstacle = self.get_obstacle_status()
+            if obstacle.get('blocked', False):
+                logger.warning(f"AGV blocked by obstacle at ({obstacle['block_x']:.2f}, {obstacle['block_y']:.2f})")
+
+            # 使用任务进度获取百分比
+            progress = self.get_task_progress()
+            pct = progress.get('percentage', 0)
+            if pct > 0:
+                logger.debug(f"Navigation progress: {pct}%")
 
             # 检查异常
             if status.error_code != 0:
