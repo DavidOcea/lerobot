@@ -659,30 +659,51 @@ class SeerAGVController:
                 return self._last_status
 
         try:
-            # 综合查询
-            battery = self.get_battery()
-            position = self.get_position()
-            station = self.get_current_station()
-            vx, vy, vtheta = self.get_velocity()
-            task_status = self.get_task_status()
+            # 使用超级聚合查询 (0x044C) 一次获取所有数据
+            # 比单独调用 get_battery() + get_position() + get_velocity() 等效率更高
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_AGGREGATE_QUERY,
+                {}
+            )
 
-            # 解析状态码 (API 0x03EC 直接返回的字段)
-            status_code = task_status.get('status', 0)
-            error_code = task_status.get('error_code', 0)
-            error_message = task_status.get('err_msg', '')
+            # 位置
+            x = float(response.get('x', 0.0))
+            y = float(response.get('y', 0.0))
+            theta = float(response.get('angle', 0.0))
+            position = AGVPosition(x=x, y=y, theta=theta)
+            self._last_position = position
+
+            # 速度
+            vx = float(response.get('vx', 0.0))
+            vy = float(response.get('vy', 0.0))
+            vtheta = float(response.get('w', 0.0))
+
+            # 电量 (battery_level 是 0.0-1.0 比例)
+            battery_level = response.get('battery_level', 0.0)
+            battery = int(battery_level * 100)
+
+            # 站点
+            station = str(response.get('current_station', ''))
+
+            # 状态码
+            running_status = response.get('running_status', 0)
+
+            # EMC状态
+            emergency = response.get('emergency', False)
 
             # 判断是否在移动 - 速度非零 或 状态码=执行中
             is_moving = (abs(vx) > 0.01 or abs(vy) > 0.01 or abs(vtheta) > 0.01 or
-                        status_code == self.STATUS_EXECUTING)
+                        running_status == self.STATUS_EXECUTING)
 
             self._last_status = AGVStatus(
                 battery=battery,
-                status_code=status_code,
+                status_code=running_status,
                 current_station=station,
                 position=position,
                 is_moving=is_moving,
-                error_code=error_code,
-                error_message=error_message,
+                error_code=0 if not emergency else 1,
+                error_message='' if not emergency else 'EMC active',
             )
             self._last_update_time = time.time()
 
