@@ -1021,7 +1021,7 @@ class TaskAgentOrchestrator:
     def _execute_single_task(self, task: TaskConfig) -> TaskResult:
         """Execute a single task with all necessary setup and monitoring.
 
-        Supports both policy tasks and AGV navigation tasks.
+        Supports policy tasks, AGV navigation tasks, and position tasks.
 
         Args:
             task: The task configuration to execute.
@@ -1029,9 +1029,13 @@ class TaskAgentOrchestrator:
         Returns:
             TaskResult with execution outcome.
         """
-        # Handle AGV tasks separately (NEW)
+        # Handle AGV tasks separately
         if task.task_type == "agv":
             return self._execute_agv_task(task)
+
+        # Handle position tasks (direct joint position movement)
+        if task.task_type == "position":
+            return self._execute_position_task(task)
 
         # Handle policy tasks (existing logic)
         # Switch cameras for this task
@@ -1177,6 +1181,162 @@ class TaskAgentOrchestrator:
         )
 
         return result
+
+    def _execute_position_task(self, task: TaskConfig) -> TaskResult:
+        """Execute a position task - move joints directly to target positions.
+
+        This task type is for moving the robot to specific joint positions
+        without requiring a policy. Used for safety positions, home positions,
+        etc.
+
+        Args:
+            task: Task configuration with target_joint_positions in completion_criteria.
+
+        Returns:
+            TaskResult with execution outcome.
+        """
+        import time
+        import math
+
+        logger.info(f"Executing position task: {task.name}")
+
+        if not self.robot:
+            logger.warning("Robot not connected, skipping task")
+            return TaskResult(
+                task_name=task.name,
+                status=TaskStatus.SKIPPED,
+                duration=0.0,
+                error_message="Robot not connected",
+                collision_detected=False,
+                attempts=1,
+            )
+
+        target_positions = task.completion_criteria.target_joint_positions
+        if not target_positions:
+            return TaskResult(
+                task_name=task.name,
+                status=TaskStatus.FAILED,
+                duration=0.0,
+                error_message="No target_joint_positions provided",
+                collision_detected=False,
+                attempts=1,
+            )
+
+        tolerance = task.completion_criteria.position_tolerance  # degrees
+        max_duration = task.max_duration
+        control_frequency = getattr(self.config.robot_config, 'control_frequency', 30)
+        dt = 1.0 / control_frequency
+
+        # Get current positions
+        observation = self.robot.get_observation()
+        current_positions = observation["observation"]["joint_position"]
+
+        # Get joint names from robot config
+        joint_names = self.robot.joint_names if hasattr(self.robot, 'joint_names') else list(target_positions.keys())
+
+        # Calculate movement duration based on max distance
+        max_distance = 0.0
+        for joint_name in joint_names:
+            if joint_name in target_positions:
+                current_idx = joint_names.index(joint_name) if joint_name in joint_names else -1
+                if current_idx >= 0 and current_idx < len(current_positions):
+                    target = target_positions[joint_name]
+                    current = current_positions[current_idx]
+                    distance = abs(target - current)
+                    max_distance = max(max_distance, distance)
+
+        # Estimate time needed (rough: 30 deg/s max speed)
+        estimated_duration = max_distance / 30.0 + 1.0  # seconds
+        actual_duration = min(max_duration, max(estimated_duration, 3.0))
+
+        logger.info(f"Moving to target positions, estimated duration: {actual_duration:.1f}s")
+        logger.debug(f"Target positions: {target_positions}")
+
+        # Execute smooth movement using interpolated commands
+        start_time = time.time()
+        step_count = 0
+        total_steps = int(actual_duration * control_frequency)
+
+        success = True
+        while time.time() - start_time < actual_duration:
+            elapsed = time.time() - start_time
+            progress = min(1.0, elapsed / actual_duration)
+
+            # Use smooth interpolation (ease-in-out)
+            smooth_progress = 0.5 * (1 - math.cos(math.pi * progress))
+
+            # Calculate intermediate positions
+            target_action = {}
+            for joint_name in joint_names:
+                if joint_name in target_positions:
+                    current_idx = joint_names.index(joint_name)
+                    if current_idx >= 0 and current_idx < len(current_positions):
+                        current = current_positions[current_idx]
+                        target = target_positions[joint_name]
+                        # Interpolate: current + (target - current) * progress
+                        intermediate = current + (target - current) * smooth_progress
+                        target_action[joint_name] = intermediate
+
+            # Send action to robot
+            if target_action:
+                # Convert to action array format expected by robot
+                action_array = []
+                for joint_name in joint_names:
+                    if joint_name in target_action:
+                        action_array.append(target_action[joint_name])
+                    else:
+                        # Keep current position for joints not in target
+                        idx = joint_names.index(joint_name) if joint_name in joint_names else -1
+                        if idx >= 0 and idx < len(current_positions):
+                            action_array.append(current_positions[idx])
+                        else:
+                            action_array.append(0.0)
+
+                self.robot.send_action({"action": action_array})
+
+            step_count += 1
+            time.sleep(dt)
+
+            # Check for collision
+            if self.collision_detector:
+                observation = self.robot.get_observation()
+                if self.collision_detector.detect(observation):
+                    logger.warning(f"Collision detected during position task {task.name}")
+                    success = False
+                    break
+
+        # Check if reached target positions
+        observation = self.robot.get_observation()
+        final_positions = observation["observation"]["joint_position"]
+
+        all_reached = True
+        for joint_name, target in target_positions.items():
+            if joint_name in joint_names:
+                idx = joint_names.index(joint_name)
+                if idx >= 0 and idx < len(final_positions):
+                    final = final_positions[idx]
+                    if abs(final - target) > tolerance:
+                        all_reached = False
+                        logger.debug(f"Joint {joint_name}: target={target:.1f}, actual={final:.1f}, diff={abs(final-target):.1f}")
+
+        duration = time.time() - start_time
+        status = TaskStatus.SUCCESS if all_reached and success else TaskStatus.FAILED
+
+        logger.info(
+            f"Position task completed: {task.name} -> "
+            f"status={status.value}, "
+            f"duration={duration:.1f}s, "
+            f"reached={all_reached}"
+        )
+
+        return TaskResult(
+            task_name=task.name,
+            status=status,
+            duration=duration,
+            error_message=None if all_reached else "Did not reach target positions",
+            collision_detected=not success,
+            attempts=1,
+        )
 
     def _cleanup(self):
         """Clean up resources after execution."""

@@ -108,12 +108,11 @@ tasks:
 
   # ---------- Phase 2: Robot Arm Home Position (Safety) ----------
   # IMPORTANT: Move arm to safe position before AGV movement
+  # Uses position task type - directly moves to target positions without policy
   # Recommended values from /root/workspace/dc_dir/0420.log
   # NOTE: Gripper joints (joint_7) commented out - temporarily removed
   - name: "arm_home_position"
-    task_type: "policy"
-    policy_path: "/path/to/act_home_policy"  # CHANGE to your home policy
-    policy_type: "act"
+    task_type: "position"
     max_duration: 10.0
     max_retries: 1
     enabled: true
@@ -209,12 +208,11 @@ tasks:
 
   # ---------- Phase 5: Robot Arm Home Position (Safety) ----------
   # IMPORTANT: Move arm to safe position before AGV returns to A
+  # Uses position task type - directly moves to target positions without policy
   # Recommended values from /root/workspace/dc_dir/0420.log
   # NOTE: Gripper joints (joint_7) commented out - temporarily removed
   - name: "arm_home_after_place"
-    task_type: "policy"
-    policy_path: "/path/to/act_home_policy"  # CHANGE to your home policy
-    policy_type: "act"
+    task_type: "position"
     max_duration: 10.0
     max_retries: 1
     enabled: true
