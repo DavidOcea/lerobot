@@ -75,15 +75,29 @@ class SeerAGVController:
             controller.disconnect()
     """
 
-    # ========== API类型码定义 (参考tcp_bridge_node.py) ==========
+    # ========== API类型码定义 (基于 2026-04-23 全面扫描结果) ==========
 
     # 状态查询类 API (端口19204)
-    API_STATUS_QUERY = 0x03E8      # 1000 - 综合状态查询
-    API_BATTERY_QUERY = 0x03EA     # 1002 - 电量查询 (注意：实际可能是1006=0x03EE)
-    API_POSITION_QUERY = 0x03F2    # 1010 - 位置查询 (x, y, theta)
-    API_STATION_QUERY = 0x044E     # 1102 - 当前站点查询
-    API_VELOCITY_QUERY = 0x03F4    # 1012 - 速度查询
-    API_TASK_STATUS_QUERY = 0x03EC # 1004 - 任务状态查询
+    API_STATUS_QUERY = 0x03E8      # 1000 - 综合状态查询 (系统版本/地图名/vehicle_id, 38字段)
+    API_ODOMETER_QUERY = 0x03EA    # 1002 - 里程/电压查询 (odo, controller_voltage, time) — 注意: 无battery_level!
+    API_TASK_STATUS_QUERY = 0x03EC # 1004 - 位置+站点查询 ✅ (x, y, angle, current_station, loc_state)
+    API_OBSTACLE_QUERY = 0x03EE    # 1006 - 障碍物检测 ✅ (blocked, nearest_obstacles, block_x/y)
+    API_BRAKE_QUERY = 0x03F0       # 1008 - 制动状态 (brake)
+    API_PATH_QUERY = 0x03F2        # 1010 - 路径数据 (path)
+    API_EMC_QUERY = 0x03F4         # 1012 - EMC急停状态 ✅ (emergency, soft_emc, driver_emc, electric)
+    API_IMU_QUERY = 0x03F6         # 1014 - IMU数据 (acc_x/y/z, pitch/roll/yaw, qw/qx/qy/qz)
+    API_ULTRASONIC_QUERY = 0x03F8  # 1016 - 超声波传感器 (ultrasonic_nodes)
+    API_ENCODER_QUERY = 0x03FA     # 1018 - 编码器 (encoder, motor_encoder)
+    API_NAV_STATUS_QUERY = 0x03FC  # 1020 - 导航详情 ✅ (task_status, running_status, target_id/dist)
+    API_LOADMAP_QUERY = 0x03FE     # 1022 - 地图加载状态 (loadmap_status)
+    API_TRACKING_QUERY = 0x0400    # 1024 - 跟踪状态 (target_x/y, tracking_status)
+    API_TASKLIST_QUERY = 0x0402    # 1026 - 任务列表状态 (tasklist_status)
+    API_MOTOR_QUERY = 0x0410       # 1040 - 电机详情 ✅ (motor_info: speed, position, current, emc)
+    API_ERRORS_QUERY = 0x041A      # 1050 - 系统日志 (errors, warnings, notices, fatals)
+    API_CLIENT_QUERY = 0x0424      # 1060 - 连接客户端 (ip, port, locked)
+    API_AGGREGATE_QUERY = 0x044C   # 1100 - 超级聚合查询 ✅✅ 包含vx, vy, w速度字段!
+    API_BATTERY_QUERY = 0x044E     # 1102 - 电量详情 ✅ (battery_level, charging, voltage, controller_temp)
+    API_TASK_PKG_QUERY = 0x0456    # 1110 - 任务进度包 (task_status_package: percentage, distance)
 
     # 控制类 API (端口19205)
     API_STOP = 0x07D2              # 2002 - 急停
@@ -403,6 +417,10 @@ class SeerAGVController:
     def get_battery(self) -> int:
         """获取电量百分比.
 
+        使用 API_BATTERY_QUERY (0x044E) 获取电量数据。
+        0x044E 返回 battery_level (0.0-1.0比例), charging, controller_voltage 等。
+        注意: 0x03EA (API_ODOMETER_QUERY) 不包含 battery_level，只有里程和电压。
+
         Returns:
             电量百分比 (0-100)
         """
@@ -412,8 +430,9 @@ class SeerAGVController:
                 self.API_BATTERY_QUERY,
                 {}
             )
-            battery = response.get('battery', response.get('data', {}).get('battery', 0))
-            return int(battery)
+            # battery_level 是 0.0-1.0 的比例值，需要转换为百分比
+            battery_level = response.get('battery_level', 0.0)
+            return int(battery_level * 100)
         except Exception as e:
             logger.error(f"Failed to get battery: {e}")
             return 0
@@ -421,21 +440,23 @@ class SeerAGVController:
     def get_position(self) -> AGVPosition:
         """获取当前位置坐标.
 
+        使用 API_TASK_STATUS_QUERY (0x03EC) 获取位置，因为该 API 返回包含 x, y, angle 的数据。
+
         Returns:
             AGVPosition with x, y, theta
         """
         try:
             response = self._send_request(
                 self.PORT_STATUS,
-                self.API_POSITION_QUERY,
+                self.API_TASK_STATUS_QUERY,  # 使用任务状态查询API获取位置
                 {}
             )
 
-            # 解析位置数据
-            data = response.get('data', response)
-            x = float(data.get('x', 0.0))
-            y = float(data.get('y', 0.0))
-            theta = float(data.get('theta', data.get('angle', 0.0)))
+            # 解析位置数据 - 任务状态查询返回的格式
+            # {'x': -0.8844, 'y': -0.5086, 'angle': 1.2464, 'loc_state': 1, ...}
+            x = float(response.get('x', 0.0))
+            y = float(response.get('y', 0.0))
+            theta = float(response.get('angle', 0.0))
 
             self._last_position = AGVPosition(x=x, y=y, theta=theta)
             return self._last_position
@@ -447,19 +468,20 @@ class SeerAGVController:
     def get_current_station(self) -> str:
         """获取当前站点ID.
 
+        从任务状态查询 API (0x03EC) 获取，该 API 返回 current_station 字段。
+
         Returns:
             站点ID字符串
         """
         try:
             response = self._send_request(
                 self.PORT_STATUS,
-                self.API_STATION_QUERY,
+                self.API_TASK_STATUS_QUERY,  # 使用任务状态查询API获取站点
                 {}
             )
 
-            # 站点ID可能在不同字段
-            data = response.get('data', response)
-            station_id = data.get('station_id', data.get('station', data.get('current_station', '')))
+            # current_station 直接在响应中
+            station_id = response.get('current_station', '')
 
             return str(station_id)
 
@@ -470,20 +492,22 @@ class SeerAGVController:
     def get_velocity(self) -> tuple[float, float, float]:
         """获取当前速度.
 
+        使用 API_AGGREGATE_QUERY (0x044C) 获取速度字段 vx, vy, w。
+        该API是超级聚合查询，包含位置、速度、电量等所有数据。
+
         Returns:
             (vx, vy, vtheta) 单位: m/s, m/s, rad/s
         """
         try:
             response = self._send_request(
                 self.PORT_STATUS,
-                self.API_VELOCITY_QUERY,
+                self.API_AGGREGATE_QUERY,
                 {}
             )
 
-            data = response.get('data', response)
-            vx = float(data.get('vx', 0.0))
-            vy = float(data.get('vy', 0.0))
-            vtheta = float(data.get('vtheta', data.get('omega', 0.0)))
+            vx = float(response.get('vx', 0.0))
+            vy = float(response.get('vy', 0.0))
+            vtheta = float(response.get('w', 0.0))
 
             return (vx, vy, vtheta)
 
@@ -491,8 +515,36 @@ class SeerAGVController:
             logger.error(f"Failed to get velocity: {e}")
             return (0.0, 0.0, 0.0)
 
+    def get_emc_status(self) -> dict:
+        """获取急停/EMC状态.
+
+        API_EMC_QUERY (0x03F4) 返回 EMC 状态。
+
+        Returns:
+            {'emergency': bool, 'soft_emc': bool, 'driver_emc': bool}
+        """
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_EMC_QUERY,
+                {}
+            )
+
+            return {
+                'emergency': response.get('emergency', False),
+                'soft_emc': response.get('soft_emc', False),
+                'driver_emc': response.get('driver_emc', False),
+                'electric': response.get('electric', False),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get EMC status: {e}")
+            return {'emergency': False, 'soft_emc': False, 'driver_emc': False}
+
     def get_task_status(self) -> dict:
         """获取当前任务状态.
+
+        使用 API_TASK_STATUS_QUERY (0x03EC)，返回位置和站点信息。
 
         Returns:
             任务状态字典
@@ -503,10 +555,93 @@ class SeerAGVController:
                 self.API_TASK_STATUS_QUERY,
                 {}
             )
-            return response.get('data', response)
+            return response
 
         except Exception as e:
             logger.error(f"Failed to get task status: {e}")
+            return {}
+
+    def get_obstacle_status(self) -> dict:
+        """获取障碍物检测状态.
+
+        使用 API_OBSTACLE_QUERY (0x03EE) 获取障碍物信息。
+
+        Returns:
+            {'blocked': bool, 'slowed': bool, 'nearest_obstacles': list}
+        """
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_OBSTACLE_QUERY,
+                {}
+            )
+            return {
+                'blocked': response.get('blocked', False),
+                'slowed': response.get('slowed', False),
+                'nearest_obstacles': response.get('nearest_obstacles', []),
+                'block_x': response.get('block_x', 0.0),
+                'block_y': response.get('block_y', 0.0),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get obstacle status: {e}")
+            return {'blocked': False, 'slowed': False, 'nearest_obstacles': []}
+
+    def get_navigation_detail(self) -> dict:
+        """获取导航详细状态.
+
+        使用 API_NAV_STATUS_QUERY (0x03FC) 获取当前导航任务的详细信息，
+        包括 task_status, running_status, target_id, target_dist 等。
+
+        Returns:
+            导航详情字典
+        """
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_NAV_STATUS_QUERY,
+                {}
+            )
+            return {
+                'task_status': response.get('task_status', 0),
+                'running_status': response.get('running_status', 0),
+                'target_id': response.get('target_id', ''),
+                'target_label': response.get('target_label', ''),
+                'target_dist': response.get('target_dist', 0.0),
+                'target_point': response.get('target_point', []),
+                'unfinished_path': response.get('unfinished_path', []),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get navigation detail: {e}")
+            return {}
+
+    def get_task_progress(self) -> dict:
+        """获取任务进度信息.
+
+        使用 API_TASK_PKG_QUERY (0x0456) 获取任务进度包，
+        包含 percentage, distance, closest_target 等。
+
+        Returns:
+            任务进度字典
+        """
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_TASK_PKG_QUERY,
+                {}
+            )
+            pkg = response.get('task_status_package', {})
+            return {
+                'percentage': pkg.get('percentage', 0),
+                'distance': pkg.get('distance', -1),
+                'closest_target': pkg.get('closest_target', ''),
+                'target_name': pkg.get('target_name', ''),
+                'source_name': pkg.get('source_name', ''),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get task progress: {e}")
             return {}
 
     def get_status(self, use_cache: bool = True) -> AGVStatus:
@@ -524,30 +659,51 @@ class SeerAGVController:
                 return self._last_status
 
         try:
-            # 综合查询
-            battery = self.get_battery()
-            position = self.get_position()
-            station = self.get_current_station()
-            vx, vy, vtheta = self.get_velocity()
-            task_status = self.get_task_status()
+            # 使用超级聚合查询 (0x044C) 一次获取所有数据
+            # 比单独调用 get_battery() + get_position() + get_velocity() 等效率更高
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_AGGREGATE_QUERY,
+                {}
+            )
 
-            # 解析状态码
-            status_code = task_status.get('status', task_status.get('state', 0))
-            error_code = task_status.get('error_code', task_status.get('err_code', 0))
-            error_message = task_status.get('error_msg', task_status.get('message', ''))
+            # 位置
+            x = float(response.get('x', 0.0))
+            y = float(response.get('y', 0.0))
+            theta = float(response.get('angle', 0.0))
+            position = AGVPosition(x=x, y=y, theta=theta)
+            self._last_position = position
 
-            # 判断是否在移动
+            # 速度
+            vx = float(response.get('vx', 0.0))
+            vy = float(response.get('vy', 0.0))
+            vtheta = float(response.get('w', 0.0))
+
+            # 电量 (battery_level 是 0.0-1.0 比例)
+            battery_level = response.get('battery_level', 0.0)
+            battery = int(battery_level * 100)
+
+            # 站点
+            station = str(response.get('current_station', ''))
+
+            # 状态码
+            running_status = response.get('running_status', 0)
+
+            # EMC状态
+            emergency = response.get('emergency', False)
+
+            # 判断是否在移动 - 速度非零 或 状态码=执行中
             is_moving = (abs(vx) > 0.01 or abs(vy) > 0.01 or abs(vtheta) > 0.01 or
-                        status_code == self.STATUS_EXECUTING)
+                        running_status == self.STATUS_EXECUTING)
 
             self._last_status = AGVStatus(
                 battery=battery,
-                status_code=status_code,
+                status_code=running_status,
                 current_station=station,
                 position=position,
                 is_moving=is_moving,
-                error_code=error_code,
-                error_message=error_message,
+                error_code=0 if not emergency else 1,
+                error_message='' if not emergency else 'EMC active',
             )
             self._last_update_time = time.time()
 
@@ -583,9 +739,9 @@ class SeerAGVController:
                 {"station_id": station_id}
             )
 
-            # 检查响应
-            result = response.get('ret', response.get('result', response.get('code', -1)))
-            success = result == 0 or result == 'success'
+            # 检查响应 - AGV 返回 ret_code 字段
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 self._current_navigation_target = station_id
@@ -593,7 +749,7 @@ class SeerAGVController:
                 logger.info(f"Navigation started: target={station_id}")
                 return True
             else:
-                error_msg = response.get('msg', response.get('message', 'Unknown error'))
+                error_msg = response.get('err_msg', 'Unknown error')
                 logger.error(f"Navigation failed: {error_msg}")
                 return False
 
@@ -623,8 +779,8 @@ class SeerAGVController:
                 data
             )
 
-            result = response.get('ret', response.get('result', response.get('code', -1)))
-            success = result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 self._current_navigation_target = f"({x:.2f}, {y:.2f})"
@@ -632,7 +788,7 @@ class SeerAGVController:
                 logger.info(f"Navigation started: target={x:.2f}, {y:.2f}")
                 return True
             else:
-                error_msg = response.get('msg', response.get('message', 'Unknown error'))
+                error_msg = response.get('err_msg', 'Unknown error')
                 logger.error(f"Navigation to position failed: {error_msg}")
                 return False
 
@@ -653,15 +809,17 @@ class SeerAGVController:
                 {}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            success = result == 0 or result == 'success'
+            # AGV 返回 ret_code 字段
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 self._current_navigation_target = None
                 logger.info("Navigation cancelled")
                 return True
             else:
-                logger.warning("Failed to cancel navigation")
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to cancel navigation: {error_msg}")
                 return False
 
         except Exception as e:
@@ -683,15 +841,16 @@ class SeerAGVController:
                 {}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            success = result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 self._current_navigation_target = None
                 logger.warning("AGV emergency stop executed")
                 return True
             else:
-                logger.error("Emergency stop failed")
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.error(f"Emergency stop failed: {error_msg}")
                 return False
 
         except Exception as e:
@@ -711,14 +870,15 @@ class SeerAGVController:
                 {}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            success = result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 logger.info("AGV paused")
                 return True
             else:
-                logger.warning("Failed to pause AGV")
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to pause AGV: {error_msg}")
                 return False
 
         except Exception as e:
@@ -738,14 +898,15 @@ class SeerAGVController:
                 {}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            success = result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 logger.info("AGV resumed")
                 return True
             else:
-                logger.warning("Failed to resume AGV")
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to resume AGV: {error_msg}")
                 return False
 
         except Exception as e:
@@ -765,15 +926,16 @@ class SeerAGVController:
                 {}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            success = result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 self._current_navigation_target = None
                 logger.info("AGV task cancelled")
                 return True
             else:
-                logger.warning("Failed to cancel task")
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to cancel task: {error_msg}")
                 return False
 
         except Exception as e:
@@ -796,8 +958,12 @@ class SeerAGVController:
                 {"speed": speed}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            return result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
+            if not success:
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to set speed: {error_msg}")
+            return success
 
         except Exception as e:
             logger.error(f"Failed to set speed: {e}")
