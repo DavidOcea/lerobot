@@ -78,12 +78,13 @@ class SeerAGVController:
     # ========== API类型码定义 (参考tcp_bridge_node.py) ==========
 
     # 状态查询类 API (端口19204)
-    API_STATUS_QUERY = 0x03E8      # 1000 - 综合状态查询 (系统版本等信息)
-    API_BATTERY_QUERY = 0x03EA     # 1002 - 电量查询
-    API_TASK_STATUS_QUERY = 0x03EC # 1004 - 任务状态查询 (包含位置x, y, angle!)
-    API_VELOCITY_QUERY = 0x03F4    # 1012 - 速度查询
-    API_STATION_QUERY = 0x044E     # 1102 - 当前站点查询
-    # 注意: 0x03F2 (1010) 返回的是 path 数据，不是位置！
+    API_STATUS_QUERY = 0x03E8      # 1000 - 综合状态查询 (系统版本、地图名、vehicle_id等)
+    API_BATTERY_QUERY = 0x03EA     # 1002 - 电量查询 (battery_level, controller_voltage等)
+    API_TASK_STATUS_QUERY = 0x03EC # 1004 - 任务状态查询 ✅ 包含位置x, y, angle和current_station
+    API_VELOCITY_QUERY = 0x03F4    # 1012 - ❌ 实际返回EMC急停状态 (emergency, soft_emc)，不是速度！
+    API_STATION_QUERY = 0x044E     # 1102 - ❌ 实际返回电池/充电状态 (battery_level, charging)，不是站点名！
+    # 注意: 0x03F2 (1010) 返回的是 path 路径数据，不是位置
+    # TODO: 需要找到正确的速度查询API (vx, vy, vtheta)
 
     # 控制类 API (端口19205)
     API_STOP = 0x07D2              # 2002 - 急停
@@ -403,6 +404,8 @@ class SeerAGVController:
     def get_battery(self) -> int:
         """获取电量百分比.
 
+        API 0x03EA 返回的字段: battery_level, controller_voltage, battery_temp 等
+
         Returns:
             电量百分比 (0-100)
         """
@@ -412,7 +415,8 @@ class SeerAGVController:
                 self.API_BATTERY_QUERY,
                 {}
             )
-            battery = response.get('battery', response.get('data', {}).get('battery', 0))
+            # 电量字段名是 battery_level (百分比)
+            battery = response.get('battery_level', response.get('controller_voltage', 0))
             return int(battery)
         except Exception as e:
             logger.error(f"Failed to get battery: {e}")
@@ -449,19 +453,20 @@ class SeerAGVController:
     def get_current_station(self) -> str:
         """获取当前站点ID.
 
+        从任务状态查询 API (0x03EC) 获取，该 API 返回 current_station 字段。
+
         Returns:
             站点ID字符串
         """
         try:
             response = self._send_request(
                 self.PORT_STATUS,
-                self.API_STATION_QUERY,
+                self.API_TASK_STATUS_QUERY,  # 使用任务状态查询API获取站点
                 {}
             )
 
-            # 站点ID可能在不同字段
-            data = response.get('data', response)
-            station_id = data.get('station_id', data.get('station', data.get('current_station', '')))
+            # current_station 直接在响应中
+            station_id = response.get('current_station', '')
 
             return str(station_id)
 
@@ -472,8 +477,27 @@ class SeerAGVController:
     def get_velocity(self) -> tuple[float, float, float]:
         """获取当前速度.
 
+        ⚠️ WARNING: API_VELOCITY_QUERY (0x03F4) 实际返回的是急停/EMC状态，不是速度！
+        返回字段: emergency, soft_emc, driver_emc
+
+        TODO: 需要找到正确的速度查询 API。
+
         Returns:
             (vx, vy, vtheta) 单位: m/s, m/s, rad/s
+            当前返回 (0, 0, 0) 因为 API 错误
+        """
+        # TODO: 找到正确的速度查询 API
+        # 0x03F4 返回的是 EMC 状态，不是速度
+        logger.warning("get_velocity: API 0x03F4 returns EMC status, not velocity. Returning (0, 0, 0)")
+        return (0.0, 0.0, 0.0)
+
+    def get_emc_status(self) -> dict:
+        """获取急停/EMC状态.
+
+        API_VELOCITY_QUERY (0x03F4) 实际返回的是 EMC 状态。
+
+        Returns:
+            {'emergency': bool, 'soft_emc': bool, 'driver_emc': bool}
         """
         try:
             response = self._send_request(
@@ -482,16 +506,16 @@ class SeerAGVController:
                 {}
             )
 
-            data = response.get('data', response)
-            vx = float(data.get('vx', 0.0))
-            vy = float(data.get('vy', 0.0))
-            vtheta = float(data.get('vtheta', data.get('omega', 0.0)))
-
-            return (vx, vy, vtheta)
+            return {
+                'emergency': response.get('emergency', False),
+                'soft_emc': response.get('soft_emc', False),
+                'driver_emc': response.get('driver_emc', False),
+                'electric': response.get('electric', False),
+            }
 
         except Exception as e:
-            logger.error(f"Failed to get velocity: {e}")
-            return (0.0, 0.0, 0.0)
+            logger.error(f"Failed to get EMC status: {e}")
+            return {'emergency': False, 'soft_emc': False, 'driver_emc': False}
 
     def get_task_status(self) -> dict:
         """获取当前任务状态.
