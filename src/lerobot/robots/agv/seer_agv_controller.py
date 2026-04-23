@@ -554,17 +554,16 @@ class SeerAGVController:
             battery = self.get_battery()
             position = self.get_position()
             station = self.get_current_station()
-            vx, vy, vtheta = self.get_velocity()
             task_status = self.get_task_status()
 
-            # 解析状态码
-            status_code = task_status.get('status', task_status.get('state', 0))
-            error_code = task_status.get('error_code', task_status.get('err_code', 0))
-            error_message = task_status.get('error_msg', task_status.get('message', ''))
+            # 解析状态码 (API 0x03EC 直接返回的字段)
+            status_code = task_status.get('status', 0)
+            error_code = task_status.get('error_code', 0)
+            error_message = task_status.get('err_msg', '')
 
-            # 判断是否在移动
-            is_moving = (abs(vx) > 0.01 or abs(vy) > 0.01 or abs(vtheta) > 0.01 or
-                        status_code == self.STATUS_EXECUTING)
+            # 判断是否在移动 - 仅基于状态码判断
+            # 注意: 速度API尚未确认, is_moving 暂时只靠 status_code == STATUS_EXECUTING
+            is_moving = status_code == self.STATUS_EXECUTING
 
             self._last_status = AGVStatus(
                 battery=battery,
@@ -619,7 +618,7 @@ class SeerAGVController:
                 logger.info(f"Navigation started: target={station_id}")
                 return True
             else:
-                error_msg = response.get('err_msg', response.get('msg', 'Unknown error'))
+                error_msg = response.get('err_msg', 'Unknown error')
                 logger.error(f"Navigation failed: {error_msg}")
                 return False
 
@@ -649,8 +648,8 @@ class SeerAGVController:
                 data
             )
 
-            result = response.get('ret_code', response.get('ret', -1))
-            success = result == 0
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 self._current_navigation_target = f"({x:.2f}, {y:.2f})"
@@ -658,7 +657,7 @@ class SeerAGVController:
                 logger.info(f"Navigation started: target={x:.2f}, {y:.2f}")
                 return True
             else:
-                error_msg = response.get('err_msg', response.get('msg', 'Unknown error'))
+                error_msg = response.get('err_msg', 'Unknown error')
                 logger.error(f"Navigation to position failed: {error_msg}")
                 return False
 
