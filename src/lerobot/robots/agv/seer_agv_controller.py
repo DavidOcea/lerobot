@@ -75,16 +75,29 @@ class SeerAGVController:
             controller.disconnect()
     """
 
-    # ========== API类型码定义 (参考tcp_bridge_node.py) ==========
+    # ========== API类型码定义 (基于 2026-04-23 全面扫描结果) ==========
 
     # 状态查询类 API (端口19204)
-    API_STATUS_QUERY = 0x03E8      # 1000 - 综合状态查询 (系统版本、地图名、vehicle_id等)
-    API_BATTERY_QUERY = 0x03EA     # 1002 - 电量查询 (battery_level, controller_voltage等)
-    API_TASK_STATUS_QUERY = 0x03EC # 1004 - 任务状态查询 ✅ 包含位置x, y, angle和current_station
-    API_VELOCITY_QUERY = 0x03F4    # 1012 - ❌ 实际返回EMC急停状态 (emergency, soft_emc)，不是速度！
-    API_STATION_QUERY = 0x044E     # 1102 - ❌ 实际返回电池/充电状态 (battery_level, charging)，不是站点名！
-    # 注意: 0x03F2 (1010) 返回的是 path 路径数据，不是位置
-    # TODO: 需要找到正确的速度查询API (vx, vy, vtheta)
+    API_STATUS_QUERY = 0x03E8      # 1000 - 综合状态查询 (系统版本/地图名/vehicle_id, 38字段)
+    API_ODOMETER_QUERY = 0x03EA    # 1002 - 里程/电压查询 (odo, controller_voltage, time) — 注意: 无battery_level!
+    API_TASK_STATUS_QUERY = 0x03EC # 1004 - 位置+站点查询 ✅ (x, y, angle, current_station, loc_state)
+    API_OBSTACLE_QUERY = 0x03EE    # 1006 - 障碍物检测 ✅ (blocked, nearest_obstacles, block_x/y)
+    API_BRAKE_QUERY = 0x03F0       # 1008 - 制动状态 (brake)
+    API_PATH_QUERY = 0x03F2        # 1010 - 路径数据 (path)
+    API_EMC_QUERY = 0x03F4         # 1012 - EMC急停状态 ✅ (emergency, soft_emc, driver_emc, electric)
+    API_IMU_QUERY = 0x03F6         # 1014 - IMU数据 (acc_x/y/z, pitch/roll/yaw, qw/qx/qy/qz)
+    API_ULTRASONIC_QUERY = 0x03F8  # 1016 - 超声波传感器 (ultrasonic_nodes)
+    API_ENCODER_QUERY = 0x03FA     # 1018 - 编码器 (encoder, motor_encoder)
+    API_NAV_STATUS_QUERY = 0x03FC  # 1020 - 导航详情 ✅ (task_status, running_status, target_id/dist)
+    API_LOADMAP_QUERY = 0x03FE     # 1022 - 地图加载状态 (loadmap_status)
+    API_TRACKING_QUERY = 0x0400    # 1024 - 跟踪状态 (target_x/y, tracking_status)
+    API_TASKLIST_QUERY = 0x0402    # 1026 - 任务列表状态 (tasklist_status)
+    API_MOTOR_QUERY = 0x0410       # 1040 - 电机详情 ✅ (motor_info: speed, position, current, emc)
+    API_ERRORS_QUERY = 0x041A      # 1050 - 系统日志 (errors, warnings, notices, fatals)
+    API_CLIENT_QUERY = 0x0424      # 1060 - 连接客户端 (ip, port, locked)
+    API_AGGREGATE_QUERY = 0x044C   # 1100 - 超级聚合查询 ✅✅ 包含vx, vy, w速度字段!
+    API_BATTERY_QUERY = 0x044E     # 1102 - 电量详情 ✅ (battery_level, charging, voltage, controller_temp)
+    API_TASK_PKG_QUERY = 0x0456    # 1110 - 任务进度包 (task_status_package: percentage, distance)
 
     # 控制类 API (端口19205)
     API_STOP = 0x07D2              # 2002 - 急停
@@ -404,7 +417,9 @@ class SeerAGVController:
     def get_battery(self) -> int:
         """获取电量百分比.
 
-        API 0x03EA 返回的字段: battery_level, controller_voltage, battery_temp 等
+        使用 API_BATTERY_QUERY (0x044E) 获取电量数据。
+        0x044E 返回 battery_level (0.0-1.0比例), charging, controller_voltage 等。
+        注意: 0x03EA (API_ODOMETER_QUERY) 不包含 battery_level，只有里程和电压。
 
         Returns:
             电量百分比 (0-100)
@@ -415,9 +430,9 @@ class SeerAGVController:
                 self.API_BATTERY_QUERY,
                 {}
             )
-            # 电量字段名是 battery_level (百分比)
-            battery = response.get('battery_level', response.get('controller_voltage', 0))
-            return int(battery)
+            # battery_level 是 0.0-1.0 的比例值，需要转换为百分比
+            battery_level = response.get('battery_level', 0.0)
+            return int(battery_level * 100)
         except Exception as e:
             logger.error(f"Failed to get battery: {e}")
             return 0
@@ -477,24 +492,33 @@ class SeerAGVController:
     def get_velocity(self) -> tuple[float, float, float]:
         """获取当前速度.
 
-        ⚠️ WARNING: API_VELOCITY_QUERY (0x03F4) 实际返回的是急停/EMC状态，不是速度！
-        返回字段: emergency, soft_emc, driver_emc
-
-        TODO: 需要找到正确的速度查询 API。
+        使用 API_AGGREGATE_QUERY (0x044C) 获取速度字段 vx, vy, w。
+        该API是超级聚合查询，包含位置、速度、电量等所有数据。
 
         Returns:
             (vx, vy, vtheta) 单位: m/s, m/s, rad/s
-            当前返回 (0, 0, 0) 因为 API 错误
         """
-        # TODO: 找到正确的速度查询 API
-        # 0x03F4 返回的是 EMC 状态，不是速度
-        logger.warning("get_velocity: API 0x03F4 returns EMC status, not velocity. Returning (0, 0, 0)")
-        return (0.0, 0.0, 0.0)
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_AGGREGATE_QUERY,
+                {}
+            )
+
+            vx = float(response.get('vx', 0.0))
+            vy = float(response.get('vy', 0.0))
+            vtheta = float(response.get('w', 0.0))
+
+            return (vx, vy, vtheta)
+
+        except Exception as e:
+            logger.error(f"Failed to get velocity: {e}")
+            return (0.0, 0.0, 0.0)
 
     def get_emc_status(self) -> dict:
         """获取急停/EMC状态.
 
-        API_VELOCITY_QUERY (0x03F4) 实际返回的是 EMC 状态。
+        API_EMC_QUERY (0x03F4) 返回 EMC 状态。
 
         Returns:
             {'emergency': bool, 'soft_emc': bool, 'driver_emc': bool}
@@ -502,7 +526,7 @@ class SeerAGVController:
         try:
             response = self._send_request(
                 self.PORT_STATUS,
-                self.API_VELOCITY_QUERY,
+                self.API_EMC_QUERY,
                 {}
             )
 
@@ -520,6 +544,8 @@ class SeerAGVController:
     def get_task_status(self) -> dict:
         """获取当前任务状态.
 
+        使用 API_TASK_STATUS_QUERY (0x03EC)，返回位置和站点信息。
+
         Returns:
             任务状态字典
         """
@@ -529,10 +555,93 @@ class SeerAGVController:
                 self.API_TASK_STATUS_QUERY,
                 {}
             )
-            return response.get('data', response)
+            return response
 
         except Exception as e:
             logger.error(f"Failed to get task status: {e}")
+            return {}
+
+    def get_obstacle_status(self) -> dict:
+        """获取障碍物检测状态.
+
+        使用 API_OBSTACLE_QUERY (0x03EE) 获取障碍物信息。
+
+        Returns:
+            {'blocked': bool, 'slowed': bool, 'nearest_obstacles': list}
+        """
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_OBSTACLE_QUERY,
+                {}
+            )
+            return {
+                'blocked': response.get('blocked', False),
+                'slowed': response.get('slowed', False),
+                'nearest_obstacles': response.get('nearest_obstacles', []),
+                'block_x': response.get('block_x', 0.0),
+                'block_y': response.get('block_y', 0.0),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get obstacle status: {e}")
+            return {'blocked': False, 'slowed': False, 'nearest_obstacles': []}
+
+    def get_navigation_detail(self) -> dict:
+        """获取导航详细状态.
+
+        使用 API_NAV_STATUS_QUERY (0x03FC) 获取当前导航任务的详细信息，
+        包括 task_status, running_status, target_id, target_dist 等。
+
+        Returns:
+            导航详情字典
+        """
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_NAV_STATUS_QUERY,
+                {}
+            )
+            return {
+                'task_status': response.get('task_status', 0),
+                'running_status': response.get('running_status', 0),
+                'target_id': response.get('target_id', ''),
+                'target_label': response.get('target_label', ''),
+                'target_dist': response.get('target_dist', 0.0),
+                'target_point': response.get('target_point', []),
+                'unfinished_path': response.get('unfinished_path', []),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get navigation detail: {e}")
+            return {}
+
+    def get_task_progress(self) -> dict:
+        """获取任务进度信息.
+
+        使用 API_TASK_PKG_QUERY (0x0456) 获取任务进度包，
+        包含 percentage, distance, closest_target 等。
+
+        Returns:
+            任务进度字典
+        """
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_TASK_PKG_QUERY,
+                {}
+            )
+            pkg = response.get('task_status_package', {})
+            return {
+                'percentage': pkg.get('percentage', 0),
+                'distance': pkg.get('distance', -1),
+                'closest_target': pkg.get('closest_target', ''),
+                'target_name': pkg.get('target_name', ''),
+                'source_name': pkg.get('source_name', ''),
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get task progress: {e}")
             return {}
 
     def get_status(self, use_cache: bool = True) -> AGVStatus:
@@ -554,6 +663,7 @@ class SeerAGVController:
             battery = self.get_battery()
             position = self.get_position()
             station = self.get_current_station()
+            vx, vy, vtheta = self.get_velocity()
             task_status = self.get_task_status()
 
             # 解析状态码 (API 0x03EC 直接返回的字段)
@@ -561,9 +671,9 @@ class SeerAGVController:
             error_code = task_status.get('error_code', 0)
             error_message = task_status.get('err_msg', '')
 
-            # 判断是否在移动 - 仅基于状态码判断
-            # 注意: 速度API尚未确认, is_moving 暂时只靠 status_code == STATUS_EXECUTING
-            is_moving = status_code == self.STATUS_EXECUTING
+            # 判断是否在移动 - 速度非零 或 状态码=执行中
+            is_moving = (abs(vx) > 0.01 or abs(vy) > 0.01 or abs(vtheta) > 0.01 or
+                        status_code == self.STATUS_EXECUTING)
 
             self._last_status = AGVStatus(
                 battery=battery,
