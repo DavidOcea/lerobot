@@ -117,7 +117,7 @@ class TaskConfig:
     name: str
 
     # 任务类型 (NEW)
-    task_type: Literal["policy", "agv"] = "policy"
+    task_type: Literal["policy", "agv", "position"] = "policy"
 
     # Policy任务字段 (现有)
     policy_path: str | None = None
@@ -140,6 +140,9 @@ class TaskConfig:
             if self.agv_config is None:
                 raise ValueError(f"Task '{self.name}': agv_config required for agv tasks")
             self.agv_config.validate()
+        elif self.task_type == "position":
+            if not self.completion_criteria.target_joint_positions:
+                raise ValueError(f"Task '{self.name}': target_joint_positions required for position tasks")
         return True
 
 
@@ -274,6 +277,12 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
         elif task_type == "agv":
             task_kwargs["max_duration"] = task_dict.get("max_duration", 60.0)
             task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
+            task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+        # Add position-specific fields (for direct joint position movement)
+        elif task_type == "position":
+            task_kwargs["max_duration"] = task_dict.get("max_duration", 10.0)
+            task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
             task_kwargs["enabled"] = task_dict.get("enabled", True)
 
         tasks.append(TaskConfig(**task_kwargs))
