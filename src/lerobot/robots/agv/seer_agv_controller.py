@@ -78,12 +78,12 @@ class SeerAGVController:
     # ========== API类型码定义 (参考tcp_bridge_node.py) ==========
 
     # 状态查询类 API (端口19204)
-    API_STATUS_QUERY = 0x03E8      # 1000 - 综合状态查询
-    API_BATTERY_QUERY = 0x03EA     # 1002 - 电量查询 (注意：实际可能是1006=0x03EE)
-    API_POSITION_QUERY = 0x03F2    # 1010 - 位置查询 (x, y, theta)
-    API_STATION_QUERY = 0x044E     # 1102 - 当前站点查询
+    API_STATUS_QUERY = 0x03E8      # 1000 - 综合状态查询 (系统版本等信息)
+    API_BATTERY_QUERY = 0x03EA     # 1002 - 电量查询
+    API_TASK_STATUS_QUERY = 0x03EC # 1004 - 任务状态查询 (包含位置x, y, angle!)
     API_VELOCITY_QUERY = 0x03F4    # 1012 - 速度查询
-    API_TASK_STATUS_QUERY = 0x03EC # 1004 - 任务状态查询
+    API_STATION_QUERY = 0x044E     # 1102 - 当前站点查询
+    # 注意: 0x03F2 (1010) 返回的是 path 数据，不是位置！
 
     # 控制类 API (端口19205)
     API_STOP = 0x07D2              # 2002 - 急停
@@ -421,21 +421,23 @@ class SeerAGVController:
     def get_position(self) -> AGVPosition:
         """获取当前位置坐标.
 
+        使用 API_TASK_STATUS_QUERY (0x03EC) 获取位置，因为该 API 返回包含 x, y, angle 的数据。
+
         Returns:
             AGVPosition with x, y, theta
         """
         try:
             response = self._send_request(
                 self.PORT_STATUS,
-                self.API_POSITION_QUERY,
+                self.API_TASK_STATUS_QUERY,  # 使用任务状态查询API获取位置
                 {}
             )
 
-            # 解析位置数据
-            data = response.get('data', response)
-            x = float(data.get('x', 0.0))
-            y = float(data.get('y', 0.0))
-            theta = float(data.get('theta', data.get('angle', 0.0)))
+            # 解析位置数据 - 任务状态查询返回的格式
+            # {'x': -0.8844, 'y': -0.5086, 'angle': 1.2464, 'loc_state': 1, ...}
+            x = float(response.get('x', 0.0))
+            y = float(response.get('y', 0.0))
+            theta = float(response.get('angle', 0.0))
 
             self._last_position = AGVPosition(x=x, y=y, theta=theta)
             return self._last_position
