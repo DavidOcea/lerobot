@@ -1302,7 +1302,8 @@ class TaskAgentOrchestrator:
                     logger.debug(f"Joint {joint_name}: target={target:.1f}, actual={final:.1f}, diff={abs(final-target):.1f}")
 
         duration = time.time() - start_time
-        status = TaskStatus.SUCCESS if all_reached and success else TaskStatus.FAILED
+        # Use COMPLETED status (SUCCESS is not a valid TaskStatus enum value)
+        status = TaskStatus.COMPLETED if all_reached and success else TaskStatus.FAILED
 
         logger.info(
             f"Position task completed: {task.name} -> "
