@@ -1227,23 +1227,21 @@ class TaskAgentOrchestrator:
         control_frequency = getattr(self.config.robot_config, 'control_frequency', 30)
         dt = 1.0 / control_frequency
 
-        # Get current positions
-        observation = self.robot.get_observation()
-        current_positions = observation["observation"]["joint_position"]
+        # Get current positions using the robot's helper method
+        # SupreRobotFollower.get_current_position() returns {"joint_name": position} in degrees
+        current_positions_dict = self.robot.get_current_position()
 
         # Get joint names from robot config
-        joint_names = self.robot.joint_names if hasattr(self.robot, 'joint_names') else list(target_positions.keys())
+        joint_names = self.robot.observation_joint_names if hasattr(self.robot, 'observation_joint_names') else list(target_positions.keys())
 
         # Calculate movement duration based on max distance
         max_distance = 0.0
         for joint_name in joint_names:
-            if joint_name in target_positions:
-                current_idx = joint_names.index(joint_name) if joint_name in joint_names else -1
-                if current_idx >= 0 and current_idx < len(current_positions):
-                    target = target_positions[joint_name]
-                    current = current_positions[current_idx]
-                    distance = abs(target - current)
-                    max_distance = max(max_distance, distance)
+            if joint_name in target_positions and joint_name in current_positions_dict:
+                target = target_positions[joint_name]
+                current = current_positions_dict[joint_name]
+                distance = abs(target - current)
+                max_distance = max(max_distance, distance)
 
         # Estimate time needed (rough: 30 deg/s max speed)
         estimated_duration = max_distance / 30.0 + 1.0  # seconds
@@ -1268,31 +1266,17 @@ class TaskAgentOrchestrator:
             # Calculate intermediate positions
             target_action = {}
             for joint_name in joint_names:
-                if joint_name in target_positions:
-                    current_idx = joint_names.index(joint_name)
-                    if current_idx >= 0 and current_idx < len(current_positions):
-                        current = current_positions[current_idx]
-                        target = target_positions[joint_name]
-                        # Interpolate: current + (target - current) * progress
-                        intermediate = current + (target - current) * smooth_progress
-                        target_action[joint_name] = intermediate
+                if joint_name in target_positions and joint_name in current_positions_dict:
+                    current = current_positions_dict[joint_name]
+                    target = target_positions[joint_name]
+                    # Interpolate: current + (target - current) * progress
+                    intermediate = current + (target - current) * smooth_progress
+                    # Add .pos suffix for send_action format
+                    target_action[f"{joint_name}.pos"] = intermediate
 
-            # Send action to robot
+            # Send action to robot (dict format: {"joint_name.pos": value})
             if target_action:
-                # Convert to action array format expected by robot
-                action_array = []
-                for joint_name in joint_names:
-                    if joint_name in target_action:
-                        action_array.append(target_action[joint_name])
-                    else:
-                        # Keep current position for joints not in target
-                        idx = joint_names.index(joint_name) if joint_name in joint_names else -1
-                        if idx >= 0 and idx < len(current_positions):
-                            action_array.append(current_positions[idx])
-                        else:
-                            action_array.append(0.0)
-
-                self.robot.send_action({"action": action_array})
+                self.robot.send_action(target_action)
 
             step_count += 1
             time.sleep(dt)
@@ -1306,18 +1290,15 @@ class TaskAgentOrchestrator:
                     break
 
         # Check if reached target positions
-        observation = self.robot.get_observation()
-        final_positions = observation["observation"]["joint_position"]
+        final_positions_dict = self.robot.get_current_position()
 
         all_reached = True
         for joint_name, target in target_positions.items():
-            if joint_name in joint_names:
-                idx = joint_names.index(joint_name)
-                if idx >= 0 and idx < len(final_positions):
-                    final = final_positions[idx]
-                    if abs(final - target) > tolerance:
-                        all_reached = False
-                        logger.debug(f"Joint {joint_name}: target={target:.1f}, actual={final:.1f}, diff={abs(final-target):.1f}")
+            if joint_name in final_positions_dict:
+                final = final_positions_dict[joint_name]
+                if abs(final - target) > tolerance:
+                    all_reached = False
+                    logger.debug(f"Joint {joint_name}: target={target:.1f}, actual={final:.1f}, diff={abs(final-target):.1f}")
 
         duration = time.time() - start_time
         status = TaskStatus.SUCCESS if all_reached and success else TaskStatus.FAILED
