@@ -609,9 +609,9 @@ class SeerAGVController:
                 {"station_id": station_id}
             )
 
-            # 检查响应
-            result = response.get('ret', response.get('result', response.get('code', -1)))
-            success = result == 0 or result == 'success'
+            # 检查响应 - AGV 返回 ret_code 字段
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 self._current_navigation_target = station_id
@@ -619,7 +619,7 @@ class SeerAGVController:
                 logger.info(f"Navigation started: target={station_id}")
                 return True
             else:
-                error_msg = response.get('msg', response.get('message', 'Unknown error'))
+                error_msg = response.get('err_msg', response.get('msg', 'Unknown error'))
                 logger.error(f"Navigation failed: {error_msg}")
                 return False
 
@@ -649,8 +649,8 @@ class SeerAGVController:
                 data
             )
 
-            result = response.get('ret', response.get('result', response.get('code', -1)))
-            success = result == 0 or result == 'success'
+            result = response.get('ret_code', response.get('ret', -1))
+            success = result == 0
 
             if success:
                 self._current_navigation_target = f"({x:.2f}, {y:.2f})"
@@ -658,7 +658,7 @@ class SeerAGVController:
                 logger.info(f"Navigation started: target={x:.2f}, {y:.2f}")
                 return True
             else:
-                error_msg = response.get('msg', response.get('message', 'Unknown error'))
+                error_msg = response.get('err_msg', response.get('msg', 'Unknown error'))
                 logger.error(f"Navigation to position failed: {error_msg}")
                 return False
 
@@ -679,15 +679,17 @@ class SeerAGVController:
                 {}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            success = result == 0 or result == 'success'
+            # AGV 返回 ret_code 字段
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 self._current_navigation_target = None
                 logger.info("Navigation cancelled")
                 return True
             else:
-                logger.warning("Failed to cancel navigation")
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to cancel navigation: {error_msg}")
                 return False
 
         except Exception as e:
@@ -709,15 +711,16 @@ class SeerAGVController:
                 {}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            success = result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 self._current_navigation_target = None
                 logger.warning("AGV emergency stop executed")
                 return True
             else:
-                logger.error("Emergency stop failed")
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.error(f"Emergency stop failed: {error_msg}")
                 return False
 
         except Exception as e:
@@ -737,14 +740,15 @@ class SeerAGVController:
                 {}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            success = result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 logger.info("AGV paused")
                 return True
             else:
-                logger.warning("Failed to pause AGV")
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to pause AGV: {error_msg}")
                 return False
 
         except Exception as e:
@@ -764,14 +768,15 @@ class SeerAGVController:
                 {}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            success = result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 logger.info("AGV resumed")
                 return True
             else:
-                logger.warning("Failed to resume AGV")
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to resume AGV: {error_msg}")
                 return False
 
         except Exception as e:
@@ -791,15 +796,16 @@ class SeerAGVController:
                 {}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            success = result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
 
             if success:
                 self._current_navigation_target = None
                 logger.info("AGV task cancelled")
                 return True
             else:
-                logger.warning("Failed to cancel task")
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to cancel task: {error_msg}")
                 return False
 
         except Exception as e:
@@ -822,8 +828,12 @@ class SeerAGVController:
                 {"speed": speed}
             )
 
-            result = response.get('ret', response.get('result', -1))
-            return result == 0 or result == 'success'
+            ret_code = response.get('ret_code', -1)
+            success = ret_code == 0
+            if not success:
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to set speed: {error_msg}")
+            return success
 
         except Exception as e:
             logger.error(f"Failed to set speed: {e}")
