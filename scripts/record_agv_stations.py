@@ -12,11 +12,13 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, '/root/workspace/dc_dir/lerobot/src')
+# Use relative path based on script location for portability
+LEROBOT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(LEROBOT_ROOT / "src"))
 
 from lerobot.robots.agv.seer_agv_controller import SeerAGVController
 
-STATION_DATA_FILE = Path('/root/workspace/dc_dir/lerobot/configs/agv_stations.json')
+STATION_DATA_FILE = LEROBOT_ROOT / "configs" / "agv_stations.json"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)

@@ -24,9 +24,11 @@ import argparse
 import logging
 import sys
 import time
+from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, '/root/workspace/dc_dir/lerobot/src')
+# Add parent directory to path for imports using relative path
+LEROBOT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(LEROBOT_ROOT / "src"))
 
 from lerobot.robots.agv.seer_agv_controller import SeerAGVController, AGVStatus
 
