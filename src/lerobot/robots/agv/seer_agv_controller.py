@@ -98,6 +98,7 @@ class SeerAGVController:
     API_AGGREGATE_QUERY = 0x044C   # 1100 - 超级聚合查询 ✅✅ 包含vx, vy, w速度字段!
     API_BATTERY_QUERY = 0x044E     # 1102 - 电量详情 ✅ (battery_level, charging, voltage, controller_temp)
     API_TASK_PKG_QUERY = 0x0456    # 1110 - 任务进度包 (task_status_package: percentage, distance)
+    API_STATION_QUERY = 0x0515    # 1301 - 查询地图站点信息 (返回所有站点id/x/y/r)
 
     # 控制类 API (端口19205) — 基于官方文档确认
     API_EMERGENCY_STOP = 0x07D0   # 2000 - 停止开环运动 (robot_control_stop_req)
@@ -114,15 +115,29 @@ class SeerAGVController:
     API_PAUSE_NAV = 0x0BB9        # 3001 - 暂停当前导航 (robot_task_pause_req)
     API_RESUME_NAV = 0x0BBA       # 3002 - 继续当前导航 (robot_task_resume_req)
     API_CANCEL_NAV = 0x0BBB       # 3003 - 取消当前导航 (robot_task_cancel_req)
-    API_NAVIGATE_STATION = 0x0BEB # 3051 - 路径导航 (robot_task_gotarget_req, 需要: id)
+    API_NAVIGATE_STATION = 0x0BEB # 3051 - 路径导航 (robot_task_gotarget_req, 需要: id, source_id)
+    API_GET_PATH = 0x0BED         # 3053 - 获取路径导航的路径 (不执行导航, 只返回路径规划)
+    API_TRANSLATE = 0x0BEF        # 3055 - 平动 (robot_task_translate_req, 需要: dist, vx/vy)
+    API_TURN = 0x0BF0             # 3056 - 转动 (robot_task_turn_req, 需要: angle, vw)
+    API_CIRCULAR = 0x0BF2         # 3058 - 圆弧运动 (robot_task_circular_req, 需要: rot_radius/rot_degree/rot_speed)
+    API_PATH_ENABLE = 0x0BF3      # 3059 - 启用和禁用线路 (robot_task_path_req)
+    API_NAVIGATE_PATH = 0x0BFA    # 3066 - 指定路径导航 (robot_task_gotargetlist_req, 多站点序列)
 
     # 任务管理类 API (端口19206)
-    API_TASKLIST_STATUS = 0x0C1D  # 3101 - 查询机器人任务链
+    API_EXECUTE_TASKLIST = 0x0C22 # 3106 - 执行预存任务链 (robot_tasklist_name_req, 需要: name)
+    API_TASKLIST_STATUS = 0x0C1D  # 3101 - 查询机器人任务链 (robot_tasklist_status_req)
+    API_TASKLIST_LIST = 0x0C2B    # 3115 - 查询所有任务链 (robot_tasklist_list_req, 无参数)
+
+    # 配置类 API (端口19207) — 基于官方文档确认
+    API_LOCK_CONTROL = 0x0FA5     # 4005 - 抢占控制权 (robot_config_lock_req, 需要: nick_name)
+    API_UNLOCK_CONTROL = 0x0FA6   # 4006 - 释放控制权 (robot_config_unlock_req, 无参数)
+    API_CLEAR_ALL_ERRORS = 0x0FA9 # 4009 - 清除所有报错 (robot_config_clearallerrors_req, 无参数)
 
     # ========== 端口分配 (基于官方文档) ==========
     PORT_STATUS = 19204     # 状态查询
     PORT_CONTROL = 19205    # 控制 (停止运动/重定位/开环运动)
     PORT_NAVIGATION = 19206 # 导航 (路径导航/暂停/继续/取消)
+    PORT_CONFIG = 19207     # 配置 (抢占控制权/释放控制权/清除报错)
 
     # ========== 状态码映射 ==========
     STATUS_IDLE = 0         # 空闲
@@ -182,11 +197,12 @@ class SeerAGVController:
             True if connection successful, False otherwise.
         """
         try:
-            # 需要连接的端口列表 (19204状态 + 19205控制 + 19206导航)
+            # 需要连接的端口列表 (19204状态 + 19205控制 + 19206导航 + 19207配置)
             ports_to_connect = [
                 self.PORT_STATUS,
                 self.PORT_CONTROL,
                 self.PORT_NAVIGATION,
+                self.PORT_CONFIG,
             ]
 
             connected_ports = []
@@ -206,6 +222,11 @@ class SeerAGVController:
             if len(connected_ports) >= 2:
                 # 至少需要状态和导航端口
                 logger.info(f"AGV connection established on ports: {connected_ports}")
+
+                # 抢占控制权，确保能下发导航指令
+                if self.PORT_CONFIG in self._sockets:
+                    self.lock_control()
+
                 return True
             else:
                 logger.error("Failed to establish minimum required connections")
@@ -218,7 +239,14 @@ class SeerAGVController:
             return False
 
     def disconnect(self):
-        """断开所有TCP连接."""
+        """断开所有TCP连接, 释放控制权."""
+        # 释放控制权
+        if self.PORT_CONFIG in self._sockets:
+            try:
+                self.unlock_control()
+            except Exception:
+                pass
+
         for port, sock in self._sockets.items():
             try:
                 sock.close()
@@ -725,14 +753,15 @@ class SeerAGVController:
 
     # ========== 导航控制API ==========
 
-    def move_to_station(self, station_id: str) -> bool:
+    def move_to_station(self, station_id: str, source_id: str = "SELF_POSITION") -> bool:
         """导航到指定站点.
 
         使用官方API: robot_task_gotarget_req (3051), 端口19206.
-        参数格式: {'id': target_id}
+        官方文档参数: id(目标站点) + source_id(起始站点, "SELF_POSITION"表示当前位置)
 
         Args:
-            station_id: 目标站点ID
+            station_id: 目标站点ID (如 "LM1", "LM8")
+            source_id: 起始站点ID, 默认"SELF_POSITION"(从当前位置出发)
 
         Returns:
             True if navigation started successfully
@@ -741,7 +770,7 @@ class SeerAGVController:
             response = self._send_request(
                 self.PORT_NAVIGATION,
                 self.API_NAVIGATE_STATION,
-                {"id": station_id}
+                {"id": station_id, "source_id": source_id}
             )
 
             # 检查响应 - AGV 返回 ret_code 字段
@@ -983,6 +1012,173 @@ class SeerAGVController:
         except Exception as e:
             logger.error(f"Failed to set speed: {e}")
             return False
+
+    # ========== 控制权管理API (端口19207) ==========
+
+    def lock_control(self, nick_name: str = "lerobot") -> bool:
+        """抢占控制权.
+
+        使用官方API: robot_config_lock_req (4005), 端口19207.
+        必须抢占控制权后才能下发导航/控制指令。如果其他客户端(如Roboshop)持有控制权，
+        导航指令会被静默拒绝。
+
+        Args:
+            nick_name: 控制权抢占者名称，用于标识
+
+        Returns:
+            True if lock acquired
+        """
+        try:
+            response = self._send_request(
+                self.PORT_CONFIG,
+                self.API_LOCK_CONTROL,
+                {"nick_name": nick_name}
+            )
+
+            ret_code = response.get('ret_code', -1)
+            if ret_code == 0:
+                logger.info(f"Control lock acquired: nick_name={nick_name}")
+                return True
+            else:
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to acquire control lock: {error_msg}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to lock control: {e}")
+            return False
+
+    def unlock_control(self) -> bool:
+        """释放控制权.
+
+        使用官方API: robot_config_unlock_req (4006), 端口19207.
+        只能释放自己抢占的控制权，不能释放别人的控制权。
+
+        Returns:
+            True if lock released
+        """
+        try:
+            response = self._send_request(
+                self.PORT_CONFIG,
+                self.API_UNLOCK_CONTROL,
+                {}
+            )
+
+            ret_code = response.get('ret_code', -1)
+            if ret_code == 0:
+                logger.info("Control lock released")
+                return True
+            else:
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to release control lock: {error_msg}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to unlock control: {e}")
+            return False
+
+    def clear_all_errors(self) -> bool:
+        """清除AGV当前所有报错.
+
+        使用官方API: robot_config_clearallerrors_req (4009), 端口19207.
+        仅清除error级别的错误。
+
+        Returns:
+            True if errors cleared
+        """
+        try:
+            response = self._send_request(
+                self.PORT_CONFIG,
+                self.API_CLEAR_ALL_ERRORS,
+                {}
+            )
+
+            ret_code = response.get('ret_code', -1)
+            if ret_code == 0:
+                logger.info("All errors cleared")
+                return True
+            else:
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to clear errors: {error_msg}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to clear errors: {e}")
+            return False
+
+    # ========== 站点查询API ==========
+
+    def query_stations(self) -> list[dict]:
+        """查询当前载入地图中的所有站点信息.
+
+        使用官方API: robot_status_station_req (1301), 端口19204.
+        返回所有站点的id/x/y/r/type/desc信息，可用于:
+        - 发现有效的站点名称用于导航
+        - 构建站点坐标地图
+        - 确认目标站点是否存在于地图中
+
+        Returns:
+            站点列表，每个站点包含 id, type, x, y, r, desc
+            站点类型: LocationMark(导航点), ChargePoint(充电点), ActionPoint(动作点)
+        """
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_STATION_QUERY,
+                {}
+            )
+
+            stations = response.get('stations', [])
+
+            # 更新站点地图缓存
+            for station in stations:
+                station_id = station.get('id', '')
+                if station_id and station.get('type') == 'LocationMark':
+                    self._station_map[station_id] = AGVPosition(
+                        x=float(station.get('x', 0.0)),
+                        y=float(station.get('y', 0.0)),
+                        theta=float(station.get('r', 0.0)),
+                    )
+
+            logger.info(f"Queried {len(stations)} stations, cached {len(self._station_map)} navigation points")
+            return stations
+
+        except Exception as e:
+            logger.error(f"Failed to query stations: {e}")
+            return []
+
+    def query_navigation_path(self, target_station: str) -> list[str]:
+        """获取路径导航的规划路径(不实际执行导航).
+
+        使用官方API: robot_task_target_path_req (3053), 端口19206.
+        只返回规划路径上的站点序列，不触发导航。
+
+        Args:
+            target_station: 目标站点ID
+
+        Returns:
+            路径上的站点ID列表(从当前位置到目标)
+        """
+        try:
+            response = self._send_request(
+                self.PORT_NAVIGATION,
+                self.API_GET_PATH,
+                {"id": target_station}
+            )
+
+            ret_code = response.get('ret_code', -1)
+            if ret_code == 0:
+                path = response.get('path', [])
+                logger.info(f"Path to {target_station}: {path}")
+                return path
+            else:
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.warning(f"Failed to get path: {error_msg}")
+                return []
+
+        except Exception as e:
+            logger.error(f"Failed to query navigation path: {e}")
+            return []
 
     # ========== 辅助方法 ==========
 
