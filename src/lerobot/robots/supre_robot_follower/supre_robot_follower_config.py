@@ -99,8 +99,8 @@ class SupreRobotFollowerConfig(RobotConfig):
         # Trunk joints (2 joints)
         MotorCalibration(
             joint_name="trunk_joint_1",
-            min_position=-45.0,
-            max_position=45.0,
+            min_position=-85.0,
+            max_position=85.0,
         ),
         MotorCalibration(
             joint_name="trunk_joint_2",

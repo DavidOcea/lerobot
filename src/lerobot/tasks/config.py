@@ -414,6 +414,11 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     monitoring_config_dict = config_dict.get("monitoring_config", {})
     monitoring_config = MonitoringConfig(**monitoring_config_dict)
 
+    # Parse AGV global config
+    from lerobot.agent.config import AGVGlobalConfig
+    agv_config_dict = config_dict.get("agv_config", {})
+    agv_global_config = AGVGlobalConfig(**agv_config_dict) if agv_config_dict else AGVGlobalConfig()
+
     # Create main config - use the extended orchestrator config if available
     try:
         # Try to import the extended config from agent module
@@ -428,6 +433,11 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             action_timeout=config_dict.get("action_timeout", 5.0),
             reset_duration=config_dict.get("reset_duration", 3.0),
             reset_positions=config_dict.get("reset_positions", {}),
+            agv_config=agv_global_config,
+            max_cycles=config_dict.get("max_cycles", 1),
+            cycle_delay=config_dict.get("cycle_delay", 2.0),
+            enable_cycle_prompt=config_dict.get("enable_cycle_prompt", True),
+            enable_interactive_mode=config_dict.get("enable_interactive_mode", False),
         )
     except ImportError:
         # Fall back to base config

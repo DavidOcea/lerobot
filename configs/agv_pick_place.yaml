@@ -40,6 +40,8 @@ agv_config:
     station_A: [0.172, 0.020, 0.652]
 
 # ========== Robot Configuration ==========
+# NOTE: SupreRobotFollowerConfig does NOT accept serial_port or force_sensing_enabled
+# See task_agent_tasks_debug.yaml for reference on valid fields
 robot_config:
   type: "supre_robot_follower"
   control_frequency: 50  # Higher frequency for smoother motion
