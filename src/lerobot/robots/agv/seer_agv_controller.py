@@ -791,22 +791,53 @@ class SeerAGVController:
             logger.error(f"Failed to start navigation: {e}")
             return False
 
-    def move_to_position(self, x: float, y: float, theta: float = None) -> bool:
-        """导航到指定坐标.
+    def move_to_position(self, x: float, y: float, theta: float = 0.0) -> bool:
+        """导航到指定坐标 (freeGo模式).
 
-        注意: Seer官方API没有自由坐标导航(只有站点路径导航3051)。
-        此方法暂时不可用，请使用move_to_station()代替。
+        使用官方API: robot_task_gotarget_req (3051), 端口19206.
+        freeGo模式通过发送坐标而非站点名来实现导航。
+        JSON格式: {"id": "SELF_POSITION", "freeGo": {"x": ..., "y": ..., "theta": ...}}
+
+        注意: freeGo仅支持双轮差速底盘模型。目标坐标为世界坐标系(地图坐标)。
 
         Args:
-            x: 目标x坐标 (米)
-            y: 目标y坐标 (米)
-            theta: 目标航向角 (弧度)，可选
+            x: 目标x坐标 (米, 世界坐标系)
+            y: 目标y坐标 (米, 世界坐标系)
+            theta: 目标航向角 (弧度), 默认0.0
 
         Returns:
             True if navigation started successfully
         """
-        logger.warning("move_to_position not supported - Seer AGV only supports station-based navigation (API 3051)")
-        return False
+        try:
+            data = {
+                "id": "SELF_POSITION",
+                "freeGo": {
+                    "x": x,
+                    "y": y,
+                    "theta": theta,
+                }
+            }
+
+            response = self._send_request(
+                self.PORT_NAVIGATION,
+                self.API_NAVIGATE_STATION,
+                data
+            )
+
+            ret_code = response.get('ret_code', -1)
+            if ret_code == 0:
+                self._current_navigation_target = f"freeGo({x:.2f},{y:.2f},{theta:.2f})"
+                self._navigation_start_time = time.time()
+                logger.info(f"freeGo navigation started: target=({x:.3f}, {y:.3f}, {theta:.3f})")
+                return True
+            else:
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.error(f"freeGo navigation failed: {error_msg}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to start freeGo navigation: {e}")
+            return False
 
     def cancel_navigation(self) -> bool:
         """取消当前导航任务.

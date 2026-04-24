@@ -30,14 +30,19 @@ agv_config:
   emergency_stop_enabled: true
   check_arm_before_move: true  # Check arm position before AGV moves
 
-  # Station map (optional - for coordinate-based navigation)
-  # Format: station_id: [x, y, theta] (meters, radians)
+  # Station map (optional - for coordinate-based navigation and arrival detection)
+  # Two ways to define stations:
+  #   1. By station name (AGV map LocationMark ID): just provide the name as target_station
+  #   2. By coordinates (freeGo mode): provide [x, y, theta] and use target_position in task
+  #
+  # Use query_stations() to discover valid station names from the AGV's loaded map.
+  # Station names on the AGV map are typically: LM1, LM2, LM8, etc. (LocationMark type)
+  # You can also define custom named positions here for coordinate-based freeGo navigation.
+  #
+  # Format: station_id: [x, y, theta] (meters, radians in world/map coordinates)
   station_map:
-    station_A: [0.0, 0.0, 0.0]
-    station_B: [5.0, 0.0, 0.0]
-    station_C: [10.0, 0.0, 0.0]
-    station_home: [2.5, 2.5, 0.0]
-    charging_station: [0.0, 5.0, 0.0]
+    station_A: [0.168, 0.029, 0.650]  # Example: coordinates from query_stations() output
+    station_B: [5.0, 0.0, 0.0]        # Adjust to your actual map coordinates
 
 # ========== Robot Configuration ==========
 # NOTE: SupreRobotFollowerConfig does NOT accept serial_port or force_sensing_enabled
@@ -139,6 +144,14 @@ tasks:
       position_tolerance: 3.0  # degrees (allow some tolerance for safety check)
 
   # ---------- Phase 3: AGV Move to Station B ----------
+  # Two navigation modes are supported:
+  #   1. Station name mode: target_station = "LM8" (AGV map LocationMark ID)
+  #      - Use query_stations() to discover valid station IDs from the AGV's map
+  #      - Most reliable, AGV handles path planning autonomously
+  #   2. Coordinate mode (freeGo): target_position = [x, y, theta]
+  #      - Navigates to world coordinates directly (not a station on the map)
+  #      - Only supports dual-wheel differential chassis
+  #      - Coordinates must match the AGV's loaded map coordinate system
   - name: "agv_move_to_station_B"
     task_type: "agv"
     max_duration: 60.0
@@ -146,7 +159,13 @@ tasks:
     enabled: true
 
     agv_config:
-      target_station: "station_B"  # Target station ID
+      # Navigation mode 1: Station name (recommended)
+      # Use a station ID that exists on the AGV's loaded map
+      # Run query_stations() to discover valid names (e.g., LM1, LM8, etc.)
+      target_station: "LM8"  # Change to actual station ID from AGV map
+
+      # Navigation mode 2: Coordinate (freeGo, uncomment to use instead)
+      # target_position: [0.168, 0.029, 0.650]  # [x, y, theta] in meters/radians
       wait_for_arrival: true  # Wait until AGV arrives
       arrival_timeout: 60.0  # Maximum wait time (seconds)
       arrival_tolerance: 0.3  # Distance tolerance (meters)
@@ -247,7 +266,8 @@ tasks:
     enabled: true  # ENABLED for cycle mode
 
     agv_config:
-      target_station: "station_A"  # Return to starting station
+      target_station: "LM5"  # Return to starting station (change to actual ID)
+      # target_position: [5.0, 0.0, 0.0]  # freeGo alternative
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
