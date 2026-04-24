@@ -17,19 +17,21 @@ teleop:
 
   # Direction multipliers for each joint.
   joint_direction:
-    - -1
-    - -1
     - 1
     - 1
     - 1
     - -1
     - 1
     - -1
+    - 1
+    - 1
     - -1
     - 1
     - 1
     - 1
     - -1
+    - 1
+    - 1
     - 1
 # ===============================================
 # Robot (Follower) Configuration

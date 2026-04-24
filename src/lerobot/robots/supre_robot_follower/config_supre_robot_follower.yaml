@@ -61,9 +61,9 @@ calibration:
   - joint_name: "left_arm_joint_6"
     min_position: -90.0
     max_position: 90.0
-  - joint_name: "left_arm_joint_7"
-    min_position: 0.0
-    max_position: 1.0
+  # - joint_name: "left_arm_joint_7"
+  #   min_position: 0.0
+  #   max_position: 1.0
 
   # --- Right Arm ---
   - joint_name: "right_arm_joint_1"
@@ -84,6 +84,6 @@ calibration:
   - joint_name: "right_arm_joint_6"
     min_position: -90.0
     max_position: 90.0
-  - joint_name: "right_arm_joint_7"
-    min_position: 0.0
-    max_position: 1.0
+  # - joint_name: "right_arm_joint_7"
+  #   min_position: 0.0
+  #   max_position: 1.0
