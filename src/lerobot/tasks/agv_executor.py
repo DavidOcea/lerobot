@@ -371,14 +371,13 @@ class AGVTaskExecutor:
             return True
 
         try:
-            # 获取当前观测
-            observation = self.robot.capture_observation()
+            # 获取当前关节位置 (返回 {joint_name: position} 格式)
+            current_positions = self.robot.get_current_position()
 
             unsafe_joints = []
             for joint_name, threshold in safe_thresholds.items():
-                pos_key = f"{joint_name}.pos"
-                if pos_key in observation:
-                    pos = observation[pos_key]
+                if joint_name in current_positions:
+                    pos = current_positions[joint_name]
 
                     # 检查方式：基于home偏差 vs 绝对位置
                     if home_positions and joint_name in home_positions:
