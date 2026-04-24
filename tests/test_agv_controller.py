@@ -158,13 +158,50 @@ def test_velocity_query(controller: SeerAGVController) -> bool:
         return False
 
 
+def test_station_query(controller: SeerAGVController) -> bool:
+    """Test station query - discover available stations on the AGV's map."""
+    print("\n" + "=" * 50)
+    print("TEST 6: Station Query")
+    print("=" * 50)
+
+    try:
+        stations = controller.query_stations()
+
+        if not stations:
+            print("⚠ No stations found (map may not be loaded)")
+            return False
+
+        # Group by type
+        nav_points = [s for s in stations if s.get('type') == 'LocationMark']
+        charge_points = [s for s in stations if s.get('type') == 'ChargePoint']
+        action_points = [s for s in stations if s.get('type') == 'ActionPoint']
+
+        print(f"✓ Found {len(stations)} stations:")
+        print(f"  Navigation points (LocationMark): {len(nav_points)}")
+        print(f"  Charge points (ChargePoint): {len(charge_points)}")
+        print(f"  Action points (ActionPoint): {len(action_points)}")
+
+        # Print navigation points (these are valid targets for move_to_station)
+        print(f"\n  Available navigation targets:")
+        for s in nav_points[:20]:
+            print(f"    {s.get('id')}: x={s.get('x', 0):.3f}, y={s.get('y', 0):.3f}, r={s.get('r', 0):.3f}")
+        if len(nav_points) > 20:
+            print(f"    ... and {len(nav_points) - 20} more")
+
+        return True
+
+    except Exception as e:
+        print(f"✗ Station query failed: {e}")
+        return False
+
+
 def test_navigation(controller: SeerAGVController, target_station: str, wait: bool = True) -> bool:
     """Test navigation to a station.
 
     WARNING: This test will move the AGV!
     """
     print("\n" + "=" * 50)
-    print("TEST 6: Navigation (WARNING: AGV WILL MOVE)")
+    print("TEST 7: Navigation (WARNING: AGV WILL MOVE)")
     print("=" * 50)
 
     print(f"Target station: {target_station}")
@@ -225,7 +262,7 @@ def test_navigation(controller: SeerAGVController, target_station: str, wait: bo
 def test_emergency_stop(controller: SeerAGVController) -> bool:
     """Test emergency stop (only if AGV is moving)."""
     print("\n" + "=" * 50)
-    print("TEST 7: Emergency Stop")
+    print("TEST 8: Emergency Stop")
     print("=" * 50)
 
     try:
@@ -331,13 +368,14 @@ def main():
         print("  - Network connection is available")
         sys.exit(1)
 
-    # Test 2-5: Queries (safe tests)
+    # Test 2-6: Queries (safe tests)
     results.append(("Status Query", test_status_query(controller)))
     results.append(("Battery Query", test_battery_query(controller)))
     results.append(("Position Query", test_position_query(controller)))
     results.append(("Velocity Query", test_velocity_query(controller)))
+    results.append(("Station Query", test_station_query(controller)))
 
-    # Test 6: Navigation (optional, dangerous)
+    # Test 7: Navigation (optional, dangerous)
     if args.test_navigation:
         print("\n⚠ WARNING: Navigation test will move the AGV!")
         print("Make sure:")
