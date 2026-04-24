@@ -13,11 +13,10 @@ Protocol Format (16-byte header + JSON payload):
 │ JSON payload (data_len bytes)                           │
 └─────────────────────────────────────────────────────────┘
 
-Port allocation:
-- 19204: Status query
-- 19205: Control (stop/pause/resume)
-- 19206: Navigation
-- 19207: Task management
+Port allocation (基于2026-04-24全面扫描确认):
+- 19204: Status query (查询类API)
+- 19205: Control + Navigation + Task (控制/导航/任务类API)
+  注意: 19206/19207对所有API码返回"error api type"，无效
 
 Reference: /root/workspace/dc_dir/ros2_ws/src/sm_test_tcp_bridge/sm_test_tcp_bridge/tcp_bridge_node.py
 """
@@ -100,27 +99,38 @@ class SeerAGVController:
     API_TASK_PKG_QUERY = 0x0456    # 1110 - 任务进度包 (task_status_package: percentage, distance)
 
     # 控制类 API (端口19205)
-    API_STOP = 0x07D2              # 2002 - 急停
-    API_PAUSE = 0x07D3             # 2003 - 暂停
-    API_RESUME = 0x07D4            # 2004 - 继续
-    API_CANCEL_TASK = 0x07D5       # 2005 - 取消当前任务
-    API_SET_SPEED = 0x07D6         # 2006 - 设置速度
+    # 扫描确认: 0x07D2不是急停(是重定位), 0x07D3/0x07D4不是暂停/继续(是定位确认/取消)
+    # 重新映射基于2026-04-24扫描结果的空payload ret_code=0
+    API_EMERGENCY_STOP = 0x07D0   # 2000 - 急停/软件急停 (empty {}, ret_code=0)
+    API_CLEAR_STOP = 0x07D1       # 2001 - 解除急停 (empty {}, ret_code=0)
+    API_RELOCATE = 0x07D2         # 2002 - 重定位 (需要: x, y, angle)
+    API_CONFIRM_LOC = 0x07D3      # 2003 - 确认定位 (empty {}, ret_code=0)
+    API_CANCEL_RELOCATE = 0x07D4  # 2004 - 取消重定位 (empty {}, ret_code=0)
+    API_CANCEL_TASK = 0x07D5      # 2005 - 取消任务 (需要: id, 如 {'id': 'all'})
+    API_SET_SPEED = 0x07D6        # 2006 - 设置速度 (需要: id参数)
 
-    # 导航类 API (端口19206)
-    API_NAVIGATE_STATION = 0x07E8  # 2024 - 导航到站点
-    API_NAVIGATE_POSITION = 0x07E9 # 2025 - 导航到坐标
-    API_NAVIGATE_P2P = 0x07EA      # 2026 - 点到点导航
-    API_CANCEL_NAVIGATION = 0x07EB # 2027 - 取消导航
+    # 暂停/继续 — 基于扫描猜测(0x07E4/0x07E5返回ret_code=0), 待实测确认
+    API_PAUSE = 0x07E4            # 2020 - 暂停 (推测, empty {}, ret_code=0)
+    API_RESUME = 0x07E5           # 2021 - 继续 (推测, empty {}, ret_code=0)
 
-    # 任务管理类 API (端口19207)
+    # 导航类 API (端口19205 - 不是19206!)
+    # 扫描确认: 19206端口对所有API码返回"error api type"
+    # 所有控制/导航API实际都在19205端口上
+    API_NAVIGATE_STATION = 0x07E8  # 2024 - 导航到站点 (param: name, port 19205)
+    API_NAVIGATE_POSITION = 0x07E9 # 2025 - 导航到坐标 (port 19205)
+    API_NAVIGATE_P2P = 0x07EA      # 2026 - 点到点导航/取消导航状态 (empty {}, ret_code=0, port 19205)
+    API_CANCEL_NAVIGATION = 0x07EB # 2027 - 取消导航 (未在19205扫描确认, port 19205)
+    API_LOAD_MAP = 0x07E6          # 2022 - 加载地图 (param: map_name, port 19205)
+
+    # 任务管理类 API (端口19205)
     API_CREATE_TASK = 0x07F0       # 2032 - 创建任务
     API_QUERY_TASK = 0x07F1        # 2033 - 查询任务
 
     # ========== 端口分配 ==========
     PORT_STATUS = 19204     # 状态查询
-    PORT_CONTROL = 19205    # 控制(急停/暂停/继续)
-    PORT_NAVIGATION = 19206 # 导航
-    PORT_TASK = 19207       # 任务管理
+    PORT_CONTROL = 19205    # 控制 + 导航 (急停/暂停/继续/导航/任务)
+    PORT_NAVIGATION = 19205 # 导航 (同19205, 19206无效)
+    PORT_TASK = 19205       # 任务管理 (同19205)
 
     # ========== 状态码映射 ==========
     STATUS_IDLE = 0         # 空闲
@@ -180,12 +190,12 @@ class SeerAGVController:
             True if connection successful, False otherwise.
         """
         try:
-            # 需要连接的端口列表
-            ports_to_connect = [
+            # 需要连接的端口列表 (去重, 因为19205同时用于控制+导航+任务)
+            ports_to_connect = sorted(set([
                 self.PORT_STATUS,
                 self.PORT_NAVIGATION,
                 self.PORT_CONTROL,
-            ]
+            ]))
 
             connected_ports = []
             for port in ports_to_connect:
@@ -736,7 +746,7 @@ class SeerAGVController:
             response = self._send_request(
                 self.PORT_NAVIGATION,
                 self.API_NAVIGATE_STATION,
-                {"station_id": station_id}
+                {"name": station_id}
             )
 
             # 检查响应 - AGV 返回 ret_code 字段
@@ -799,14 +809,17 @@ class SeerAGVController:
     def cancel_navigation(self) -> bool:
         """取消当前导航任务.
 
+        使用API_CANCEL_TASK(0x07D5)取消所有任务，比API_CANCEL_NAVIGATION更可靠。
+
         Returns:
             True if cancelled successfully
         """
         try:
+            # 使用 cancel_task(id='all') 取消所有导航任务
             response = self._send_request(
-                self.PORT_NAVIGATION,
-                self.API_CANCEL_NAVIGATION,
-                {}
+                self.PORT_CONTROL,
+                self.API_CANCEL_TASK,
+                {"id": "all"}
             )
 
             # AGV 返回 ret_code 字段
@@ -831,13 +844,16 @@ class SeerAGVController:
     def stop(self) -> bool:
         """急停 - 立即停止AGV.
 
+        使用软件急停API (0x07D0)。如果急停失败，尝试取消所有任务。
+
         Returns:
             True if stop successful
         """
         try:
+            # 先尝试软件急停
             response = self._send_request(
                 self.PORT_CONTROL,
-                self.API_STOP,
+                self.API_EMERGENCY_STOP,
                 {}
             )
 
@@ -848,10 +864,23 @@ class SeerAGVController:
                 self._current_navigation_target = None
                 logger.warning("AGV emergency stop executed")
                 return True
-            else:
-                error_msg = response.get('err_msg', 'Unknown error')
-                logger.error(f"Emergency stop failed: {error_msg}")
-                return False
+
+            # 如果急停失败，尝试取消所有任务
+            logger.warning(f"Emergency stop ret_code={ret_code}, trying cancel_task(id='all')")
+            cancel_response = self._send_request(
+                self.PORT_CONTROL,
+                self.API_CANCEL_TASK,
+                {"id": "all"}
+            )
+            cancel_ret = cancel_response.get('ret_code', -1)
+            if cancel_ret == 0:
+                self._current_navigation_target = None
+                logger.warning("AGV stopped via cancel_task(id='all')")
+                return True
+
+            error_msg = response.get('err_msg', 'Unknown error')
+            logger.error(f"Emergency stop and cancel_task both failed: {error_msg}")
+            return False
 
         except Exception as e:
             logger.error(f"Failed to stop AGV: {e}")
@@ -913,8 +942,11 @@ class SeerAGVController:
             logger.error(f"Failed to resume: {e}")
             return False
 
-    def cancel_task(self) -> bool:
+    def cancel_task(self, task_id: str = "all") -> bool:
         """取消当前任务.
+
+        Args:
+            task_id: 任务ID，默认"all"取消所有任务
 
         Returns:
             True if cancelled successfully
@@ -923,7 +955,7 @@ class SeerAGVController:
             response = self._send_request(
                 self.PORT_CONTROL,
                 self.API_CANCEL_TASK,
-                {}
+                {"id": task_id}
             )
 
             ret_code = response.get('ret_code', -1)
@@ -942,11 +974,12 @@ class SeerAGVController:
             logger.error(f"Failed to cancel task: {e}")
             return False
 
-    def set_speed(self, speed: float) -> bool:
+    def set_speed(self, speed: float, task_id: str = "all") -> bool:
         """设置AGV速度.
 
         Args:
             speed: 速度比例 (0.0-1.0) 或绝对速度 (m/s)
+            task_id: 任务ID，默认"all"设置全局速度
 
         Returns:
             True if successful
@@ -955,7 +988,7 @@ class SeerAGVController:
             response = self._send_request(
                 self.PORT_CONTROL,
                 self.API_SET_SPEED,
-                {"speed": speed}
+                {"id": task_id, "speed": speed}
             )
 
             ret_code = response.get('ret_code', -1)
