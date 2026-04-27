@@ -556,4 +556,9 @@ def create_task_result_from_agv_result(
         collision_detected=False,
         attempts=1,
         final_observation=final_observation,
+        # TaskResult.__post_init__ calculates duration from end_time - start_time.
+        # If end_time=0 (default), __post_init__ resets duration to 0.0 regardless
+        # of what was passed. So we must set end_time to preserve the AGV duration.
+        start_time=time.time() - agv_result.duration,
+        end_time=time.time(),
     )
