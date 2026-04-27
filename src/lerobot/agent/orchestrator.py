@@ -1319,6 +1319,10 @@ class TaskAgentOrchestrator:
             error_message=None if all_reached else "Did not reach target positions",
             collision_detected=not success,
             attempts=1,
+            # TaskResult.__post_init__ calculates duration = end_time - start_time.
+            # Without these, it resets duration to 0.0 regardless of the passed value.
+            start_time=start_time,
+            end_time=start_time + duration,
         )
 
     def _cleanup(self):
