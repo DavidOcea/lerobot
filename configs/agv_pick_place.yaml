@@ -110,7 +110,7 @@ tasks:
     task_type: "policy"
     policy_path: "/home/t/workspace/dc_dir/models/act_0421_1/checkpoints/120000/pretrained_model"  # CHANGE to your policy path
     policy_type: "act"
-    max_duration: 8.0  # Maximum pick time (seconds)
+    max_duration: 6.0  # Maximum pick time (seconds)
     max_retries: 1  # Retry attempts if pick fails
     enabled: true
     cameras:
@@ -120,18 +120,18 @@ tasks:
         width: 640
         height: 480
         fps: 30
-      - name: "left_wrist_cam"
-        type: "opencv"
-        index: 2
-        width: 640
-        height: 480
-        fps: 30
-      - name: "right_wrist_cam"
-        type: "opencv"
-        index: 4
-        width: 640
-        height: 480
-        fps: 30
+      # - name: "left_wrist_cam"
+      #   type: "opencv"
+      #   index: 2
+      #   width: 640
+      #   height: 480
+      #   fps: 30
+      # - name: "right_wrist_cam"
+      #   type: "opencv"
+      #   index: 4
+      #   width: 640
+      #   height: 480
+      #   fps: 30
     completion_criteria:
       type: "composite"  # Use multiple conditions for completion detection
       conditions:
@@ -196,7 +196,7 @@ tasks:
       # Navigation mode 1: Station name (recommended)
       # Use a station ID that exists on the AGV's loaded map
       # Run query_stations() to discover valid names (e.g., LM1, LM8, etc.)
-      target_station: "LM8"  # Change to actual station ID from AGV map
+      target_station: "LM7"  # Change to actual station ID from AGV map
 
       # Navigation mode 2: Coordinate (freeGo, uncomment to use instead)
       # target_position: [0.168, 0.029, 0.650]  # [x, y, theta] in meters/radians
@@ -235,41 +235,65 @@ tasks:
       emergency_stop_on_error: true
 
   # ---------- Phase 4: Place at Station B ----------
-  - name: "place_at_station_B"
-    task_type: "policy"
-    policy_path: "/home/t/workspace/dc_dir/models/act_0421_2/checkpoints/120000/pretrained_model"  # CHANGE to your policy
-    policy_type: "act"
+  - name: "place_at_station_B_stap1"
+    task_type: "position"
     max_duration: 10.0
     max_retries: 1
     enabled: true
-    cameras:
-      - name: "head_cam"
-        type: "opencv"
-        index: 0
-        width: 640
-        height: 480
-        fps: 30
-      - name: "left_wrist_cam"
-        type: "opencv"
-        index: 2
-        width: 640
-        height: 480
-        fps: 30
-      - name: "right_wrist_cam"
-        type: "opencv"
-        index: 4
-        width: 640
-        height: 480
-        fps: 30
+
     completion_criteria:
-      type: "composite"  # Use multiple conditions for completion detection
-      conditions:
-        # - type: "force"
-        #   joint_name: "right_arm_joint_7"  # RIGHT gripper joint
-        #   force_threshold: 0.2  # Nm - user specified threshold
-        - type: "stability"
-          stability_window: 5  # Number of steps to check - user specified
-          stability_tolerance: 0.05  # Max position variance
+      type: "position"
+      target_joint_positions:
+        # Left Arm - home position (degrees) - 6 joints (gripper removed)
+        left_arm_joint_1: -52.3
+        left_arm_joint_2: -4.0
+        left_arm_joint_3: -0.5
+        left_arm_joint_4: -58.6
+        left_arm_joint_5: -2.0
+        left_arm_joint_6: 11.8
+        # left_arm_joint_7: 0.0  # Gripper - DISABLED (temporarily removed)
+        # Right Arm - home position (degrees) - 6 joints (gripper removed)
+        right_arm_joint_1: 52.3
+        right_arm_joint_2: 4.0
+        right_arm_joint_3: 0.8
+        right_arm_joint_4: 58.6
+        right_arm_joint_5: 2.0
+        right_arm_joint_6: -11.8
+        # right_arm_joint_7: 0.0  # Gripper - DISABLED (temporarily removed)
+        # Trunk - centered position (degrees)
+        trunk_joint_1: 0.0
+        trunk_joint_2: 45.0
+      position_tolerance: 3.0  # degrees
+
+  - name: "place_at_station_B_stap2"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+
+    completion_criteria:
+      type: "position"
+      target_joint_positions:
+        # Left Arm - home position (degrees) - 6 joints (gripper removed)
+        left_arm_joint_1: -52.3
+        left_arm_joint_2: -14.0
+        left_arm_joint_3: -0.5
+        left_arm_joint_4: -58.6
+        left_arm_joint_5: -2.0
+        left_arm_joint_6: 11.8
+        # left_arm_joint_7: 0.0  # Gripper - DISABLED (temporarily removed)
+        # Right Arm - home position (degrees) - 6 joints (gripper removed)
+        right_arm_joint_1: 52.3
+        right_arm_joint_2: 14.0
+        right_arm_joint_3: 0.8
+        right_arm_joint_4: 58.6
+        right_arm_joint_5: 2.0
+        right_arm_joint_6: -11.8
+        # right_arm_joint_7: 0.0  # Gripper - DISABLED (temporarily removed)
+        # Trunk - centered position (degrees)
+        trunk_joint_1: 0.0
+        trunk_joint_2: 45.0
+      position_tolerance: 3.0  # degrees
 
   # ---------- Phase 5: Robot Arm Home Position (Safety) ----------
   # IMPORTANT: Move arm to safe position before AGV returns to A
@@ -315,7 +339,7 @@ tasks:
     enabled: true  # ENABLED for cycle mode
 
     agv_config:
-      target_station: "LM5"  # Return to starting station (change to actual ID)
+      target_station: "LM8"  # Return to starting station (change to actual ID)
       # target_position: [5.0, 0.0, 0.0]  # freeGo alternative
       wait_for_arrival: true
       arrival_timeout: 60.0
