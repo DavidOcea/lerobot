@@ -273,6 +273,7 @@ class AGVTaskExecutor:
                         target_station,
                         timeout=arrival_timeout,
                         tolerance=arrival_tolerance,
+                        wait_for_orientation=True,  # 等待姿态调整完成(旋转到位)
                     )
                 elif target_position:
                     x, y, theta = target_position

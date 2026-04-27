@@ -1219,31 +1219,55 @@ class SeerAGVController:
         timeout: float = 60.0,
         poll_interval: float = 1.0,
         tolerance: float = 0.3,
+        wait_for_orientation: bool = True,
     ) -> bool:
-        """等待到达目标站点.
+        """等待到达目标站点并完成姿态调整.
 
-        使用导航详情API (0x03FC) 和任务进度API (0x0456) 增强到达判定。
+        Seer AGV路径导航到达站点分两步：
+        1. 移动到XY位置 → current_station切换为目标站点
+        2. 原地旋转调整朝向角(theta) → running_status变为IDLE
+
+        如果wait_for_orientation=True，到达站点后还需等待AGV变为IDLE
+        才算真正到达（确保旋转完成）。否则只检查站点名匹配。
 
         Args:
             target_station: 目标站点ID
             timeout: 最大等待时间 (秒)
             poll_interval: 状态轮询间隔 (秒)
             tolerance: 距离容差 (米)
+            wait_for_orientation: 是否等待姿态调整完成(旋转到位后AGV变为IDLE)
 
         Returns:
             True if arrived, False if timeout or error
         """
         start_time = time.time()
-        logger.info(f"Waiting for arrival at {target_station} (timeout={timeout}s)")
+        logger.info(f"Waiting for arrival at {target_station} (timeout={timeout}s, wait_orientation={wait_for_orientation})")
+
+        station_reached = False
 
         while time.time() - start_time < timeout:
             status = self.get_status(use_cache=False)
 
-            # 检查站点ID匹配
+            # 检查站点ID匹配 (XY位置已到达)
             if status.current_station == target_station:
-                logger.info(f"Arrived at station: {target_station}")
-                self._current_navigation_target = None
-                return True
+                if not station_reached:
+                    station_reached = True
+                    logger.info(f"Station reached: {target_station} (position arrived)")
+
+                if wait_for_orientation:
+                    # 等待姿态调整完成：AGV从EXECUTING变为IDLE
+                    if status.status_code == self.STATUS_IDLE and not status.is_moving:
+                        logger.info(f"Arrived at station: {target_station} (orientation complete)")
+                        self._current_navigation_target = None
+                        return True
+                    else:
+                        logger.debug(f"Station reached but still adjusting orientation: status={status.status_code}, moving={status.is_moving}")
+                        time.sleep(poll_interval)
+                        continue
+                else:
+                    logger.info(f"Arrived at station: {target_station}")
+                    self._current_navigation_target = None
+                    return True
 
             # 检查是否到达目标位置 (如果有坐标信息)
             if target_station in self._station_map:
@@ -1252,9 +1276,23 @@ class SeerAGVController:
                 distance = ((current_pos.x - target_pos.x) ** 2 +
                            (current_pos.y - target_pos.y) ** 2) ** 0.5
                 if distance <= tolerance:
-                    logger.info(f"Arrived near {target_station}: distance={distance:.3f}m")
-                    self._current_navigation_target = None
-                    return True
+                    if not station_reached:
+                        station_reached = True
+                        logger.info(f"Position reached near {target_station}: distance={distance:.3f}m")
+
+                    if wait_for_orientation:
+                        if status.status_code == self.STATUS_IDLE and not status.is_moving:
+                            logger.info(f"Arrived near {target_station} (orientation complete)")
+                            self._current_navigation_target = None
+                            return True
+                        else:
+                            logger.debug(f"Position reached but still adjusting orientation")
+                            time.sleep(poll_interval)
+                            continue
+                    else:
+                        logger.info(f"Arrived near {target_station}: distance={distance:.3f}m")
+                        self._current_navigation_target = None
+                        return True
 
             # 使用导航详情检查目标是否匹配
             nav_detail = self.get_navigation_detail()
@@ -1279,9 +1317,8 @@ class SeerAGVController:
                 logger.error(f"AGV error during navigation: {status.error_code} - {status.error_message}")
                 return False
 
-            # 检查是否已停止但未到达
-            if not status.is_moving and status.status_code == self.STATUS_IDLE:
-                # 空闲状态但未到达目标
+            # 检查是否已停止但未到达 (仅当站点还没到达时才算失败)
+            if not station_reached and not status.is_moving and status.status_code == self.STATUS_IDLE:
                 elapsed = time.time() - self._navigation_start_time
                 if elapsed > 5.0:  # 给导航一点启动时间
                     logger.warning(f"AGV stopped (idle) but not at target {target_station}")
@@ -1291,7 +1328,10 @@ class SeerAGVController:
             time.sleep(poll_interval)
 
         # 超时
-        logger.warning(f"Timeout waiting for arrival at {target_station}")
+        if station_reached:
+            logger.warning(f"Timeout: station {target_station} reached but orientation not complete")
+        else:
+            logger.warning(f"Timeout waiting for arrival at {target_station}")
         return False
 
     def wait_for_idle(self, timeout: float = 30.0) -> bool:
