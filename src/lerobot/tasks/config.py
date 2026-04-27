@@ -48,7 +48,7 @@ class CompletionCriteria:
     joint_name: str | None = None  # Specific joint to monitor (e.g., gripper)
     # Stability-based criteria
     stability_window: int = 10  # Number of steps to check
-    stability_tolerance: float = 0.005  # Max variation within window
+    stability_tolerance: float = 0.05  # Max variation within window (rad, ~3° for physical arms)
     # Composite criteria
     conditions: list[dict[str, Any]] = field(default_factory=list)
 

@@ -93,7 +93,7 @@ tasks:
     completion_criteria:
       type: "stability"  # Position stability for pick completion
       stability_window: 5  # Check 5 consecutive samples
-      stability_tolerance: 0.01  # rad - position stability
+      stability_tolerance: 0.02  # rad (~1.1°) - relaxed for physical arm servo jitter
       # NOTE: Gripper force check disabled - gripper temporarily removed
       # conditions:
       #   - type: "force"
@@ -211,8 +211,8 @@ tasks:
 
     completion_criteria:
       type: "stability"  # Position stability after release
-      stability_window: 10
-      stability_tolerance: 0.005
+      stability_window: 5  # Reduced from 10 — shorter window more forgiving of transient noise
+      stability_tolerance: 0.05  # rad (~3°) — relaxed to match physical arm positioning precision
 
     cameras:
       - name: "head_cam"
