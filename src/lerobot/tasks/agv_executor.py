@@ -429,7 +429,10 @@ class AGVTaskExecutor:
         tolerance: float,
         poll_interval: float = 1.0,
     ) -> bool:
-        """等待到达目标坐标.
+        """等待到达目标坐标并完成姿态调整.
+
+        freeGo导航到达目标坐标后，AGV仍需旋转调整朝向角。
+        与站点导航一样，XY到达后还需等待AGV变为IDLE才算真正到达。
 
         Args:
             target_x: 目标x坐标
@@ -439,9 +442,10 @@ class AGVTaskExecutor:
             poll_interval: 轮询间隔
 
         Returns:
-            True if arrived, False if timeout/error
+            True if arrived and orientation complete, False if timeout/error
         """
         start_time = time.time()
+        position_reached = False
 
         while time.time() - start_time < timeout:
             status = self.agv.get_status(use_cache=False)
@@ -451,8 +455,18 @@ class AGVTaskExecutor:
             distance = ((pos.x - target_x) ** 2 + (pos.y - target_y) ** 2) ** 0.5
 
             if distance <= tolerance:
-                logger.info(f"[AGVExecutor] Arrived at position: distance={distance:.3f}m")
-                return True
+                if not position_reached:
+                    position_reached = True
+                    logger.info(f"[AGVExecutor] Position reached: distance={distance:.3f}m")
+
+                # 等待姿态调整完成(旋转到位)
+                if status.status_code == 0 and not status.is_moving:  # IDLE + not moving
+                    logger.info(f"[AGVExecutor] Arrived at position (orientation complete): distance={distance:.3f}m")
+                    return True
+                else:
+                    logger.debug(f"[AGVExecutor] Position reached but adjusting orientation: status={status.status_code}")
+                    time.sleep(poll_interval)
+                    continue
 
             # 检查异常
             if status.error_code != 0:
@@ -467,8 +481,8 @@ class AGVTaskExecutor:
             if obstacle.get('blocked', False):
                 logger.warning(f"[AGVExecutor] AGV blocked by obstacle at ({obstacle['block_x']:.2f}, {obstacle['block_y']:.2f})")
 
-            # 检查是否已停止但未到达
-            if not status.is_moving and status.status_code == 0:
+            # 检查是否已停止但未到达 (仅当位置还没到达时才算失败)
+            if not position_reached and not status.is_moving and status.status_code == 0:
                 elapsed = time.time() - start_time
                 if elapsed > 5.0:  # 给导航一点启动时间
                     logger.warning("[AGVExecutor] AGV stopped before reaching target")
@@ -476,7 +490,10 @@ class AGVTaskExecutor:
 
             time.sleep(poll_interval)
 
-        logger.warning(f"[AGVExecutor] Timeout waiting for position ({target_x:.2f}, {target_y:.2f})")
+        if position_reached:
+            logger.warning(f"[AGVExecutor] Timeout: position reached but orientation not complete")
+        else:
+            logger.warning(f"[AGVExecutor] Timeout waiting for position ({target_x:.2f}, {target_y:.2f})")
         return False
 
     def get_statistics(self) -> dict:

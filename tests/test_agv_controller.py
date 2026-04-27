@@ -224,29 +224,21 @@ def test_navigation(controller: SeerAGVController, target_station: str, wait: bo
             print("  (Not waiting for arrival - check AGV status manually)")
             return True
 
-        # Wait for arrival
-        print(f"\n→ Waiting for arrival (timeout: 60s)...")
+        # Wait for arrival - now uses wait_for_arrival which checks orientation too
+        print(f"\n→ Waiting for arrival including orientation (timeout: 60s)...")
 
-        # Poll status
-        start_time = time.time()
-        while time.time() - start_time < 60:
-            status = controller.get_status(use_cache=False)
-            print(f"  Station: {status.current_station}, Moving: {status.is_moving}")
+        arrived = controller.wait_for_arrival(
+            target_station,
+            timeout=60.0,
+            wait_for_orientation=True,
+        )
 
-            if status.current_station == target_station:
-                print(f"\n✓ Arrived at {target_station}")
-                return True
-
-            if not status.is_moving and time.time() - start_time > 10:
-                # AGV stopped but not at target
-                print(f"\n⚠ AGV stopped but not at target station")
-                print(f"  Current station: {status.current_station}")
-                return False
-
-            time.sleep(2)
-
-        print(f"\n✗ Timeout - did not arrive at {target_station}")
-        return False
+        if arrived:
+            print(f"\n✓ Arrived at {target_station} (orientation complete)")
+            return True
+        else:
+            print(f"\n✗ Failed to arrive at {target_station}")
+            return False
 
     except KeyboardInterrupt:
         print("\n\n⚠ Navigation cancelled by user")
