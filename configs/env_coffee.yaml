@@ -15,7 +15,7 @@
 # Environment type - matches HILSerlRobotEnvConfig
 type: gym_manipulator
 name: residual_coffee
-fps: 30
+fps: 50
 device: cuda
 
 # Task description (for logging)
@@ -49,21 +49,21 @@ robot:
     head_cam:
       type: opencv
       index_or_path: 0
-      fps: 30
+      fps: 50
       width: 640
       height: 480
       rotation: 0
     left_wrist_cam:
       type: opencv
       index_or_path: 1
-      fps: 30
+      fps: 50
       width: 640
       height: 480
       rotation: 0
     right_wrist_cam:
       type: opencv
       index_or_path: 2
-      fps: 30
+      fps: 50
       width: 640
       height: 480
       rotation: 0
@@ -75,7 +75,7 @@ robot:
   prometheus_port: null
 
   # Control frequency
-  control_frequency: 30
+  control_frequency: 50
 
   # Joint calibration (position limits in degrees)
   # NOTE: Gripper joints (joint_7) commented out - gripper temporarily removed

@@ -65,6 +65,7 @@ import json
 import logging
 import os
 import time
+from collections import deque
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -131,6 +132,8 @@ class TrainResidualConfig:
     resume_checkpoint: str | None = None  # Path to Phase 1 checkpoint
     env_config_path: str | None = None  # Path to environment config yaml
     env_config: HILSerlRobotEnvConfig | None = None  # Or direct config
+    n_action_steps: int = 20  # ACT: how many steps to execute before re-querying (lower = smoother, more GPU work)
+    fps: int = 50  # Control frequency for online phase (higher = smoother motion)
 
     # ========================================
     # Training hyperparameters (both phases)
@@ -178,9 +181,6 @@ class TrainResidualConfig:
 
     # Device
     device: str = "cuda"
-
-    # FPS (for online phase)
-    fps: int = 30
 
 
 def train_offline_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint_mgr: CheckpointManager):
@@ -490,6 +490,19 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
 
     for param in base_policy.parameters():
         param.requires_grad = False
+
+    # Override ACT's n_action_steps for smoother online execution
+    # Original model may have n_action_steps=100 (infer every 3.3s at 30Hz)
+    # Lower value means more frequent re-inference = more responsive base action
+    original_n_action_steps = base_policy.config.n_action_steps
+    if cfg.n_action_steps != original_n_action_steps:
+        logging.info(
+            f"Overriding ACT n_action_steps: {original_n_action_steps} -> {cfg.n_action_steps} "
+            f"(re-inference every {cfg.n_action_steps/cfg.fps:.2f}s instead of {original_n_action_steps/30:.2f}s)"
+        )
+        base_policy.config.n_action_steps = cfg.n_action_steps
+        # Reset action queue with new maxlen
+        base_policy._action_queue = deque([], maxlen=cfg.n_action_steps)
 
     # ========================================
     # 4. Load normalization (from Phase 1)
