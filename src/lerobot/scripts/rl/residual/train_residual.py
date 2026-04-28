@@ -703,26 +703,25 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
             # Entering pause (transition from running to paused)
             if not was_paused:
                 last_pause_start = time.time()
-                # Capture current joint positions to hold robot in place
-                # obs["observation.state"] is standardized; un-standardize to get raw positions
-                current_state = obs["observation.state"]
-                if isinstance(current_state, torch.Tensor):
-                    current_state = current_state.cpu()
-                raw_positions = state_standardizer.unstandardize(current_state)
-                hold_action_np = raw_positions.numpy() if isinstance(raw_positions, torch.Tensor) else np.array(raw_positions)
                 logging.info(
                     f"PAUSED at step {global_step} — "
-                    f"robot holding position, adjust camera/robot, then press 'p' to resume"
+                    f"robot will hold current position, adjust camera/robot, then press 'p' to resume"
                 )
                 was_paused = True
 
             # PAUSED: repeatedly send current joint positions to keep robot still
             # This bypasses ACT + residual entirely — robot stays exactly where it was
-            raw_env = env.unwrapped
-            raw_env.robot.send_action(
-                {name: float(hold_action_np[i]) for i, name in enumerate(raw_env._joint_names)}
-            )
-            raw_env._get_observation()  # Refresh observation (camera images update)
+            # Re-read actual positions each loop to handle hardware drift
+            try:
+                raw_env = env.unwrapped
+                # Re-read current positions from hardware to counteract any drift
+                actual_positions = raw_env.robot.get_current_position()
+                # Send same positions back — keys use observation_joint_names (no .pos suffix)
+                # robot.send_action() handles .pos removal internally
+                raw_env.robot.send_action(actual_positions)
+                raw_env._get_observation()  # Refresh observation (camera images update)
+            except Exception as e:
+                logging.warning(f"Pause loop send_action failed: {e}, retrying next cycle")
 
             # FPS control during pause
             if cfg.fps > 0:
