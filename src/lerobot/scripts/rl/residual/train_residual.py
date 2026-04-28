@@ -589,6 +589,16 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
         device=device,
     )
 
+    # Load replay buffer from checkpoint if resuming
+    if cfg.resume_checkpoint:
+        rb_dir = Path(cfg.resume_checkpoint) / "replay_buffer"
+        if rb_dir.exists():
+            logging.info(f"Loading replay buffer from: {rb_dir}")
+            online_rb.load(rb_dir)
+            logging.info(f"Replay buffer loaded: {len(online_rb)} transitions")
+        else:
+            logging.info(f"No replay buffer found at {rb_dir}, starting with empty buffer")
+
     # ========================================
     # 8. Warmup phase (random exploration)
     # ========================================
@@ -626,7 +636,8 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     # 9. Main online training loop (with pause/resume support)
     # ========================================
     # Keyboard listener for pause/resume (press 'p' to toggle)
-    # During pause: robot holds current position, no buffer add, no TD3 update
+    # During pause: robot physically holds current position (re-send last joint positions),
+    # ACT policy frozen (reset on resume), no buffer add, no TD3 update
     pause_lock = Lock()
     pause_requested = [False]  # mutable list for cross-thread toggle
     pause_count = 0
@@ -676,19 +687,29 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
             is_paused = pause_requested[0]
 
         if is_paused:
-            # Entering pause for the first time (transition from running to paused)
+            # Entering pause (transition from running to paused)
             if not was_paused:
                 last_pause_start = time.time()
+                # Capture current joint positions to hold robot in place
+                # obs["observation.state"] is standardized; un-standardize to get raw positions
+                current_state = obs["observation.state"]
+                if isinstance(current_state, torch.Tensor):
+                    current_state = current_state.cpu()
+                raw_positions = state_standardizer.unstandardize(current_state)
+                hold_action_np = raw_positions.numpy() if isinstance(raw_positions, torch.Tensor) else np.array(raw_positions)
                 logging.info(
-                    f"⏸ PAUSED at step {global_step} — "
-                    f"adjust camera/robot position, then press 'p' to resume"
+                    f"PAUSED at step {global_step} — "
+                    f"robot holding position, adjust camera/robot, then press 'p' to resume"
                 )
                 was_paused = True
 
-            # PAUSED: robot holds current position, no training updates
-            # Send zero residual + base policy action to keep robot stable
-            zero_residual = torch.zeros(action_dim, device=device)
-            obs, _, _, _, _ = env.step(zero_residual)
+            # PAUSED: repeatedly send current joint positions to keep robot still
+            # This bypasses ACT + residual entirely — robot stays exactly where it was
+            raw_env = env.unwrapped
+            raw_env.robot.send_action(
+                {name: float(hold_action_np[i]) for i, name in enumerate(raw_env._joint_names)}
+            )
+            raw_env._get_observation()  # Refresh observation (camera images update)
 
             # FPS control during pause
             if cfg.fps > 0:
@@ -702,10 +723,28 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
             pause_duration = time.time() - last_pause_start
             total_pause_time += pause_duration
             pause_count += 1
+            # Reset ACT base policy action queue so it starts fresh from current position.
+            # Without this, ACT would continue the trajectory from before the pause,
+            # causing a sudden jump when resumed.
+            env.base_policy.reset()
+            # Get fresh observation from raw env (camera + joint positions updated during pause)
+            raw_env = env.unwrapped
+            raw_env._get_observation()
+            raw_obs = raw_env.current_observation
+            # Convert to tensors and get fresh base action
+            raw_obs_tensors = env._convert_obs_to_tensors(raw_obs)
+            with torch.no_grad():
+                base_action = env.base_policy.select_action(raw_obs_tensors)
+            base_naction = env.action_scaler.scale(base_action)
+            # Sync env wrapper's internal state with fresh base action
+            env._last_base_naction = base_naction
+            # Re-build augmented obs with fresh base action and standardized state
+            obs = env._build_residual_obs(raw_obs_tensors, base_naction)
             logging.info(
-                f"▶ RESUMED at step {global_step} "
+                f"RESUMED at step {global_step} "
                 f"(pause #{pause_count}, duration: {pause_duration:.1f}s, "
-                f"total pause time: {total_pause_time:.1f}s)"
+                f"total pause time: {total_pause_time:.1f}s, "
+                f"ACT policy reset and re-synced)"
             )
             was_paused = False
 
@@ -796,14 +835,21 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
                 metrics={"success_rate": success_rate},
                 force_save=is_best,
             )
+            # Save replay buffer alongside best checkpoint
+            best_cp_path = checkpoint_mgr.get_best_checkpoint_path()
+            if best_cp_path:
+                online_rb.save(best_cp_path / "replay_buffer")
 
         # Save checkpoint at interval
         if global_step % cfg.checkpoint_interval == 0:
-            checkpoint_mgr.save(
+            cp_path = checkpoint_mgr.save(
                 agent=td3_agent,
                 step=global_step,
                 metrics={"success_rate": best_success_rate},
             )
+            # Save replay buffer inside checkpoint directory
+            if cp_path:
+                online_rb.save(cp_path / "replay_buffer")
 
         # FPS control
         if cfg.fps > 0:

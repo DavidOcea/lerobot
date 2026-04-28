@@ -22,8 +22,10 @@ Features:
 - Prioritized experience replay (optional)
 """
 
+import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -316,6 +318,117 @@ class ReplayBuffer:
         self.beta = self.config.priority_beta
 
         logging.info("ReplayBuffer cleared")
+
+    def save(self, save_dir: str | Path) -> None:
+        """Save buffer data to disk for checkpoint resume.
+
+        Saves the numpy arrays (states, actions, rewards, next_states, dones,
+        base_actions, priorities) along with size, pointer, and config metadata.
+        Only saves the filled portion of the circular buffer to minimize file size.
+
+        Args:
+            save_dir: Directory to save buffer data (created if needed).
+        """
+        save_dir = Path(save_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # Only save filled portion (not the entire pre-allocated buffer)
+        if self.size > 0:
+            np.save(save_dir / "states.npy", self.states[:self.size])
+            np.save(save_dir / "actions.npy", self.actions[:self.size])
+            np.save(save_dir / "rewards.npy", self.rewards[:self.size])
+            np.save(save_dir / "next_states.npy", self.next_states[:self.size])
+            np.save(save_dir / "dones.npy", self.dones[:self.size])
+            np.save(save_dir / "priorities.npy", self.priorities[:self.size])
+            if self.has_base_actions:
+                np.save(save_dir / "base_actions.npy", self.base_actions[:self.size])
+
+        # Save metadata as JSON (safe, no pickle)
+        metadata = {
+            "size": self.size,
+            "pointer": self.pointer,
+            "state_dim": self.state_dim,
+            "action_dim": self.action_dim,
+            "buffer_size": self.buffer_size,
+            "n_step": self.n_step,
+            "gamma": self.gamma,
+            "has_base_actions": self.has_base_actions,
+            "max_priority": self.max_priority,
+            "beta": self.beta,
+        }
+        with open(save_dir / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+
+        logging.info(f"ReplayBuffer saved: {self.size} transitions to {save_dir}")
+
+    def load(self, load_dir: str | Path) -> None:
+        """Load buffer data from disk to resume training.
+
+        Restores all buffer arrays and state from a previously saved checkpoint.
+        After loading, the buffer can be used for sampling immediately.
+
+        Args:
+            load_dir: Directory containing saved buffer data.
+        """
+        load_dir = Path(load_dir)
+
+        metadata_path = load_dir / "metadata.json"
+        if not metadata_path.exists():
+            raise FileNotFoundError(f"No replay buffer metadata at {metadata_path}")
+
+        with open(metadata_path, "r") as f:
+            metadata = json.load(f)
+
+        # Validate dimensions match
+        if metadata["state_dim"] != self.state_dim:
+            raise ValueError(
+                f"State dim mismatch: buffer has {self.state_dim}, "
+                f"saved has {metadata['state_dim']}"
+            )
+        if metadata["action_dim"] != self.action_dim:
+            raise ValueError(
+                f"Action dim mismatch: buffer has {self.action_dim}, "
+                f"saved has {metadata['action_dim']}"
+            )
+
+        saved_size = metadata["size"]
+        saved_pointer = metadata["pointer"]
+
+        # Load arrays if they exist
+        states_path = load_dir / "states.npy"
+        if states_path.exists() and saved_size > 0:
+            saved_states = np.load(states_path)
+            self.states[:saved_size] = saved_states
+
+            saved_actions = np.load(load_dir / "actions.npy")
+            self.actions[:saved_size] = saved_actions
+
+            saved_rewards = np.load(load_dir / "rewards.npy")
+            self.rewards[:saved_size] = saved_rewards
+
+            saved_next_states = np.load(load_dir / "next_states.npy")
+            self.next_states[:saved_size] = saved_next_states
+
+            saved_dones = np.load(load_dir / "dones.npy")
+            self.dones[:saved_size] = saved_dones
+
+            saved_priorities = np.load(load_dir / "priorities.npy")
+            self.priorities[:saved_size] = saved_priorities
+
+            # Load base actions if available
+            base_actions_path = load_dir / "base_actions.npy"
+            if base_actions_path.exists():
+                saved_base_actions = np.load(base_actions_path)
+                self.base_actions[:saved_size] = saved_base_actions
+                self.has_base_actions = metadata.get("has_base_actions", True)
+
+        self.size = saved_size
+        self.pointer = saved_pointer
+        self.max_priority = metadata.get("max_priority", 1.0)
+        self.beta = metadata.get("beta", self.config.priority_beta)
+        self.n_step_buffer.clear()  # n-step buffer not persisted (transient state)
+
+        logging.info(f"ReplayBuffer loaded: {self.size} transitions from {load_dir}")
 
     def get_statistics(self) -> dict[str, float]:
         """Get buffer statistics."""
