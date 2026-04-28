@@ -49,21 +49,21 @@ robot:
     head_cam:
       type: opencv
       index_or_path: 0
-      fps: 50
+      fps: 30
       width: 640
       height: 480
       rotation: 0
     left_wrist_cam:
       type: opencv
       index_or_path: 1
-      fps: 50
+      fps: 30
       width: 640
       height: 480
       rotation: 0
     right_wrist_cam:
       type: opencv
       index_or_path: 2
-      fps: 50
+      fps: 30
       width: 640
       height: 480
       rotation: 0
