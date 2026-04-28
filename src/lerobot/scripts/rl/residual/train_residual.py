@@ -26,6 +26,8 @@ Phase 2 (Online): Online fine-tuning with real robot
     - Uses Phase 1 checkpoint as starting point
     - Collects real interaction data
     - Gets true reward from environment
+    - Press 'p' to pause/resume (adjust camera/robot position during training)
+    - Resume from any Phase2 checkpoint with --resume_checkpoint
 
 Usage:
     # Phase 1: Offline training
@@ -44,6 +46,19 @@ Usage:
         --output_dir outputs/residual/phase2 \
         --env_config_path configs/env_coffee.yaml \
         --total_timesteps 500000
+
+    # Phase 2: Resume from previous Phase2 checkpoint
+    python -m lerobot.scripts.rl.residual.train_residual \
+        --phase online \
+        --base_policy_checkpoint outputs/act/best.safetensors \
+        --resume_checkpoint outputs/residual/phase2/checkpoints/checkpoint_step_50000 \
+        --output_dir outputs/residual/phase2 \
+        --env_config_path configs/env_coffee.yaml \
+        --total_timesteps 500000
+
+    # During Phase 2 training, press 'p' to:
+    #   PAUSE  — robot holds position, adjust camera/robot
+    #   RESUME — continue training from paused state
 """
 
 import json
@@ -51,12 +66,12 @@ import logging
 import os
 import time
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import numpy as np
 import torch
 from dataclasses import dataclass, field
-from typing import Any
 
 import draccus
 
@@ -539,7 +554,7 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
 
     # Load Phase 1 checkpoint
     if cfg.resume_checkpoint:
-        logging.info(f"Loading Phase 1 checkpoint: {cfg.resume_checkpoint}")
+        logging.info(f"Loading checkpoint: {cfg.resume_checkpoint}")
         training_state = checkpoint_mgr.load(td3_agent, cfg.resume_checkpoint)
         global_step = training_state.get("step", 0)
         logging.info(f"Resumed at step {global_step}")
@@ -608,9 +623,37 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
         logging.info(f"Warmup complete: buffer size = {len(online_rb)}")
 
     # ========================================
-    # 9. Main online training loop
+    # 9. Main online training loop (with pause/resume support)
     # ========================================
+    # Keyboard listener for pause/resume (press 'p' to toggle)
+    # During pause: robot holds current position, no buffer add, no TD3 update
+    pause_lock = Lock()
+    pause_requested = [False]  # mutable list for cross-thread toggle
+    pause_count = 0
+    total_pause_time = 0.0
+    last_pause_start = 0.0
+    was_paused = False  # track state transitions for logging
+
+    def _on_key_press(key):
+        try:
+            from pynput import keyboard as kb
+            if hasattr(key, 'char') and key.char == 'p':
+                with pause_lock:
+                    pause_requested[0] = not pause_requested[0]
+        except Exception:
+            pass
+
+    try:
+        from pynput import keyboard as kb
+        pause_listener = kb.Listener(on_press=_on_key_press)
+        pause_listener.start()
+        logging.info("Pause/resume listener started — press 'p' to pause/resume training")
+    except ImportError:
+        logging.warning("pynput not installed — pause/resume via keyboard not available")
+        pause_listener = None
+
     logging.info(f"Starting online training: {cfg.total_timesteps} steps")
+    logging.info("  Press 'p' to PAUSE (adjust camera/robot), press 'p' again to RESUME")
 
     obs, _ = env.reset()
     episode_reward = 0.0
@@ -625,6 +668,46 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     while global_step < cfg.total_timesteps:
         # FPS control
         step_start_time = time.perf_counter()
+
+        # ========================================
+        # Pause/resume check
+        # ========================================
+        with pause_lock:
+            is_paused = pause_requested[0]
+
+        if is_paused:
+            # Entering pause for the first time (transition from running to paused)
+            if not was_paused:
+                last_pause_start = time.time()
+                logging.info(
+                    f"⏸ PAUSED at step {global_step} — "
+                    f"adjust camera/robot position, then press 'p' to resume"
+                )
+                was_paused = True
+
+            # PAUSED: robot holds current position, no training updates
+            # Send zero residual + base policy action to keep robot stable
+            zero_residual = torch.zeros(action_dim, device=device)
+            obs, _, _, _, _ = env.step(zero_residual)
+
+            # FPS control during pause
+            if cfg.fps > 0:
+                dt = time.perf_counter() - step_start_time
+                busy_wait(1.0 / cfg.fps - dt)
+
+            continue
+
+        # Exiting pause (transition from paused to running)
+        if was_paused:
+            pause_duration = time.time() - last_pause_start
+            total_pause_time += pause_duration
+            pause_count += 1
+            logging.info(
+                f"▶ RESUMED at step {global_step} "
+                f"(pause #{pause_count}, duration: {pause_duration:.1f}s, "
+                f"total pause time: {total_pause_time:.1f}s)"
+            )
+            was_paused = False
 
         # Compute exploration stddev
         stddev = schedule_stddev(cfg.stddev_max, cfg.stddev_min, cfg.stddev_step, global_step)
@@ -738,6 +821,14 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     # ========================================
     logging.info("Phase 2 completed!")
 
+    # Log pause statistics
+    if pause_count > 0:
+        logging.info(f"Pause statistics: {pause_count} pauses, total pause time: {total_pause_time:.1f}s")
+
+    # Stop keyboard listener
+    if pause_listener is not None:
+        pause_listener.stop()
+
     checkpoint_mgr.save(
         agent=td3_agent,
         step=global_step,
@@ -753,6 +844,8 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
         "best_success_rate": best_success_rate,
         "total_episodes": episode_count,
         "steps_per_second": global_step / elapsed,
+        "pause_count": pause_count,
+        "total_pause_time": total_pause_time,
     })
 
     env.close()
