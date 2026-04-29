@@ -83,6 +83,7 @@ from lerobot.policies.act.modeling_act import ACTPolicy
 from lerobot.policies.factory import make_policy
 from lerobot.policies.td3.config_td3 import TD3ActorConfig, TD3Config
 from lerobot.policies.td3.modeling_td3 import TD3Agent, TD3Actor, TD3Critic
+from lerobot.envs.utils import preprocess_observation
 from lerobot.scripts.rl.gym_manipulator import make_robot_env
 from lerobot.scripts.rl.residual.env_wrapper import ResidualEnvWrapper
 from lerobot.utils.residual.checkpoint import CheckpointConfig, CheckpointManager
@@ -739,19 +740,21 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
             # Without this, ACT would continue the trajectory from before the pause,
             # causing a sudden jump when resumed.
             env.base_policy.reset()
-            # Get fresh observation from raw env (camera + joint positions updated during pause)
+            # Get fresh observation through the FULL processing chain (not raw env).
+            # preprocess_observation does: HWC→CHW, batch dim, float32 norm —
+            # without it, ACT crashes with "size 480 vs 3" in normalize_inputs.
             raw_env = env.unwrapped
             raw_env._get_observation()
-            raw_obs = raw_env.current_observation
-            # Convert to tensors and get fresh base action
-            raw_obs_tensors = env._convert_obs_to_tensors(raw_obs)
+            raw_obs_hwc = raw_env.current_observation
+            processed_obs = preprocess_observation(raw_obs_hwc)
+            # Now processed_obs has CHW images with batch dim — safe for ACT
             with torch.no_grad():
-                base_action = env.base_policy.select_action(raw_obs_tensors)
+                base_action = env.base_policy.select_action(processed_obs)
             base_naction = env.action_scaler.scale(base_action)
             # Sync env wrapper's internal state with fresh base action
             env._last_base_naction = base_naction
             # Re-build augmented obs with fresh base action and standardized state
-            obs = env._build_residual_obs(raw_obs_tensors, base_naction)
+            obs = env._build_residual_obs(processed_obs, base_naction)
             logging.info(
                 f"RESUMED at step {global_step} "
                 f"(pause #{pause_count}, duration: {pause_duration:.1f}s, "
