@@ -616,12 +616,68 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
     # ========================================
     # 8. Warmup phase (random exploration)
     # ========================================
+    # Start pause listener BEFORE warmup so user can pause during warmup too
+    pause_lock = Lock()
+    pause_requested = [False]  # mutable list for cross-thread toggle
+    pause_count = 0
+    total_pause_time = 0.0
+    last_pause_start = 0.0
+    was_paused = False
+
+    def _on_key_press(key):
+        try:
+            from pynput import keyboard as kb
+            if hasattr(key, 'char') and key.char == 'p':
+                with pause_lock:
+                    pause_requested[0] = not pause_requested[0]
+        except Exception:
+            pass
+
+    try:
+        from pynput import keyboard as kb
+        pause_listener = kb.Listener(on_press=_on_key_press)
+        pause_listener.start()
+        logging.info("Pause/resume listener started — press 'p' to pause/resume training")
+    except ImportError:
+        logging.warning("pynput not installed — pause/resume via keyboard not available")
+        pause_listener = None
+
+    logging.info("  Press 'p' to PAUSE (adjust camera/robot), press 'p' again to RESUME")
+
     if len(online_rb) < cfg.learning_starts:
         logging.info(f"Warmup: collecting {cfg.learning_starts} random transitions...")
 
         obs, _ = env.reset()
 
         while len(online_rb) < cfg.learning_starts:
+            # Pause check during warmup
+            with pause_lock:
+                is_paused = pause_requested[0]
+
+            if is_paused:
+                if not was_paused:
+                    last_pause_start = time.time()
+                    logging.info("PAUSED during warmup — robot holding position, press 'p' to resume")
+                    was_paused = True
+                try:
+                    raw_env = env.unwrapped
+                    actual_positions = raw_env.robot.get_current_position()
+                    raw_env.robot.send_action(actual_positions)
+                    raw_env._get_observation()
+                except Exception as e:
+                    logging.warning(f"Warmup pause loop send_action failed: {e}")
+                time.sleep(1.0 / cfg.fps)
+                continue
+
+            if was_paused:
+                # Resume from warmup pause — re-read observation
+                pause_duration = time.time() - last_pause_start
+                total_pause_time += pause_duration
+                pause_count += 1
+                obs, _ = env.reset()
+                logging.info(f"RESUMED warmup (pause #{pause_count}, duration: {pause_duration:.1f}s)")
+                was_paused = False
+
             # Random residual action
             residual_action = torch.rand(action_dim, device=device) * cfg.action_scale * 2 - cfg.action_scale
 
@@ -647,38 +703,9 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
         logging.info(f"Warmup complete: buffer size = {len(online_rb)}")
 
     # ========================================
-    # 9. Main online training loop (with pause/resume support)
+    # 9. Main online training loop (pause listener already started in section 8)
     # ========================================
-    # Keyboard listener for pause/resume (press 'p' to toggle)
-    # During pause: robot physically holds current position (re-send last joint positions),
-    # ACT policy frozen (reset on resume), no buffer add, no TD3 update
-    pause_lock = Lock()
-    pause_requested = [False]  # mutable list for cross-thread toggle
-    pause_count = 0
-    total_pause_time = 0.0
-    last_pause_start = 0.0
-    was_paused = False  # track state transitions for logging
-
-    def _on_key_press(key):
-        try:
-            from pynput import keyboard as kb
-            if hasattr(key, 'char') and key.char == 'p':
-                with pause_lock:
-                    pause_requested[0] = not pause_requested[0]
-        except Exception:
-            pass
-
-    try:
-        from pynput import keyboard as kb
-        pause_listener = kb.Listener(on_press=_on_key_press)
-        pause_listener.start()
-        logging.info("Pause/resume listener started — press 'p' to pause/resume training")
-    except ImportError:
-        logging.warning("pynput not installed — pause/resume via keyboard not available")
-        pause_listener = None
-
     logging.info(f"Starting online training: {cfg.total_timesteps} steps")
-    logging.info("  Press 'p' to PAUSE (adjust camera/robot), press 'p' again to RESUME")
 
     obs, _ = env.reset()
     episode_reward = 0.0
@@ -747,6 +774,12 @@ def train_online_phase(cfg: TrainResidualConfig, logger: LocalLogger, checkpoint
             raw_env._get_observation()
             raw_obs_hwc = raw_env.current_observation
             processed_obs = preprocess_observation(raw_obs_hwc)
+            # Move to same device as ACT model (preprocess_observation outputs CPU tensors)
+            for key, val in processed_obs.items():
+                if isinstance(val, torch.Tensor):
+                    processed_obs[key] = val.to(device)
+                elif isinstance(val, list):
+                    processed_obs[key] = [v.to(device) if isinstance(v, torch.Tensor) else v for v in val]
             # Now processed_obs has CHW images with batch dim — safe for ACT
             with torch.no_grad():
                 base_action = env.base_policy.select_action(processed_obs)
