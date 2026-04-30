@@ -17,6 +17,8 @@
 from .env_wrapper import ResidualEnvWrapper, ResidualEnvWrapperWithIntervention
 from .train_residual import TrainResidualConfig, train_residual, train_offline_phase, train_online_phase
 
+from .eval_residual import EvalResidualConfig, run_residual_inference
+
 __all__ = [
     "ResidualEnvWrapper",
     "ResidualEnvWrapperWithIntervention",
@@ -24,4 +26,6 @@ __all__ = [
     "train_residual",
     "train_offline_phase",
     "train_online_phase",
+    "EvalResidualConfig",
+    "run_residual_inference",
 ]
