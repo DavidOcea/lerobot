@@ -106,18 +106,36 @@ class AGVTaskConfig:
 
 
 @dataclass
+class PositionSequenceStep:
+    """A single step within a position_sequence task.
+
+    Each step moves the robot to a target joint position using smooth interpolation.
+    Position can be specified as:
+    - A dict of {joint_name: position_in_degrees} (inline)
+    - A string referencing a named_positions key (resolved during parsing)
+    """
+
+    name: str = ""
+    position: dict[str, float] = field(default_factory=dict)
+    max_duration: float = 10.0
+    position_tolerance: float = 3.0
+
+
+@dataclass
 class TaskConfig:
     """Configuration for a single task in the execution sequence.
 
     Supports multiple task types:
     - "policy": Execute a learned policy (ACT, etc.)
     - "agv": Execute AGV navigation task
+    - "position": Move robot to a single target joint position
+    - "position_sequence": Move robot through a sequence of positions (sub-steps)
     """
 
     name: str
 
-    # 任务类型 (NEW)
-    task_type: Literal["policy", "agv", "position"] = "policy"
+    # 任务类型
+    task_type: Literal["policy", "agv", "position", "position_sequence"] = "policy"
 
     # Policy任务字段 (现有)
     policy_path: str | None = None
@@ -128,8 +146,11 @@ class TaskConfig:
     enabled: bool = True  # Allow disabling specific tasks
     cameras: list[CameraConfig] = field(default_factory=list)  # Active cameras for this task
 
-    # AGV任务字段 (NEW)
+    # AGV任务字段
     agv_config: AGVTaskConfig | None = None
+
+    # Position sequence任务字段
+    steps: list[PositionSequenceStep] = field(default_factory=list)
 
     def validate(self) -> bool:
         """验证任务配置."""
@@ -143,6 +164,9 @@ class TaskConfig:
         elif self.task_type == "position":
             if not self.completion_criteria.target_joint_positions:
                 raise ValueError(f"Task '{self.name}': target_joint_positions required for position tasks")
+        elif self.task_type == "position_sequence":
+            if not self.steps:
+                raise ValueError(f"Task '{self.name}': steps required for position_sequence tasks")
         return True
 
 
@@ -161,6 +185,9 @@ class OrchestratorConfig:
     robot_config: RobotConfig = field(default_factory=RobotConfig)
     collision_config: CollisionConfig = field(default_factory=CollisionConfig)
     monitoring_config: MonitoringConfig = field(default_factory=MonitoringConfig)
+
+    # Named positions for reuse across tasks (optional)
+    named_positions: dict[str, dict[str, float]] = field(default_factory=dict)
 
     # Execution settings
     environment_dt: float = 1.0 / 30.0  # Control loop timestep
@@ -215,6 +242,13 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     with open(config_path, "r") as f:
         config_dict = yaml.safe_load(f)
 
+    # Parse named_positions first (needed for position reference resolution)
+    named_positions = config_dict.get("named_positions", {})
+
+    # Parse global agv_config for default_arm_safe_positions
+    global_agv_config_dict = config_dict.get("agv_config", {})
+    default_arm_safe_positions = global_agv_config_dict.get("default_arm_safe_positions", {})
+
     # Parse tasks
     tasks = []
     for task_dict in config_dict.get("tasks", []):
@@ -231,9 +265,31 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
                     conditions.append(cond)
                 criteria_dict["conditions"] = conditions
 
+            # Resolve position reference (YAML shorthand: position: home)
+            if "position" in criteria_dict and isinstance(criteria_dict["position"], str):
+                pos_name = criteria_dict["position"]
+                if named_positions and pos_name in named_positions:
+                    criteria_dict["target_joint_positions"] = named_positions[pos_name].copy()
+                else:
+                    raise ValueError(f"Unknown named position: '{pos_name}'")
+                del criteria_dict["position"]  # Remove shorthand before passing to CompletionCriteria
+            elif "position" in criteria_dict and isinstance(criteria_dict["position"], dict):
+                criteria_dict["target_joint_positions"] = criteria_dict["position"]
+                del criteria_dict["position"]
+
             completion_criteria = CompletionCriteria(**criteria_dict)
         else:
             completion_criteria = CompletionCriteria()
+
+        # Resolve position references in completion_criteria
+        if named_positions:
+            # Resolve target_joint_positions if it's a string reference
+            if isinstance(completion_criteria.target_joint_positions, str):
+                pos_name = completion_criteria.target_joint_positions
+                if pos_name in named_positions:
+                    completion_criteria.target_joint_positions = named_positions[pos_name].copy()
+                else:
+                    raise ValueError(f"Unknown named position: '{pos_name}'")
 
         # Parse cameras if present
         cameras_list = task_dict.get("cameras", [])
@@ -245,6 +301,10 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
         agv_config_dict = task_dict.get("agv_config", {})
         agv_config = None
         if agv_config_dict:
+            # Inherit default arm_safe_positions if not specified in task
+            if default_arm_safe_positions and "arm_safe_positions" not in agv_config_dict:
+                agv_config_dict["arm_safe_positions"] = default_arm_safe_positions
+
             # Parse target_position if it's a list
             if "target_position" in agv_config_dict:
                 pos = agv_config_dict["target_position"]
@@ -282,6 +342,29 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
         # Add position-specific fields (for direct joint position movement)
         elif task_type == "position":
             task_kwargs["max_duration"] = task_dict.get("max_duration", 10.0)
+            task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
+            task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+        # Add position_sequence-specific fields (for multi-step position movement)
+        elif task_type == "position_sequence":
+            steps = []
+            for step_dict in task_dict.get("steps", []):
+                pos = step_dict.get("position", {})
+                # Resolve position reference from named_positions
+                if isinstance(pos, str):
+                    if pos in named_positions:
+                        pos = named_positions[pos].copy()
+                    else:
+                        raise ValueError(f"Unknown named position: '{pos}'")
+                steps.append(PositionSequenceStep(
+                    name=step_dict.get("name", ""),
+                    position=pos,
+                    max_duration=step_dict.get("max_duration", 10.0),
+                    position_tolerance=step_dict.get("position_tolerance", 3.0),
+                ))
+            task_kwargs["steps"] = steps
+            total_steps_duration = sum(s.max_duration for s in steps)
+            task_kwargs["max_duration"] = task_dict.get("max_duration", total_steps_duration)
             task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
             task_kwargs["enabled"] = task_dict.get("enabled", True)
 
@@ -428,6 +511,7 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             robot_config=robot_config,
             collision_config=collision_config,
             monitoring_config=monitoring_config,
+            named_positions=named_positions,
             environment_dt=config_dict.get("environment_dt", 1.0 / 30.0),
             observation_timeout=config_dict.get("observation_timeout", 5.0),
             action_timeout=config_dict.get("action_timeout", 5.0),
@@ -446,6 +530,7 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             robot_config=robot_config,
             collision_config=collision_config,
             monitoring_config=monitoring_config,
+            named_positions=named_positions,
             environment_dt=config_dict.get("environment_dt", 1.0 / 30.0),
             observation_timeout=config_dict.get("observation_timeout", 5.0),
             action_timeout=config_dict.get("action_timeout", 5.0),

@@ -214,7 +214,7 @@ class TaskAgentOrchestrator:
         print(f"[Orchestrator] Initializing completion detectors for {len(self.config.tasks)} tasks...")
         for task in self.config.tasks:
             print(f"[Orchestrator] Task: {task.name}, criteria type: {task.completion_criteria.type}")
-            if task.completion_criteria.type != "position":
+            if task.completion_criteria.type != "position" and task.task_type != "position_sequence":
                 self.completion_detectors[task.name] = TaskCompletionDetector(
                     task.completion_criteria
                 )
@@ -295,7 +295,7 @@ class TaskAgentOrchestrator:
 
         # 5. Initialize completion detectors
         for task in self.config.tasks:
-            if task.completion_criteria.type != "position":
+            if task.completion_criteria.type != "position" and task.task_type != "position_sequence":
                 self.completion_detectors[task.name] = TaskCompletionDetector(
                     task.completion_criteria
                 )
@@ -1037,6 +1037,10 @@ class TaskAgentOrchestrator:
         if task.task_type == "position":
             return self._execute_position_task(task)
 
+        # Handle position_sequence tasks (multi-step position movement)
+        if task.task_type == "position_sequence":
+            return self._execute_position_sequence_task(task)
+
         # Handle policy tasks (existing logic)
         # Switch cameras for this task
         self._switch_cameras_for_task(task)
@@ -1323,6 +1327,73 @@ class TaskAgentOrchestrator:
             # Without these, it resets duration to 0.0 regardless of the passed value.
             start_time=start_time,
             end_time=start_time + duration,
+        )
+
+    def _execute_position_sequence_task(self, task: TaskConfig) -> TaskResult:
+        """Execute a position_sequence task - move joints through multiple positions sequentially.
+
+        Each step in the sequence is executed as a sub-task using _execute_position_task().
+        If any step fails, the entire sequence fails and subsequent steps are skipped.
+
+        Args:
+            task: Task configuration with steps list containing PositionSequenceStep objects.
+
+        Returns:
+            TaskResult with aggregated execution outcome.
+        """
+        import time
+
+        logger.info(f"Executing position_sequence task: {task.name} ({len(task.steps)} steps)")
+
+        total_duration = 0.0
+        start_time = time.time()
+
+        for i, step in enumerate(task.steps):
+            step_name = step.name or f"step_{i + 1}"
+            logger.info(f"  Step {i + 1}/{len(task.steps)}: {step_name}")
+
+            # Create a temporary TaskConfig for this step, reusing _execute_position_task
+            from lerobot.tasks.config import CompletionCriteria
+            step_task = TaskConfig(
+                name=f"{task.name}/{step_name}",
+                task_type="position",
+                max_duration=step.max_duration,
+                max_retries=1,
+                completion_criteria=CompletionCriteria(
+                    type="position",
+                    target_joint_positions=step.position,
+                    position_tolerance=step.position_tolerance,
+                ),
+            )
+
+            result = self._execute_position_task(step_task)
+            total_duration += result.duration or 0.0
+
+            if result.status != TaskStatus.COMPLETED:
+                logger.warning(f"Step {step_name} failed: {result.error_message}")
+                return TaskResult(
+                    task_name=task.name,
+                    status=result.status,
+                    duration=time.time() - start_time,
+                    error_message=f"Step '{step_name}' failed: {result.error_message}",
+                    collision_detected=result.collision_detected,
+                    attempts=1,
+                    start_time=start_time,
+                    end_time=time.time(),
+                )
+
+        logger.info(
+            f"Position_sequence task completed: {task.name} -> "
+            f"status=completed, duration={time.time() - start_time:.1f}s"
+        )
+
+        return TaskResult(
+            task_name=task.name,
+            status=TaskStatus.COMPLETED,
+            duration=time.time() - start_time,
+            attempts=1,
+            start_time=start_time,
+            end_time=time.time(),
         )
 
     def _cleanup(self):

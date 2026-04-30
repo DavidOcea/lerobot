@@ -1,0 +1,595 @@
+# AGV + Robot Combined Task Configuration (Named Position Style)
+#
+# ABCD workflow: Complete 4-station pick-place cycle with two sub-cycles:
+# Sub-cycle 1: Pick A(policy) → Home → AGV→B → Place B → Home → AGV→C → Pickup C → Home_pickup → AGV→D → Place D(trunk=45°) → Home → AGV→A
+# Sub-cycle 2: Pick A(policy) → Home → AGV→B → Place B → Home → AGV→C → Pickup C → Home_pickup → AGV→D → Place D2(trunk=38°) → Home → AGV→A
+# max_cycles repeats the entire sequence.
+#
+# NOTE: Gripper joints (joint_7) temporarily removed
+
+# ========== Named Positions ==========
+named_positions:
+  home:
+    left_arm_joint_1: -40.3
+    left_arm_joint_2: -4.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 11.8
+    right_arm_joint_1: 40.3
+    right_arm_joint_2: 4.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -11.8
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  home_pickup_C:
+    left_arm_joint_1: -40.3
+    left_arm_joint_2: -2.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 13.9
+    right_arm_joint_1: 40.3
+    right_arm_joint_2: 2.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 56.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -13.9
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_C_approach:
+    left_arm_joint_1: -24.3
+    left_arm_joint_2: -4.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 4.0
+    right_arm_joint_1: 22.3
+    right_arm_joint_2: 4.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -4.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_C_grip:
+    left_arm_joint_1: -24.3
+    left_arm_joint_2: -2.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 12.5
+    right_arm_joint_1: 22.3
+    right_arm_joint_2: 2.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -12.5
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  place_B_approach:
+    left_arm_joint_1: -52.3
+    left_arm_joint_2: -4.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 11.8
+    right_arm_joint_1: 52.3
+    right_arm_joint_2: 4.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -11.8
+    trunk_joint_1: 0.0
+    trunk_joint_2: 45.0
+
+  place_B_grip:
+    left_arm_joint_1: -52.3
+    left_arm_joint_2: -14.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 11.8
+    right_arm_joint_1: 52.3
+    right_arm_joint_2: 14.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -11.8
+    trunk_joint_1: 0.0
+    trunk_joint_2: 45.0
+
+  place_D_approach:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -2.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -37.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 13.9
+    right_arm_joint_1: 65.3
+    right_arm_joint_2: 2.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 35.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -13.9
+    trunk_joint_1: 0.0
+    trunk_joint_2: 45.0
+
+  place_D_grip:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -9.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -37.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 10.0
+    right_arm_joint_1: 65.3
+    right_arm_joint_2: 9.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 35.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -10.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 45.0
+
+  place_D2_approach:
+    left_arm_joint_1: -52.3
+    left_arm_joint_2: -2.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 13.9
+    right_arm_joint_1: 52.3
+    right_arm_joint_2: 2.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 56.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -13.9
+    trunk_joint_1: 0.0
+    trunk_joint_2: 38.0
+
+  place_D2_grip:
+    left_arm_joint_1: -52.3
+    left_arm_joint_2: -9.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 10.0
+    right_arm_joint_1: 52.3
+    right_arm_joint_2: 9.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 56.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -10.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 38.0
+
+# ========== AGV Global Configuration ==========
+agv_config:
+  enabled: true
+  host: "192.168.2.210"
+  port: 19204
+  connection_timeout: 5.0
+  read_timeout: 2.0
+  auto_reconnect: true
+  auto_disconnect_after_task: false
+  emergency_stop_enabled: true
+  check_arm_before_move: true
+  station_map:
+    station_A: [0.168, 0.029, 0.650]
+    station_B: [5.0, 0.0, 0.0]
+  default_arm_safe_positions:
+    left_arm_joint_1: 5.0
+    left_arm_joint_2: 5.0
+    left_arm_joint_3: 5.0
+    left_arm_joint_4: 5.0
+    left_arm_joint_5: 5.0
+    left_arm_joint_6: 5.0
+    right_arm_joint_1: 5.0
+    right_arm_joint_2: 5.0
+    right_arm_joint_3: 5.0
+    right_arm_joint_4: 5.0
+    right_arm_joint_5: 5.0
+    right_arm_joint_6: 5.0
+    trunk_joint_1: 3.0
+    trunk_joint_2: 3.0
+
+# ========== Robot Configuration ==========
+robot_config:
+  type: "supre_robot_follower"
+  control_frequency: 50
+  prometheus_port: 8000
+  max_relative_joint_move: 2.0
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
+  cameras:
+    head_cam:
+      type: opencv
+      index: 0
+      width: 640
+      height: 480
+      fps: 30
+    left_wrist_cam:
+      type: opencv
+      index: 2
+      width: 640
+      height: 480
+      fps: 30
+    right_wrist_cam:
+      type: opencv
+      index: 4
+      width: 640
+      height: 480
+      fps: 30
+
+# ========== Collision Detection ==========
+collision_config:
+  collision_threshold: 2.0
+  detection_window: 5
+  adaptive_mode: true
+  velocity_compensation: true
+  auto_calibrate: true
+  calibration_samples: 20
+
+# ========== Monitoring ==========
+monitoring_config:
+  log_level: "INFO"
+  enable_prometheus: false
+  prometheus_port: 9090
+
+# ========== Task Sequence ==========
+# Sub-cycle 1: Pick A(policy) → Home → AGV→B → Place B → Home → AGV→C → Pickup C → Home_pickup → AGV→D → Place D(trunk=45°) → Home → AGV→A
+# Sub-cycle 2: Same but Place D2(trunk=38°) instead of Place D
+
+tasks:
+  # ===== Sub-cycle 1 =====
+
+  - name: "pick_at_station_A"
+    task_type: "policy"
+    policy_path: "/home/t/workspace/dc_dir/models/act_0421_1/checkpoints/120000/pretrained_model"
+    policy_type: "act"
+    max_duration: 6.0
+    max_retries: 1
+    enabled: true
+    cameras:
+      - name: "head_cam"
+        type: "opencv"
+        index: 0
+        width: 640
+        height: 480
+        fps: 30
+    completion_criteria:
+      type: "composite"
+      conditions:
+        - type: "stability"
+          stability_window: 5
+          stability_tolerance: 0.05
+
+  - name: "arm_home_after_pick_A"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  - name: "agv_to_station_B"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM7"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "place_at_station_B"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "approach"
+        position: place_B_approach
+        max_duration: 10.0
+        position_tolerance: 3.0
+      - name: "grip"
+        position: place_B_grip
+        max_duration: 10.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_place_B"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  - name: "agv_to_station_C"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "AP10"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "pickup_at_station_C"
+    task_type: "position_sequence"
+    max_duration: 18.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "approach"
+        position: pickup_C_approach
+        max_duration: 10.0
+        position_tolerance: 3.0
+      - name: "grip"
+        position: pickup_C_grip
+        max_duration: 8.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_pickup_C"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home_pickup_C
+      position_tolerance: 3.0
+
+  - name: "agv_to_station_D"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "AP11"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "place_at_station_D"
+    task_type: "position_sequence"
+    max_duration: 13.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "approach"
+        position: place_D_approach
+        max_duration: 10.0
+        position_tolerance: 3.0
+      - name: "grip"
+        position: place_D_grip
+        max_duration: 3.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_place_D"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  # Return to A for sub-cycle 2
+  - name: "agv_return_to_station_A"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM8"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # ===== Sub-cycle 2 =====
+
+  - name: "pick_at_station_A2"
+    task_type: "policy"
+    policy_path: "/home/t/workspace/dc_dir/models/act_0421_1/checkpoints/120000/pretrained_model"
+    policy_type: "act"
+    max_duration: 6.0
+    max_retries: 1
+    enabled: true
+    cameras:
+      - name: "head_cam"
+        type: "opencv"
+        index: 0
+        width: 640
+        height: 480
+        fps: 30
+    completion_criteria:
+      type: "composite"
+      conditions:
+        - type: "stability"
+          stability_window: 5
+          stability_tolerance: 0.05
+
+  - name: "arm_home_after_pick_A2"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  - name: "agv_to_station_B2"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM7"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "place_at_station_B2"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "approach"
+        position: place_B_approach
+        max_duration: 10.0
+        position_tolerance: 3.0
+      - name: "grip"
+        position: place_B_grip
+        max_duration: 10.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_place_B2"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  - name: "agv_to_station_C2"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "AP10"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "pickup_at_station_C2"
+    task_type: "position_sequence"
+    max_duration: 18.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "approach"
+        position: pickup_C_approach
+        max_duration: 10.0
+        position_tolerance: 3.0
+      - name: "grip"
+        position: pickup_C_grip
+        max_duration: 8.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_pickup_C2"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home_pickup_C
+      position_tolerance: 3.0
+
+  - name: "agv_to_station_D2"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "AP11"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "place_at_station_D2"
+    task_type: "position_sequence"
+    max_duration: 13.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "approach"
+        position: place_D2_approach
+        max_duration: 10.0
+        position_tolerance: 3.0
+      - name: "grip"
+        position: place_D2_grip
+        max_duration: 3.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_place_D2"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  # Final return to A for next cycle
+  - name: "agv_return_to_station_A2"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM8"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+# ========== Cycle Execution Settings ==========
+max_cycles: 5
+cycle_delay: 3.0
+enable_cycle_prompt: true
+environment_dt: 1.0 / 30.0
+observation_timeout: 5.0
+action_timeout: 5.0
+reset_duration: 3.0
+reset_positions: {}
