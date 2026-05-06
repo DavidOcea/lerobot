@@ -51,15 +51,14 @@ from lerobot.utils.utils import get_safe_torch_device, init_logging
 class EvalResidualConfig:
     """Configuration for residual RL inference."""
 
+    # Policies (required, no defaults - must come first)
+    base_policy_checkpoint: str  # ACT model checkpoint path
+    td3_checkpoint: str  # TD3 checkpoint dir (e.g., "outputs/residual/phase2/checkpoints/best")
+
     # Env config
     env_config_path: str | None = None  # Path to env YAML config
     env_config: HILSerlRobotEnvConfig | None = None  # Or direct config
-
-    # Policies
-    base_policy_checkpoint: str  # ACT model checkpoint path
     base_policy_config_path: str | None = None  # Optional ACT config.json path
-
-    td3_checkpoint: str  # TD3 checkpoint dir (e.g., "outputs/residual/phase2/checkpoints/best")
     normalization_dir: str | None = None  # Auto-derived from td3_checkpoint if None
 
     # Inference parameters
