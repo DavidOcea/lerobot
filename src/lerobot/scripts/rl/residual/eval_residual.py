@@ -164,7 +164,7 @@ def resolve_td3_checkpoint(cfg: EvalResidualConfig) -> tuple[str, str]:
         return str(td3_path), "best"
 
 
-@draccus.cli()
+@draccus.wrap()
 def run_residual_inference(cfg: EvalResidualConfig):
     """Run trained residual RL policy on real robot (deterministic, no exploration noise)."""
     init_logging()
