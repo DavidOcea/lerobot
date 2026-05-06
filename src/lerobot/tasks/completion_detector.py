@@ -434,7 +434,7 @@ class TaskCompletionDetector:
 
         # Get parameters from condition
         stability_window = condition.get("stability_window", 10)
-        stability_tolerance = condition.get("stability_tolerance", 0.005)
+        stability_tolerance = condition.get("stability_tolerance", 0.05)
 
         # Check if buffer has enough data
         if len(self._position_buffer) < stability_window:

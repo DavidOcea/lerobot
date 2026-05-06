@@ -160,8 +160,8 @@ class ActionPostProcessor:
             elif joint_name in raw_action:
                 action_positions[joint_name] = float(raw_action[joint_name])
             else:
-                # Use previous value if not present
-                action_positions[joint_name] = self._previous_action.get(joint_name, 0.0)
+                # Use previous value if not present, default to 0.0 if no previous action yet
+                action_positions[joint_name] = self._previous_action.get(joint_name, 0.0) if self._previous_action is not None else 0.0
 
         # Update timing
         current_time = time.time()
