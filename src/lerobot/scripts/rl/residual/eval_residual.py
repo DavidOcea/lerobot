@@ -73,8 +73,12 @@ def make_policy_from_checkpoint(
     checkpoint_path: str,
     config_path: str | None,
     device: torch.device,
+    env_config: "HILSerlRobotEnvConfig | None" = None,
 ) -> ACTPolicy:
-    """Load ACT policy from checkpoint."""
+    """Load ACT policy from checkpoint.
+
+    If checkpoint config.json lacks input_features, derives them from env_config.features.
+    """
     import json
     from safetensors.torch import load_file
 
@@ -100,6 +104,8 @@ def make_policy_from_checkpoint(
         'type',
     }
 
+    config = None
+
     if config_file.exists():
         with open(config_file, 'r') as f:
             config_dict = json.load(f)
@@ -113,6 +119,14 @@ def make_policy_from_checkpoint(
                 ft_shape = tuple(ft_dict['shape'])
                 input_features[key] = PolicyFeature(type=ft_type, shape=ft_shape)
             config_dict['input_features'] = input_features
+        elif env_config and env_config.features:
+            # Derive input_features from env config (STATE + VISUAL keys only)
+            input_features = {}
+            for key, feat in env_config.features.items():
+                if feat.type in (FeatureType.STATE, FeatureType.VISUAL):
+                    input_features[key] = PolicyFeature(type=feat.type, shape=tuple(feat.shape))
+            config_dict['input_features'] = input_features
+            logging.info(f"Derived input_features from env_config: {list(input_features.keys())}")
 
         if 'output_features' in config_dict:
             output_features = {}
@@ -120,6 +134,12 @@ def make_policy_from_checkpoint(
                 ft_type = FeatureType(ft_dict['type'])
                 ft_shape = tuple(ft_dict['shape'])
                 output_features[key] = PolicyFeature(type=ft_type, shape=ft_shape)
+            config_dict['output_features'] = output_features
+        elif env_config and env_config.features:
+            output_features = {}
+            for key, feat in env_config.features.items():
+                if feat.type == FeatureType.ACTION:
+                    output_features[key] = PolicyFeature(type=feat.type, shape=tuple(feat.shape))
             config_dict['output_features'] = output_features
 
         if 'normalization_mapping' in config_dict:
@@ -131,15 +151,28 @@ def make_policy_from_checkpoint(
         try:
             config = ACTConfig(**config_dict)
         except TypeError as e:
-            logging.warning(f"Config loading failed: {e}. Using default config.")
-            config = ACTConfig()
+            logging.warning(f"Config loading failed: {e}. Will build from env_config.")
     elif config_path:
         import yaml
         with open(config_path, 'r') as f:
             config_dict = yaml.safe_load(f)
-        config = ACTConfig(**config_dict)
-    else:
-        config = ACTConfig()
+        try:
+            config = ACTConfig(**config_dict)
+        except TypeError as e:
+            logging.warning(f"Config path loading failed: {e}.")
+
+    if config is None or (not config.input_features and env_config):
+        # Build ACTConfig from env_config.features when checkpoint config is missing/incomplete
+        logging.info("Building ACTConfig from env_config.features...")
+        input_features = {}
+        for key, feat in env_config.features.items():
+            if feat.type in (FeatureType.STATE, FeatureType.VISUAL):
+                input_features[key] = PolicyFeature(type=feat.type, shape=tuple(feat.shape))
+        output_features = {}
+        for key, feat in env_config.features.items():
+            if feat.type == FeatureType.ACTION:
+                output_features[key] = PolicyFeature(type=feat.type, shape=tuple(feat.shape))
+        config = ACTConfig(input_features=input_features, output_features=output_features)
 
     policy = ACTPolicy(config)
 
@@ -207,6 +240,7 @@ def run_residual_inference(cfg: EvalResidualConfig):
         checkpoint_path=cfg.base_policy_checkpoint,
         config_path=cfg.base_policy_config_path,
         device=device,
+        env_config=env_config,
     )
     base_policy.eval()
     for param in base_policy.parameters():
