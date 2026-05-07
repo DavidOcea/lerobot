@@ -41,7 +41,7 @@ from lerobot.tasks.config import (
     load_config_from_yaml,
 )
 from lerobot.trajectory.generator import TrajectoryGenerator
-from lerobot.trajectory.noise import add_noise_to_action
+from lerobot.trajectory.noise import add_noise_to_action, SmoothNoiseGenerator
 from lerobot.utils.control_utils import is_headless
 from lerobot.utils.robot_utils import busy_wait
 from lerobot.utils.utils import init_logging, log_say
@@ -57,6 +57,7 @@ class NoiseConfig:
     noise_std: float = 1.5  # Standard deviation in degrees
     noise_seed: int | None = None  # Base seed; episode i uses base_seed + i. None = random per episode
     skip_keys: list[str] = field(default_factory=lambda: ["joint_7"])  # Substrings matching these get no noise (gripper)
+    noise_mode: str = "ou"  # "ou" (Ornstein-Uhlenbeck smooth) or "white" (i.i.d. Gaussian)
 
 
 @dataclass
@@ -252,8 +253,12 @@ def collect_frame_loop(
     rng: np.random.Generator,
     events: dict[str, bool],
     cfg: CollectTrajectoryConfig,
+    noise_gen: SmoothNoiseGenerator | None = None,
 ) -> bool:
     """Execute one episode of trajectory collection with noise and recording.
+
+    Args:
+        noise_gen: SmoothNoiseGenerator for OU mode. None = use white noise.
 
     Returns:
         True if episode was saved, False if discarded.
@@ -278,9 +283,12 @@ def collect_frame_loop(
             actual_timestamp = frame_index / fps
 
         # 2. Add noise to base action
-        noisy_action = add_noise_to_action(
-            base_action, noise_cfg.noise_std, rng, noise_cfg.skip_keys
-        )
+        if noise_gen is not None:
+            noisy_action = noise_gen.perturb(base_action)
+        else:
+            noisy_action = add_noise_to_action(
+                base_action, noise_cfg.noise_std, rng, noise_cfg.skip_keys
+            )
 
         # 3. Apply correction (stub: passthrough)
         final_action = corrector.correct(noisy_action, events=events)
@@ -457,12 +465,24 @@ def collect_trajectory(cfg: CollectTrajectoryConfig):
         if cfg.noise.noise_seed is not None:
             episode_seed = cfg.noise.noise_seed + episode_idx
             rng = np.random.default_rng(episode_seed)
-            logging.info(f"Episode {episode_idx + 1}: seed={episode_seed}")
+            logging.info(f"Episode {episode_idx + 1}: seed={episode_seed}, mode={cfg.noise.noise_mode}")
         else:
             rng = np.random.default_rng()
-            logging.info(f"Episode {episode_idx + 1}: random seed")
+            logging.info(f"Episode {episode_idx + 1}: random seed, mode={cfg.noise.noise_mode}")
 
         corrector.reset()
+
+        # Create noise generator for OU mode
+        noise_gen = None
+        if cfg.noise.noise_mode == "ou":
+            all_keys = list(full_trajectory[0].keys())
+            noise_gen = SmoothNoiseGenerator(
+                all_keys=all_keys,
+                noise_std=cfg.noise.noise_std,
+                skip_keys=cfg.noise.skip_keys,
+                rng=rng,
+                fps=cfg.dataset.fps,
+            )
 
         # Move robot to trajectory start position
         log_say(f"Episode {episode_idx + 1}, resetting to start", cfg.play_sounds, blocking=False)
@@ -482,6 +502,7 @@ def collect_trajectory(cfg: CollectTrajectoryConfig):
             rng=rng,
             events=events,
             cfg=cfg,
+            noise_gen=noise_gen,
         )
 
         episode_idx += 1
