@@ -15,3 +15,16 @@
 from .camera import Camera
 from .configs import CameraConfig, ColorMode, Cv2Rotation
 from .utils import make_cameras_from_configs
+
+# Import camera config subclasses to register them with draccus ChoiceRegistry.
+# Without these imports, --robot.cameras.*.type choices like "opencv" won't be
+# recognized by draccus CLI dispatch.
+try:
+    from .opencv.configuration_opencv import OpenCVCameraConfig
+except ImportError:
+    pass
+
+try:
+    from .realsense.configuration_realsense import RealSenseCameraConfig
+except ImportError:
+    pass
