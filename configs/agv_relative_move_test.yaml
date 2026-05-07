@@ -154,7 +154,25 @@ tasks:
       retry_count: 1
       emergency_stop_on_error: true
 
-  # Step 5: 返回站点C
+  # Step 5: 左转90度
+  # turn_angle=90(逆时针90度), vw=30(角速度30度/秒)
+  - name: "agv_turn_left_90deg"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      turn_angle: 90.0           # 转动角度 90度 (正=逆时针/左转, 负=顺时针/右转)
+      turn_vw: 30.0              # 角速度 30度/秒
+      turn_mode: 0               # 默认模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  # Step 6: 返回站点C
   - name: "agv_return_to_station_C"
     task_type: "agv"
     max_duration: 60.0
