@@ -871,6 +871,195 @@ class SeerAGVController:
             logger.error(f"Failed to cancel navigation: {e}")
             return False
 
+    # ========== 相对移动API ==========
+
+    def translate(
+        self,
+        dist: float,
+        vx: float | None = None,
+        vy: float | None = None,
+        mode: int = 0,
+    ) -> bool:
+        """平动 — 以固定速度直线移动固定距离.
+
+        使用官方API: robot_task_translate_req (3055/0x0BEF), 端口19206.
+        AGV移动完dist距离后自动停止。
+
+        坐标系为机器人坐标系（AGV自身前后左右）:
+        - vx: 正=前进, 负=后退 (m/s)
+        - vy: 正=左移, 负=右移 (m/s)
+        - 如果vx和vy都有值，速度会合成
+
+        注意: 3055(平动)和3056(转动)不能同时进行。
+        下发平动指令会取消当前正在执行的导航任务。
+
+        Args:
+            dist: 移动距离 (米, 绝对值)
+            vx: 机器人坐标系X方向速度 (m/s, 正=前, 负=后)。缺省=0
+            vy: 机器人坐标系Y方向速度 (m/s, 正=左, 负=右)。缺省=0
+            mode: 0=里程模式(不需要定位精准, 但误差随距离增大),
+                  1=定位模式(需要定位稳定, 精度更高)
+
+        Returns:
+            True if translate started successfully
+        """
+        try:
+            data: dict = {"dist": dist, "mode": mode}
+            if vx is not None:
+                data["vx"] = vx
+            if vy is not None:
+                data["vy"] = vy
+
+            response = self._send_request(
+                self.PORT_NAVIGATION,
+                self.API_TRANSLATE,
+                data,
+            )
+
+            ret_code = response.get('ret_code', -1)
+            if ret_code == 0:
+                self._current_navigation_target = f"translate({dist}m)"
+                self._navigation_start_time = time.time()
+                direction = ""
+                if vx is not None:
+                    direction += f"vx={vx:.2f}(前/后) "
+                if vy is not None:
+                    direction += f"vy={vy:.2f}(左/右) "
+                logger.info(f"Translate started: dist={dist}m {direction}mode={mode}")
+                return True
+            else:
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.error(f"Translate failed: {error_msg}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to start translate: {e}")
+            return False
+
+    def turn(
+        self,
+        angle: float,
+        vw: float,
+        mode: int = 0,
+    ) -> bool:
+        """转动 — 以固定角速度旋转固定角度.
+
+        使用官方API: robot_task_turn_req (3056/0x0BF0), 端口19206.
+        AGV旋转完angle角度后自动停止。
+
+        Args:
+            angle: 旋转角度 (弧度, 绝对值, 可以大于2π)
+            vw: 旋转角速度 (rad/s, 正=逆时针, 负=顺时针)
+            mode: 0=里程模式, 1=定位模式
+
+        Returns:
+            True if turn started successfully
+        """
+        try:
+            data = {"angle": angle, "vw": vw, "mode": mode}
+
+            response = self._send_request(
+                self.PORT_NAVIGATION,
+                self.API_TURN,
+                data,
+            )
+
+            ret_code = response.get('ret_code', -1)
+            if ret_code == 0:
+                self._current_navigation_target = f"turn({angle:.2f}rad)"
+                self._navigation_start_time = time.time()
+                logger.info(f"Turn started: angle={angle:.2f}rad vw={vw:.2f}rad/s mode={mode}")
+                return True
+            else:
+                error_msg = response.get('err_msg', 'Unknown error')
+                logger.error(f"Turn failed: {error_msg}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to start turn: {e}")
+            return False
+
+    def wait_for_translate_complete(
+        self,
+        timeout: float = 30.0,
+        poll_interval: float = 0.5,
+    ) -> bool:
+        """等待平动完成 — AGV移动完距离后变为空闲状态.
+
+        Args:
+            timeout: 最大等待时间 (秒)
+            poll_interval: 状态轮询间隔 (秒)
+
+        Returns:
+            True if translate completed, False if timeout or error
+        """
+        start_time = time.time()
+        logger.info(f"Waiting for translate to complete (timeout={timeout}s)")
+
+        # Give a brief window for the task to start executing
+        time.sleep(1.0)
+
+        while time.time() - start_time < timeout:
+            status = self.get_status(use_cache=False)
+
+            # Translate completed: AGV returns to IDLE
+            if status.status_code == self.STATUS_IDLE and not status.is_moving:
+                elapsed = time.time() - start_time
+                logger.info(f"Translate completed in {elapsed:.1f}s")
+                self._current_navigation_target = None
+                return True
+
+            # Error during translate
+            if status.error_code != 0:
+                logger.error(f"AGV error during translate: {status.error_code} - {status.error_message}")
+                self._current_navigation_target = None
+                return False
+
+            time.sleep(poll_interval)
+
+        logger.warning(f"Timeout waiting for translate to complete")
+        self._current_navigation_target = None
+        return False
+
+    def wait_for_turn_complete(
+        self,
+        timeout: float = 30.0,
+        poll_interval: float = 0.5,
+    ) -> bool:
+        """等待转动完成 — AGV旋转完角度后变为空闲状态.
+
+        Args:
+            timeout: 最大等待时间 (秒)
+            poll_interval: 状态轮询间隔 (秒)
+
+        Returns:
+            True if turn completed, False if timeout or error
+        """
+        start_time = time.time()
+        logger.info(f"Waiting for turn to complete (timeout={timeout}s)")
+
+        time.sleep(1.0)
+
+        while time.time() - start_time < timeout:
+            status = self.get_status(use_cache=False)
+
+            if status.status_code == self.STATUS_IDLE and not status.is_moving:
+                elapsed = time.time() - start_time
+                logger.info(f"Turn completed in {elapsed:.1f}s")
+                self._current_navigation_target = None
+                return True
+
+            if status.error_code != 0:
+                logger.error(f"AGV error during turn: {status.error_code} - {status.error_message}")
+                self._current_navigation_target = None
+                return False
+
+            time.sleep(poll_interval)
+
+        logger.warning(f"Timeout waiting for turn to complete")
+        self._current_navigation_target = None
+        return False
+
     # ========== 控制API ==========
 
     def stop(self) -> bool:
