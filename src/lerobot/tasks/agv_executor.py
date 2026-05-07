@@ -140,6 +140,13 @@ class AGVTaskExecutor:
         task_name: str,
         target_station: str | None = None,
         target_position: tuple[float, float, float] | None = None,
+        translate_dist: float | None = None,
+        translate_vx: float | None = None,
+        translate_vy: float | None = None,
+        translate_mode: int = 0,
+        turn_angle: float | None = None,
+        turn_vw: float | None = None,
+        turn_mode: int = 0,
         max_duration: float = 60.0,
         wait_for_arrival: bool = True,
         arrival_timeout: float = 60.0,
@@ -153,18 +160,30 @@ class AGVTaskExecutor:
     ) -> AGVExecutionResult:
         """执行AGV导航任务.
 
+        支持四种导航模式 (互斥):
+        1. 站点导航: target_station → move_to_station
+        2. 坐标导航: target_position → move_to_position
+        3. 相对平移: translate_dist → translate + wait_for_translate_complete
+        4. 相对转动: turn_angle → turn + wait_for_turn_complete
+
         Args:
             task_name: 任务名称 (用于日志)
-            target_station: 目标站点ID (优先使用)
-            target_position: 目标坐标 (x, y, theta) (备选)
+            target_station: 目标站点ID (模式1)
+            target_position: 目标坐标 (x, y, theta) (模式2)
+            translate_dist: 平移距离(米), 正=前进, 负=后退 (模式3)
+            translate_vx: 平移X方向速度(米/秒)
+            translate_vy: 平移Y方向速度(米/秒)
+            translate_mode: 平移模式 (0=默认)
+            turn_angle: 转动角度(度), 正=逆时针, 负=顺时针 (模式4)
+            turn_vw: 转动角速度(度/秒)
+            turn_mode: 转动模式 (0=默认)
             max_duration: 最大执行时间
             wait_for_arrival: 是否等待到达完成
             arrival_timeout: 到达等待超时
             arrival_tolerance: 距离容差 (米)
             check_arm_safe: 是否检查机械臂安全位置
-            arm_safe_positions: 安全偏差阈值字典 {joint_name: max_deviation}
-            arm_home_positions: home位置字典 {joint_name: home_position}
-                              如果为None，使用默认home位置
+            arm_safe_positions: 安全偏差阈值字典
+            arm_home_positions: home位置字典
             retry_on_timeout: 超时是否重试
             retry_count: 重试次数
             emergency_stop_on_error: 异常时是否急停
@@ -238,16 +257,42 @@ class AGVTaskExecutor:
             navigation_success = False
             target_desc = ""
 
+            # Determine navigation mode
+            nav_mode = "unknown"
+            if target_station:
+                nav_mode = "station"
+            elif target_position:
+                nav_mode = "position"
+            elif translate_dist is not None:
+                nav_mode = "translate"
+            elif turn_angle is not None:
+                nav_mode = "turn"
+
             for attempt in range(retry_count + 1):
-                if target_station:
+                if nav_mode == "station":
                     navigation_success = self.agv.move_to_station(target_station)
                     target_desc = f"station={target_station}"
-                elif target_position:
+                elif nav_mode == "position":
                     x, y, theta = target_position
                     navigation_success = self.agv.move_to_position(x, y, theta)
                     target_desc = f"position=({x:.2f}, {y:.2f})"
+                elif nav_mode == "translate":
+                    navigation_success = self.agv.translate(
+                        dist=translate_dist,
+                        vx=translate_vx,
+                        vy=translate_vy,
+                        mode=translate_mode,
+                    )
+                    target_desc = f"translate={translate_dist}m"
+                elif nav_mode == "turn":
+                    navigation_success = self.agv.turn(
+                        angle=turn_angle,
+                        vw=turn_vw or 30.0,
+                        mode=turn_mode,
+                    )
+                    target_desc = f"turn={turn_angle}°"
                 else:
-                    result.error = "No target specified (neither station nor position)"
+                    result.error = "No navigation target specified"
                     return result
 
                 if navigation_success:
@@ -268,19 +313,29 @@ class AGVTaskExecutor:
             if wait_for_arrival:
                 arrived = False
 
-                if target_station:
+                if nav_mode == "station":
                     arrived = self.agv.wait_for_arrival(
                         target_station,
                         timeout=arrival_timeout,
                         tolerance=arrival_tolerance,
                         wait_for_orientation=True,  # 等待姿态调整完成(旋转到位)
                     )
-                elif target_position:
+                elif nav_mode == "position":
                     x, y, theta = target_position
                     arrived = self._wait_for_position(
                         x, y,
                         timeout=arrival_timeout,
                         tolerance=arrival_tolerance,
+                    )
+                elif nav_mode == "translate":
+                    arrived = self.agv.wait_for_translate_complete(
+                        timeout=arrival_timeout,
+                        poll_interval=0.5,
+                    )
+                elif nav_mode == "turn":
+                    arrived = self.agv.wait_for_turn_complete(
+                        timeout=arrival_timeout,
+                        poll_interval=0.5,
                     )
 
                 if not arrived:

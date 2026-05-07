@@ -69,35 +69,83 @@ class CameraConfig:
 class AGVTaskConfig:
     """AGV移动任务配置.
 
-    用于定义AGV导航任务，支持站点导航和坐标导航两种模式。
+    用于定义AGV导航任务，支持三种导航模式:
+    1. 站点导航: target_station (导航到指定站点ID)
+    2. 坐标导航: target_position (导航到指定坐标)
+    3. 相对移动: translate_dist / turn_angle (平移/转动指定距离/角度)
+    三种模式互斥，只能指定一种。
     """
 
-    # 目标定义 (二选一)
+    # ===== 模式1: 站点导航 =====
     target_station: str | None = None  # 目标站点ID
+
+    # ===== 模式2: 坐标导航 =====
     target_position: tuple[float, float, float] | None = None  # (x, y, theta) 米/弧度
 
-    # 执行参数
+    # ===== 模式3: 相对移动 =====
+    translate_dist: float | None = None  # 平移距离绝对值 (米), 方向由vx/vy决定
+    translate_vx: float | None = None  # X方向速度 (米/秒), 正=前进, 负=后退
+    translate_vy: float | None = None  # Y方向速度 (米/秒), 正=左移, 负=右移
+    translate_mode: int = 0  # 平移模式 (0=默认)
+    turn_angle: float | None = None  # 转动角度 (度), 正=逆时针, 负=顺时针
+    turn_vw: float | None = None  # 转动角速度 (度/秒)
+    turn_mode: int = 0  # 转动模式 (0=默认)
+
+    # ===== 执行参数 =====
     max_duration: float = 60.0  # 最大执行时间 (秒)
     wait_for_arrival: bool = True  # 是否等待到达完成
     arrival_timeout: float = 60.0  # 到达等待超时 (秒)
 
-    # 到达判定
+    # ===== 到达判定 =====
     arrival_tolerance: float = 0.3  # 距离容差 (米)
     station_match_required: bool = True  # 必须站点ID匹配才算到达
 
-    # 安全检查
+    # ===== 安全检查 =====
     check_arm_safe_position: bool = True  # 移动前检查机械臂是否在安全位置
     arm_safe_positions: dict[str, float] = field(default_factory=dict)  # 安全位置阈值
 
-    # 错误处理
+    # ===== 错误处理 =====
     retry_on_timeout: bool = True  # 超时是否重试
     retry_count: int = 2  # 重试次数
     emergency_stop_on_error: bool = True  # 异常时急停
 
     def validate(self) -> bool:
-        """验证配置有效性."""
-        if self.target_station is None and self.target_position is None:
-            raise ValueError("AGVTaskConfig: Must specify either target_station or target_position")
+        """验证配置有效性.
+
+        三种导航模式互斥: target_station, target_position, translate_dist/turn_angle
+        只能指定一种。
+        """
+        # Determine which navigation mode is specified
+        has_station = self.target_station is not None
+        has_position = self.target_position is not None
+        has_translate = self.translate_dist is not None
+        has_turn = self.turn_angle is not None
+        modes_count = sum([has_station, has_position, has_translate, has_turn])
+
+        if modes_count == 0:
+            raise ValueError(
+                "AGVTaskConfig: Must specify one of: target_station, "
+                "target_position, translate_dist, or turn_angle"
+            )
+        if modes_count > 1:
+            raise ValueError(
+                f"AGVTaskConfig: Navigation modes are mutually exclusive. "
+                f"Found {modes_count} modes specified, but only 1 allowed. "
+                f"Choose one: target_station={self.target_station}, "
+                f"target_position={self.target_position}, "
+                f"translate_dist={self.translate_dist}, "
+                f"turn_angle={self.turn_angle}"
+            )
+
+        # Mode-specific validation
+        if has_translate:
+            if self.translate_dist <= 0:
+                raise ValueError(f"AGVTaskConfig: translate_dist must be positive (absolute value), got {self.translate_dist}")
+        if has_turn:
+            if self.turn_angle == 0:
+                raise ValueError("AGVTaskConfig: turn_angle cannot be zero")
+
+        # Common validation
         if self.max_duration <= 0:
             raise ValueError("AGVTaskConfig: max_duration must be positive")
         if self.arrival_timeout <= 0:

@@ -1,0 +1,181 @@
+# AGV Relative Movement Test: station C → backward 20cm → left 20cm → return to C
+#
+# 测试平动和转动API的相对移动功能:
+# 1. AGV导航到站点C (AP10)
+# 2. 后退20cm (translate, vx负=后退)
+# 3. 左移20cm (translate, vy正=左移)
+# 4. 返回站点C (station navigation)
+#
+# 注意: 平动API(3055)的dist为绝对值, 方向由vx/vy符号决定:
+#   vx正=前进, vx负=后退
+#   vy正=左移, vy负=右移
+
+# ========== Named Positions ==========
+named_positions:
+  home:
+    left_arm_joint_1: -40.3
+    left_arm_joint_2: -4.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 11.8
+    right_arm_joint_1: 40.3
+    right_arm_joint_2: 4.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -11.8
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+# ========== AGV Global Configuration ==========
+agv_config:
+  enabled: true
+  host: "192.168.2.210"
+  port: 19204
+  connection_timeout: 5.0
+  read_timeout: 2.0
+  auto_reconnect: true
+  auto_disconnect_after_task: false
+  emergency_stop_enabled: true
+  check_arm_before_move: true
+  station_map:
+    station_A: [0.168, 0.029, 0.650]
+    station_B: [5.0, 0.0, 0.0]
+  default_arm_safe_positions:
+    left_arm_joint_1: 5.0
+    left_arm_joint_2: 5.0
+    left_arm_joint_3: 5.0
+    left_arm_joint_4: 5.0
+    left_arm_joint_5: 5.0
+    left_arm_joint_6: 5.0
+    right_arm_joint_1: 5.0
+    right_arm_joint_2: 5.0
+    right_arm_joint_3: 5.0
+    right_arm_joint_4: 5.0
+    right_arm_joint_5: 5.0
+    right_arm_joint_6: 5.0
+    trunk_joint_1: 3.0
+    trunk_joint_2: 3.0
+
+# ========== Robot Configuration ==========
+robot_config:
+  type: "supre_robot_follower"
+  control_frequency: 50
+  prometheus_port: 8000
+  max_relative_joint_move: 2.0
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
+  cameras:
+    head_cam:
+      type: opencv
+      index: 0
+      width: 640
+      height: 480
+      fps: 30
+
+# ========== Collision Detection ==========
+collision_config:
+  collision_threshold: 2.0
+  detection_window: 5
+  adaptive_mode: true
+  velocity_compensation: true
+  auto_calibrate: true
+  calibration_samples: 20
+
+# ========== Monitoring ==========
+monitoring_config:
+  log_level: "INFO"
+  enable_prometheus: false
+  prometheus_port: 9090
+
+# ========== Task Sequence ==========
+
+tasks:
+  # Step 1: 机械臂归位 (安全位置检查)
+  - name: "arm_home_before_move"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  # Step 2: AGV导航到站点C (AP10)
+  - name: "agv_to_station_C"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "AP10"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # Step 3: 后退20cm
+  # dist=0.2(绝对值), vx=-0.3(后退方向速度0.3m/s)
+  - name: "agv_backward_20cm"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.2      # 距离绝对值 0.2米
+      translate_vx: -0.3       # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  # Step 4: 左移20cm
+  # dist=0.2(绝对值), vy=0.3(左移方向速度0.3m/s)
+  - name: "agv_left_20cm"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.2      # 距离绝对值 0.2米
+      translate_vy: 0.3        # Y方向速度 0.3m/s (左移)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  # Step 5: 返回站点C
+  - name: "agv_return_to_station_C"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "AP10"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+# ========== Cycle Execution Settings ==========
+max_cycles: 1
+cycle_delay: 2.0
+enable_cycle_prompt: true
+environment_dt: 1.0 / 30.0
+observation_timeout: 5.0
+action_timeout: 5.0
+reset_duration: 3.0
+reset_positions: {}
