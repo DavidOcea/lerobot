@@ -296,6 +296,14 @@ def collect_frame_loop(
         # 4. Get observation BEFORE sending action
         observation = robot.get_observation()
 
+        # Flatten nested "images" dict for build_dataset_frame compatibility.
+        # get_observation() returns {"images": {"head_cam": img, ...}} but
+        # build_dataset_frame expects {"head_cam": img, ...} at top level.
+        if "images" in observation and isinstance(observation["images"], dict):
+            flat_obs = {k: v for k, v in observation.items() if k != "images"}
+            flat_obs.update(observation["images"])
+            observation = flat_obs
+
         # 5. Send action and get what robot actually received
         sent_action = robot.send_action(final_action)
 
