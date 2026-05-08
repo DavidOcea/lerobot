@@ -54,7 +54,8 @@ from lerobot.utils.utils import init_logging, log_say
 @dataclass
 class NoiseConfig:
     """Noise injection parameters for trajectory data collection."""
-    noise_std: float = 1.5  # Standard deviation in degrees
+    noise_std: float = 1.5  # Standard deviation in degrees (OU: sigma parameter)
+    noise_theta: float = 2.0  # OU decay rate; higher = smoother, smaller peak offset. Half-life ≈ ln(2)/theta seconds
     noise_seed: int | None = None  # Base seed; episode i uses base_seed + i. None = random per episode
     skip_keys: list[str] = field(default_factory=lambda: ["joint_7"])  # Substrings matching these get no noise (gripper)
     noise_mode: str = "ou"  # "ou" (Ornstein-Uhlenbeck smooth) or "white" (i.i.d. Gaussian)
@@ -490,6 +491,7 @@ def collect_trajectory(cfg: CollectTrajectoryConfig):
                 skip_keys=cfg.noise.skip_keys,
                 rng=rng,
                 fps=cfg.dataset.fps,
+                theta=cfg.noise.noise_theta,
             )
 
         # Move robot to trajectory start position
