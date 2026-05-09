@@ -92,19 +92,34 @@ def detect_marker(
     K, d = _get_camera_params(config)
     marker_size_m = config.marker_size
 
-    # Estimate pose for all detected markers
-    rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(
-        corners, marker_size_m, K, d,
-    )
+    # Estimate pose using solvePnP (estimatePoseSingleMarkers removed in OpenCV 4.12+).
+    # AprilTag corner order: [top-left, top-right, bottom-right, bottom-left]
+    # The 3D object points are the marker's corners in its own coordinate frame
+    # (origin at marker center, marker_size side length, z=0 plane).
+    half = marker_size_m / 2.0
+    obj_points = np.array([
+        [-half, half, 0.0],   # top-left
+        [half, half, 0.0],    # top-right
+        [half, -half, 0.0],   # bottom-right
+        [-half, -half, 0.0],  # bottom-left
+    ], dtype=np.float32)
 
     # Find the target marker (or first visible one if marker_id is None)
     for i, marker_id in enumerate(ids.flatten()):
         if config.marker_id is None or marker_id == config.marker_id:
+            # solvePnP for this marker's corners
+            img_points = corners[i].reshape(4, 2).astype(np.float32)
+            success, rvec, tvec = cv2.solvePnP(
+                obj_points, img_points, K, d,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE,
+            )
+            if not success:
+                continue
             return {
                 "id": int(marker_id),
                 "corners": corners[i],
-                "rvec": rvecs[i][0],
-                "tvec": tvecs[i][0],
+                "rvec": rvec.flatten(),
+                "tvec": tvec.flatten(),
             }
 
     return None
