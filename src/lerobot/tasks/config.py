@@ -170,6 +170,49 @@ class PositionSequenceStep:
 
 
 @dataclass
+class VisualAlignConfig:
+    """视觉精调任务配置 — AprilTag 标记引导 AGV 微调对准.
+
+    流程: 检测 AprilTag → 解算位姿 → 先转向对准 → 再前进/后退 → 闭环验证收敛.
+    由于 Seer AGV 的 vy (左移) 不生效, 只使用 "转向+前后平移" 策略.
+    """
+
+    # ===== 标记配置 =====
+    marker_id: int | None = None  # 目标 AprilTag ID (None=搜索第一个可见标记)
+    marker_size: float = 0.10  # 标记物理边长 (米), 位姿解算必须知道
+    marker_family: str = "tag36h11"  # AprilTag 家族 (tag36h11, tag25h9, etc.)
+
+    # ===== 搜索配置 =====
+    search_turn_step: float = 10.0  # 搜索时每步转动角度 (度), 左转搜索
+    search_max_turn: float = 90.0  # 最大总搜索转动角度 (度)
+    search_max_attempts: int = 9  # 最大搜索步数 (90/10=9)
+
+    # ===== 精度配置 =====
+    position_tolerance: float = 0.02  # 位置收敛阈值 (米, 2cm)
+    angle_tolerance: float = 2.0  # 角度收敛阈值 (度)
+    max_iterations: int = 3  # 闭环最大迭代次数
+
+    # ===== AGV 微调速度 =====
+    translate_speed: float = 0.15  # 前进/后退微调速度 (m/s)
+    turn_speed: float = 15.0  # 转动微调速度 (度/s)
+    approach_distance: float = 0.50  # 目标接近距离 (米), 停在标记前方此距离处
+
+    # ===== 相机-AGV 坐标变换 =====
+    # 相机相对于 AGV 中心的偏移 (先用 (0,0,0) 近似, 闭环收敛弥补误差)
+    camera_offset_x: float = 0.0  # 相机在 AGV 前后方向的偏移 (米)
+    camera_offset_y: float = 0.0  # 相机在 AGV 左右方向的偏移 (米)
+    camera_offset_yaw: float = 0.0  # 相机朝向相对 AGV 朝向的偏转 (度)
+
+    # ===== 相机内参 (可选, None=用默认估算值) =====
+    camera_matrix: list | None = None  # 3x3 内参矩阵 (fx, fy, cx, cy), flat list
+    dist_coeffs: list | None = None  # 畸变系数 (k1, k2, p1, p2, k3)
+
+    # ===== 安全配置 =====
+    check_arm_safe_position: bool = True  # AGV 微调前检查机械臂安全位置
+    arm_safe_positions: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
 class TaskConfig:
     """Configuration for a single task in the execution sequence.
 
@@ -178,12 +221,13 @@ class TaskConfig:
     - "agv": Execute AGV navigation task
     - "position": Move robot to a single target joint position
     - "position_sequence": Move robot through a sequence of positions (sub-steps)
+    - "visual_align": Use camera + AprilTag to guide AGV fine alignment
     """
 
     name: str
 
     # 任务类型
-    task_type: Literal["policy", "agv", "position", "position_sequence"] = "policy"
+    task_type: Literal["policy", "agv", "position", "position_sequence", "visual_align"] = "policy"
 
     # Policy任务字段 (现有)
     policy_path: str | None = None
@@ -200,6 +244,9 @@ class TaskConfig:
     # Position sequence任务字段
     steps: list[PositionSequenceStep] = field(default_factory=list)
 
+    # Visual align任务字段
+    visual_align_config: VisualAlignConfig | None = None
+
     def validate(self) -> bool:
         """验证任务配置."""
         if self.task_type == "policy":
@@ -215,6 +262,9 @@ class TaskConfig:
         elif self.task_type == "position_sequence":
             if not self.steps:
                 raise ValueError(f"Task '{self.name}': steps required for position_sequence tasks")
+        elif self.task_type == "visual_align":
+            if self.visual_align_config is None:
+                raise ValueError(f"Task '{self.name}': visual_align_config required for visual_align tasks")
         return True
 
 
@@ -414,6 +464,17 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             total_steps_duration = sum(s.max_duration for s in steps)
             task_kwargs["max_duration"] = task_dict.get("max_duration", total_steps_duration)
             task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
+            task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+        # Add visual_align-specific fields
+        elif task_type == "visual_align":
+            va_config_dict = task_dict.get("visual_align_config", {})
+            # Inherit default arm_safe_positions if not specified
+            if default_arm_safe_positions and "arm_safe_positions" not in va_config_dict:
+                va_config_dict["arm_safe_positions"] = default_arm_safe_positions
+            task_kwargs["visual_align_config"] = VisualAlignConfig(**va_config_dict)
+            task_kwargs["max_duration"] = task_dict.get("max_duration", 30.0)
+            task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
             task_kwargs["enabled"] = task_dict.get("enabled", True)
 
         tasks.append(TaskConfig(**task_kwargs))
