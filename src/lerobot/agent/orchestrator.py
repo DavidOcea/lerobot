@@ -1041,6 +1041,10 @@ class TaskAgentOrchestrator:
         if task.task_type == "position_sequence":
             return self._execute_position_sequence_task(task)
 
+        # Handle visual_align tasks (AprilTag-guided AGV fine alignment)
+        if task.task_type == "visual_align":
+            return self._execute_visual_align_task(task)
+
         # Handle policy tasks (existing logic)
         # Switch cameras for this task
         self._switch_cameras_for_task(task)
@@ -1192,6 +1196,86 @@ class TaskAgentOrchestrator:
         )
 
         return result
+
+    def _execute_visual_align_task(self, task: TaskConfig) -> TaskResult:
+        """Execute a visual alignment task — AprilTag-guided AGV fine positioning.
+
+        Uses the head camera to detect an AprilTag marker, then iteratively
+        aligns the AGV via turn + translate until within tolerance.
+
+        Args:
+            task: Task configuration with visual_align_config.
+
+        Returns:
+            TaskResult with execution outcome.
+        """
+        import time
+        from lerobot.agent.visual_align import execute_visual_align
+        from lerobot.tasks.config import VisualAlignConfig
+
+        start_time = time.time()
+        logger.info(f"Executing visual_align task: {task.name}")
+
+        # Prerequisite checks
+        if not self.robot:
+            return TaskResult(
+                task_name=task.name, status=TaskStatus.SKIPPED,
+                duration=0.0, error_message="Robot not connected",
+            )
+        if not self.agv_controller or not self.agv_controller.is_connected():
+            return TaskResult(
+                task_name=task.name, status=TaskStatus.SKIPPED,
+                duration=0.0, error_message="AGV not connected",
+            )
+
+        va_config = task.visual_align_config
+        if va_config is None:
+            return TaskResult(
+                task_name=task.name, status=TaskStatus.FAILED,
+                duration=0.0, error_message="visual_align_config is None",
+            )
+
+        # Ensure head camera is enabled for detection
+        self._switch_cameras_for_task(task)
+
+        # Arm safety check before AGV movement
+        if va_config.check_arm_safe_position and self.robot:
+            safe_positions = va_config.arm_safe_positions
+            if not safe_positions and hasattr(self, 'agv_executor'):
+                # Inherit from global defaults
+                safe_positions = self.agv_executor.default_arm_safe_positions
+
+            current_pos = self.robot.get_current_position()
+            deviations = {}
+            for joint_name, threshold in (safe_positions or {}).items():
+                if joint_name in current_pos:
+                    actual = abs(current_pos[joint_name])
+                    deviations[joint_name] = f"pos={current_pos[joint_name]:.1f}°, threshold={threshold:.1f}°"
+
+            logger.info(f"Arm safety check: {deviations if deviations else 'no thresholds defined'}")
+
+        # Execute alignment
+        success, message = execute_visual_align(
+            robot=self.robot,
+            agv_controller=self.agv_controller,
+            config=va_config,
+            logger=logger,
+        )
+
+        duration = time.time() - start_time
+        status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
+
+        logger.info(
+            f"Visual align {task.name}: {status.value} "
+            f"(message: {message}, duration: {duration:.1f}s)"
+        )
+
+        return TaskResult(
+            task_name=task.name,
+            status=status,
+            duration=duration,
+            error_message=None if success else message,
+        )
 
     def _execute_position_task(self, task: TaskConfig) -> TaskResult:
         """Execute a position task - move joints directly to target positions.
