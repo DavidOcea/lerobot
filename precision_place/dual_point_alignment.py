@@ -1228,21 +1228,17 @@ class PrecisionPlaceController:
         if self.passive_mode:
             return False
 
-        joints = self.get_joint_states()
-        if joints is None or len(joints) < 16:
+        # 直接从机器人获取名称→值映射，避免16维/14维索引错位
+        pos_dict = self.robot.get_current_position()
+        if pos_dict is None:
             return False
 
-        initial_angle = joints[joint_idx]
-        # 16维joint_idx → observation_joint_names中的索引
         joint_name = self.joint_names.get(joint_idx, f"joint_{joint_idx}")
-        obs_idx = None
-        for i, name in enumerate(self.robot.observation_joint_names):
-            if name == joint_name:
-                obs_idx = i
-                break
-        if obs_idx is None:
-            print(f"⚠ 关节 {joint_name} 不在 observation_joint_names 中")
+        if joint_name not in pos_dict:
+            print(f"⚠ 关节 {joint_name} 不在机器人状态中")
             return False
+
+        initial_angle = float(pos_dict[joint_name])
 
         for step in range(1, steps + 1):
             alpha = step / steps
@@ -1250,9 +1246,11 @@ class PrecisionPlaceController:
 
             current_angle = initial_angle + (target_angle - initial_angle) * alpha
 
-            # 构建action格式 (使用obs索引)
-            action = {f"{name}.pos": float(joints[i]) for i, name in enumerate(self.robot.observation_joint_names)}
-            action[f"{self.robot.observation_joint_names[obs_idx]}.pos"] = float(current_angle)
+            # 构建action: 保持所有关节当前位置，只移动目标关节
+            action = {f"{name}.pos": float(pos_dict[name])
+                      for name in self.robot.observation_joint_names
+                      if name in pos_dict}
+            action[f"{joint_name}.pos"] = float(current_angle)
 
             self.robot.send_action(action)
             time.sleep(0.05)  # 每步50ms
