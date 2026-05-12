@@ -1233,6 +1233,16 @@ class PrecisionPlaceController:
             return False
 
         initial_angle = joints[joint_idx]
+        # 16维joint_idx → observation_joint_names中的索引
+        joint_name = self.joint_names.get(joint_idx, f"joint_{joint_idx}")
+        obs_idx = None
+        for i, name in enumerate(self.robot.observation_joint_names):
+            if name == joint_name:
+                obs_idx = i
+                break
+        if obs_idx is None:
+            print(f"⚠ 关节 {joint_name} 不在 observation_joint_names 中")
+            return False
 
         for step in range(1, steps + 1):
             alpha = step / steps
@@ -1240,9 +1250,9 @@ class PrecisionPlaceController:
 
             current_angle = initial_angle + (target_angle - initial_angle) * alpha
 
-            # 构建action格式
+            # 构建action格式 (使用obs索引)
             action = {f"{name}.pos": float(joints[i]) for i, name in enumerate(self.robot.observation_joint_names)}
-            action[f"{self.robot.observation_joint_names[joint_idx]}.pos"] = float(current_angle)
+            action[f"{self.robot.observation_joint_names[obs_idx]}.pos"] = float(current_angle)
 
             self.robot.send_action(action)
             time.sleep(0.05)  # 每步50ms
