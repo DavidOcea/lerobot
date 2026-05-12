@@ -96,6 +96,13 @@ class OrchestratorConfig(TasksOrchestratorConfig):
     enable_adaptive_scheduler: bool = True  # Use AdaptiveTaskScheduler for better performance
     gripper_config: dict | None = None  # Configuration for gripper force feedback
 
+    # Action smoothing settings (applied by AdaptiveTaskScheduler before send_action)
+    # Higher alpha = less smoothing = closer to raw policy output
+    # For ACT policy: "light" or "moderate" recommended
+    # For position_sequence: "medium" or "heavy" recommended
+    enable_action_smoothing: bool = True  # Enable/disable action post-processing
+    action_smoothing_level: str = "medium"  # "none","minimal","light","moderate","medium","heavy"
+
     # Robot reset settings
     reset_duration: float = 3.0  # Time in seconds for smooth reset to zero position
     reset_positions: dict[str, float] = field(default_factory=dict)  # Manual reset positions per joint (e.g., {"right_arm_joint_7": 0.5})

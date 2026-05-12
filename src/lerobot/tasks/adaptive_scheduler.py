@@ -61,7 +61,13 @@ class AdaptiveTaskScheduler:
             scheduler: Base LocalTaskScheduler instance
             gripper_config: Configuration for gripper force feedback
             enable_action_smoothing: Enable action post-processing for smooth motion
-            smoothing_level: Level of action smoothing ("low", "medium", "high")
+            smoothing_level: Level of action smoothing ("none", "minimal", "light", "moderate", "medium", "heavy")
+                - "none": passthrough, alpha=1.0, all limits disabled
+                - "minimal": alpha=0.95, velocity 8.0 deg/frame
+                - "light": alpha=0.9, velocity 6.0 deg/frame (recommended for ACT policy)
+                - "moderate": alpha=0.85, velocity 4.5 deg/frame, jerk limiting enabled
+                - "medium": alpha=0.7, velocity 3.0 deg/frame (default, good for position_sequence)
+                - "heavy": alpha=0.5, velocity 2.0 deg/frame, strong damping
             collision_detector_type: Type of collision detector to use
                 - "basic": Standard collision detector
                 - "enhanced": Enhanced with rate and immediate detection

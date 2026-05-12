@@ -242,6 +242,8 @@ class TaskAgentOrchestrator:
             self.task_scheduler = AdaptiveTaskScheduler(
                 scheduler=base_scheduler,
                 gripper_config=gripper_config or {},
+                enable_action_smoothing=getattr(self.config, 'enable_action_smoothing', True),
+                smoothing_level=getattr(self.config, 'action_smoothing_level', 'medium'),
                 emergency_check_callback=self._check_emergency_stop if self.emergency_controller else None,
                 emergency_controller=self.emergency_controller,  # Pass controller for auto recording
             )

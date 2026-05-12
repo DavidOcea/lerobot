@@ -593,3 +593,10 @@ observation_timeout: 5.0
 action_timeout: 5.0
 reset_duration: 3.0
 reset_positions: {}
+
+# ========== Action Smoothing Settings ==========
+# 6 levels: "none", "minimal", "light", "moderate", "medium", "heavy"
+# For ACT policy: "light" or "moderate" recommended (preserves action fidelity)
+# For position_sequence: "medium" or "heavy" recommended
+enable_action_smoothing: true
+action_smoothing_level: "light"

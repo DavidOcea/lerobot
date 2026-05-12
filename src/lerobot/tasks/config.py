@@ -634,6 +634,8 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             cycle_delay=config_dict.get("cycle_delay", 2.0),
             enable_cycle_prompt=config_dict.get("enable_cycle_prompt", True),
             enable_interactive_mode=config_dict.get("enable_interactive_mode", False),
+            enable_action_smoothing=config_dict.get("enable_action_smoothing", True),
+            action_smoothing_level=config_dict.get("action_smoothing_level", "medium"),
         )
     except ImportError:
         # Fall back to base config

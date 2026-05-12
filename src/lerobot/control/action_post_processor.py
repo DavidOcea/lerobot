@@ -638,7 +638,13 @@ def create_post_processor_for_robot(
 
     Args:
         robot_config: Robot configuration object.
-        smoothing_level: Level of smoothing ("low", "medium", "high").
+        smoothing_level: Level of smoothing. Presets (alpha = EMA coefficient):
+            "none"     (alpha=1.0): No smoothing, pass-through
+            "minimal"  (alpha=0.95): Almost no smoothing, only safety limits
+            "light"    (alpha=0.9): Slight smoothing, recommended for ACT policy
+            "moderate" (alpha=0.85): Light-medium, good balance for policy
+            "medium"   (alpha=0.7): Default, good for position_sequence tasks
+            "heavy"    (alpha=0.5): Strong smoothing, very damped motion
 
     Returns:
         Configured ActionPostProcessor instance.
@@ -661,27 +667,53 @@ def create_post_processor_for_robot(
         ]
 
     # Configure based on smoothing level
-    if smoothing_level == "low":
-        config = PostProcessorConfig(
-            max_velocity=5.0,
+    # alpha: 1.0=no smoothing (pass-through), 0.5=heavy smoothing
+    # For ACT policy: higher alpha preserves action fidelity; lower alpha reduces jitter
+    # Recommended: start with "light" for ACT, use "medium"/"heavy" for position_sequence
+    smoothing_presets = {
+        "none": PostProcessorConfig(
+            max_velocity=10.0,
+            max_acceleration=50.0,
+            filter_alpha=1.0,
+            enable_low_pass_filter=False,
+            enable_jerk_limiting=False,
+            enable_end_effector_compensation=False,
+        ),
+        "minimal": PostProcessorConfig(
+            max_velocity=8.0,
+            max_acceleration=35.0,
+            filter_alpha=0.95,
+            enable_jerk_limiting=False,
+            enable_end_effector_compensation=False,
+        ),
+        "light": PostProcessorConfig(
+            max_velocity=6.0,
             max_acceleration=25.0,
             filter_alpha=0.9,
             enable_jerk_limiting=False,
-        )
-    elif smoothing_level == "high":
-        config = PostProcessorConfig(
+        ),
+        "moderate": PostProcessorConfig(
+            max_velocity=4.5,
+            max_acceleration=20.0,
+            filter_alpha=0.85,
+            enable_jerk_limiting=True,
+            max_jerk=50.0,
+        ),
+        "medium": PostProcessorConfig(
+            max_velocity=3.0,
+            max_acceleration=15.0,
+            filter_alpha=0.7,
+            enable_jerk_limiting=True,
+        ),
+        "heavy": PostProcessorConfig(
             max_velocity=2.0,
             max_acceleration=10.0,
             filter_alpha=0.5,
             enable_jerk_limiting=True,
             max_jerk=30.0,
-        )
-    else:  # medium
-        config = PostProcessorConfig(
-            max_velocity=3.0,
-            max_acceleration=15.0,
-            filter_alpha=0.7,
-            enable_jerk_limiting=True,
-        )
+        ),
+    }
+
+    config = smoothing_presets.get(smoothing_level, smoothing_presets["medium"])
 
     return ActionPostProcessor(config, joint_names)
