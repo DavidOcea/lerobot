@@ -140,10 +140,18 @@ def compute_agv_movement(
          drives straight toward the marker.
 
     Camera coordinate convention (OpenCV):
-      x: right, y: down, z: forward (into the scene)
+      x: right, y: down, z: forward (along optical axis)
 
-    We want the AGV to stop at config.approach_distance meters in
-    front of the marker, not right on top of it.
+    If the camera is pitched downward (common for head-mounted cameras),
+    the optical axis points diagonally downward.  We must undo the pitch
+    rotation to project the marker position onto the ground plane before
+    computing AGV movement.  Without this correction, z_cam (along the
+    tilted optical axis) would be misinterpreted as ground-plane forward
+    distance, causing the AGV to overshoot.
+
+    When camera_offset_pitch = 0 (horizontal camera), the pitch
+    correction degenerates to identity and the behaviour matches the
+    original code — backward compatible.
 
     Returns (dtheta_deg, forward_dist_m):
       dtheta_deg: angle AGV must turn (positive = left/CCW)
@@ -151,28 +159,35 @@ def compute_agv_movement(
     """
     # Marker position in camera frame
     x_cam = tvec[0]  # rightward offset
-    y_cam = tvec[1]  # downward offset (not used for ground-plane alignment)
-    z_cam = tvec[2]  # forward distance
+    y_cam = tvec[1]  # downward offset
+    z_cam = tvec[2]  # along optical axis
 
-    # Apply camera-AGV offset (currently (0,0,0), so no change)
+    # Step 1: Undo camera pitch rotation → project to horizontal plane.
+    # Camera pitched downward by pitch_deg: optical axis tilts from
+    # horizontal into the downward direction.  Reverse rotation R_x(-pitch):
+    #   z_horiz = cos(pitch)*z_cam - sin(pitch)*y_cam  (ground forward)
+    #   x_horiz = x_cam                                 (lateral, unchanged)
+    #   y_horiz = sin(pitch)*z_cam + cos(pitch)*y_cam   (vertical, unused)
+    pitch_rad = config.camera_offset_pitch * DEG_TO_RAD
+    z_horiz = math.cos(pitch_rad) * z_cam - math.sin(pitch_rad) * y_cam
+    x_horiz = x_cam  # pitch rotation around x-axis, lateral unchanged
+
+    # Step 2: Rotate horizontal coordinates by yaw offset → AGV frame.
     offset_yaw_rad = config.camera_offset_yaw * DEG_TO_RAD
     offset_x = config.camera_offset_x
     offset_y = config.camera_offset_y
 
-    # Rotate marker position from camera frame to AGV frame.
-    # If camera faces same direction as AGV (offset_yaw=0):
-    #   AGV forward = camera z, AGV left = -camera x
     cos_yaw = math.cos(offset_yaw_rad)
     sin_yaw = math.sin(offset_yaw_rad)
-    dx_agv = z_cam * cos_yaw - x_cam * sin_yaw + offset_x  # AGV forward direction
-    dy_agv = -z_cam * sin_yaw - x_cam * cos_yaw + offset_y  # AGV left direction
+    dx_agv = z_horiz * cos_yaw - x_horiz * sin_yaw + offset_x  # AGV forward
+    dy_agv = -z_horiz * sin_yaw - x_horiz * cos_yaw + offset_y  # AGV left
 
     # Angle to face the marker: atan2(left_offset, forward_offset)
     dtheta_rad = math.atan2(dy_agv, dx_agv)
     dtheta_deg = dtheta_rad * RAD_TO_DEG
 
     # After turning by dtheta, the marker will be straight ahead.
-    # Total distance = sqrt(dx^2 + dy^2), minus the desired approach distance.
+    # Ground-plane distance minus the desired approach distance.
     total_dist = math.sqrt(dx_agv**2 + dy_agv**2)
     forward_dist = total_dist - config.approach_distance
 
