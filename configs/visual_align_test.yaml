@@ -135,11 +135,11 @@ tasks:
       max_iterations: 3         # 闭环最多3轮微调
       translate_speed: 0.05     # 前进微调速度 0.15m/s
       turn_speed: 5.0          # 转动微调速度 15°/s
-      approach_distance: 0.50   # 停在标记前方50cm处
+      approach_distance: 1.0   # 停在标记前方50cm处
       camera_offset_x: 0.0      # 相机偏移 (先用0, 闭环收敛弥补)
       camera_offset_y: 0.0
       camera_offset_yaw: 0.0
-      camera_offset_pitch: 45.0  # 相机俯视角度 (度, 正值=俯视朝下)
+      camera_offset_pitch: 55.0  # 相机俯视角度 (度, 正值=俯视朝下)
 
   # Step 4: 返回站点C
   - name: "agv_return_to_station_C"
