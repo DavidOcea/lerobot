@@ -139,6 +139,7 @@ tasks:
       camera_offset_x: 0.0      # 相机偏移 (先用0, 闭环收敛弥补)
       camera_offset_y: 0.0
       camera_offset_yaw: 0.0
+      camera_offset_pitch: 45.0  # 相机俯视角度 (度, 正值=俯视朝下)
 
   # Step 4: 返回站点C
   - name: "agv_return_to_station_C"

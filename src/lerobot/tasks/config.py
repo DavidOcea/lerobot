@@ -202,6 +202,9 @@ class VisualAlignConfig:
     camera_offset_x: float = 0.0  # 相机在 AGV 前后方向的偏移 (米)
     camera_offset_y: float = 0.0  # 相机在 AGV 左右方向的偏移 (米)
     camera_offset_yaw: float = 0.0  # 相机朝向相对 AGV 朝向的偏转 (度)
+    camera_offset_pitch: float = 0.0  # 相机俯仰角 (度, 正值=俯视朝下)
+    # pitch=0: 相机水平朝前, z_cam 即地面水平距离 (原默认行为)
+    # pitch>0: 相机俯视, z_cam 是沿光轴距离, 需投影到地面水平面
 
     # ===== 相机内参 (可选, None=用默认估算值) =====
     camera_matrix: list | None = None  # 3x3 内参矩阵 (fx, fy, cx, cy), flat list
