@@ -52,6 +52,9 @@ class AGVStatus:
     is_moving: bool
     error_code: int  # 错误码，0表示正常
     error_message: str  # 错误描述
+    vx: float = 0.0   # 线速度 m/s (正=前进)
+    vy: float = 0.0   # 线速度 m/s (正=左移)
+    vtheta: float = 0.0  # 角速度 rad/s
 
 
 class SeerAGVController:
@@ -737,6 +740,9 @@ class SeerAGVController:
                 is_moving=is_moving,
                 error_code=0 if not emergency else 1,
                 error_message='' if not emergency else 'EMC active',
+                vx=vx,
+                vy=vy,
+                vtheta=vtheta,
             )
             self._last_update_time = time.time()
 

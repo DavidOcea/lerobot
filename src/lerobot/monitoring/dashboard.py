@@ -270,9 +270,9 @@ class MonitorCollector:
                     x=status.position.x,
                     y=status.position.y,
                     theta=status.position.theta,
-                    vx=0.0,
-                    vy=0.0,
-                    vtheta=0.0,
+                    vx=status.vx,
+                    vy=status.vy,
+                    vtheta=status.vtheta,
                     current_station=status.current_station,
                     running_status=status.status_code,
                     emergency=status.error_code != 0,
@@ -485,10 +485,11 @@ h1{color:#00ff88;margin-bottom:16px}
 .event-log h3{color:#888;font-size:12px;text-transform:uppercase;margin-bottom:8px}
 .event-table{width:100%;font-size:11px;border-collapse:collapse}
 .event-table th{color:#666;text-align:left;padding:4px 8px;border-bottom:1px solid #2a2a3a}
-.event-table td{padding:3px 8px;border-bottom:1px solid #1a1a2a;white-space:nowrap}
-.event-table .ev-time{color:#555}
-.event-table .ev-source{color:#888}
-.event-table .ev-msg{color:#c0c0c0}
+.event-table td{padding:3px 8px;border-bottom:1px solid #1a1a2a;vertical-align:top}
+.event-table .ev-time{color:#555;white-space:nowrap;width:80px}
+.event-table .ev-level{white-space:nowrap;width:50px}
+.event-table .ev-source{color:#888;white-space:nowrap;width:140px}
+.event-table .ev-msg{color:#c0c0c0;word-break:break-word}
 .event-table tr.ev-warn{background:#332200}
 .event-table tr.ev-error{background:#330000}
 pre{font-size:11px;color:#666;max-height:200px;overflow-y:auto;margin-top:16px}
@@ -555,7 +556,7 @@ function buildUI(d){
       else if(e.level==='error') row.className='ev-error';
       const ts=new Date(e.ts*1000).toLocaleTimeString();
       row.innerHTML='<td class="ev-time">'+ts+'</td>'
-        +'<td class="ev-'+(e.level||'info')+'">'+e.level+'</td>'
+        +'<td class="ev-level">'+e.level+'</td>'
         +'<td class="ev-source">'+e.source+'</td>'
         +'<td class="ev-msg">'+e.message+'</td>';
       tbody.appendChild(row);
