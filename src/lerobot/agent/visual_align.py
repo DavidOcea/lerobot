@@ -190,11 +190,7 @@ def compute_agv_movement(
     # Ground-plane distance minus the desired approach distance.
     total_dist = math.sqrt(dx_agv**2 + dy_agv**2)
     forward_dist = total_dist - config.approach_distance
-
-    # Don't drive backward past the marker — if we're already closer
-    # than approach_distance, just adjust angle.
-    if forward_dist < 0:
-        forward_dist = 0.0
+    # Positive = drive forward, negative = drive backward (approach_distance overshot)
 
     return dtheta_deg, forward_dist
 
@@ -328,7 +324,7 @@ def execute_visual_align(
 
         # Check convergence
         converged_angle = abs(dtheta_deg) < config.angle_tolerance
-        converged_pos = forward_dist < config.position_tolerance
+        converged_pos = abs(forward_dist) < config.position_tolerance
         if converged_angle and converged_pos:
             logger.info(f"Alignment converged at iteration {iteration}")
             return True, f"Aligned after {iteration + 1} iterations"
@@ -351,17 +347,27 @@ def execute_visual_align(
             time.sleep(0.3)
 
         # Step 1b: Drive forward/backward
-        if forward_dist > config.position_tolerance:
-            # Forward: positive vx
-            vx = config.translate_speed
-            logger.info(f"  Driving forward {forward_dist:.3f}m at {vx:.2f}m/s")
-            agv_controller.translate(
-                dist=forward_dist,
+        if abs(forward_dist) > config.position_tolerance:
+            # Seer AGV translate: dist=absolute magnitude, vx sign controls direction
+            # vx > 0 = forward, vx < 0 = backward
+            if forward_dist > 0:
+                vx = config.translate_speed
+                direction = "forward"
+            else:
+                vx = -config.translate_speed
+                direction = "backward"
+            dist = abs(forward_dist)
+            logger.info(f"  Driving {direction} {dist:.3f}m at {abs(vx):.2f}m/s")
+            ok = agv_controller.translate(
+                dist=dist,
                 vx=vx,
                 mode=0,
             )
-            agv_controller.wait_for_translate_complete(timeout=10.0)
-            time.sleep(0.3)
+            if not ok:
+                logger.error("  Translate command failed!")
+            else:
+                agv_controller.wait_for_translate_complete(timeout=10.0)
+                time.sleep(0.3)
 
     # Did not converge within max_iterations
     logger.warning(
