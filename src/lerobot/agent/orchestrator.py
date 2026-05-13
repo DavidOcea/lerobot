@@ -1210,6 +1210,25 @@ class TaskAgentOrchestrator:
                 attempts=1,
             )
 
+        # Update monitoring with current robot state before AGV movement
+        if self.monitor_collector is not None and self.robot:
+            try:
+                observation = self.robot.get_observation()
+                task_info = {
+                    "task_name": task.name,
+                    "task_type": task.task_type,
+                    "cycle": getattr(task, '_cycle', 0),
+                    "total_cycles": getattr(task, '_total_cycles', 0),
+                    "collision_count": self.total_collision_count,
+                    "total_tasks": len(self.config.tasks),
+                    "completed_tasks": getattr(task, '_completed_tasks', 0),
+                    "failed_tasks": getattr(task, '_failed_tasks', 0),
+                    "last_error": getattr(task, '_last_error', ""),
+                }
+                self.monitor_collector.update_robot_state(observation, {}, task_info)
+            except Exception:
+                pass
+
         # Execute AGV navigation
         agv_result = self.agv_executor.execute(
             task_name=task.name,
@@ -1301,6 +1320,25 @@ class TaskAgentOrchestrator:
                     deviations[joint_name] = f"pos={current_pos[joint_name]:.1f}°, threshold={threshold:.1f}°"
 
             logger.info(f"Arm safety check: {deviations if deviations else 'no thresholds defined'}")
+
+        # Update monitoring with current robot state before visual alignment
+        if self.monitor_collector is not None and self.robot:
+            try:
+                observation = self.robot.get_observation()
+                task_info = {
+                    "task_name": task.name,
+                    "task_type": task.task_type,
+                    "cycle": getattr(task, '_cycle', 0),
+                    "total_cycles": getattr(task, '_total_cycles', 0),
+                    "collision_count": self.total_collision_count,
+                    "total_tasks": len(self.config.tasks),
+                    "completed_tasks": getattr(task, '_completed_tasks', 0),
+                    "failed_tasks": getattr(task, '_failed_tasks', 0),
+                    "last_error": getattr(task, '_last_error', ""),
+                }
+                self.monitor_collector.update_robot_state(observation, {}, task_info)
+            except Exception:
+                pass
 
         # Execute alignment
         success, message = execute_visual_align(
@@ -1422,16 +1460,38 @@ class TaskAgentOrchestrator:
                 self.robot.send_action(target_action)
 
             step_count += 1
-            time.sleep(dt)
+
+            # Get observation for collision and monitoring
+            observation = self.robot.get_observation()
+
+            # Update real-time monitoring dashboard (non-blocking)
+            if self.monitor_collector is not None:
+                try:
+                    task_info = {
+                        "task_name": task.name,
+                        "task_type": task.task_type,
+                        "cycle": getattr(task, '_cycle', 0),
+                        "total_cycles": getattr(task, '_total_cycles', 0),
+                        "collision_count": self.total_collision_count,
+                        "total_tasks": len(self.config.tasks),
+                        "completed_tasks": getattr(task, '_completed_tasks', 0),
+                        "failed_tasks": getattr(task, '_failed_tasks', 0),
+                        "last_error": getattr(task, '_last_error', ""),
+                    }
+                    self.monitor_collector.update_robot_state(observation, target_action, task_info)
+                except Exception:
+                    pass  # Never let monitoring errors affect the control loop
 
             # Check for collision
             if self.collision_detector:
-                observation = self.robot.get_observation()
                 collision_result = self.collision_detector.check_collision(observation, target_action)
                 if collision_result.is_detected:
                     logger.warning(f"Collision detected during position task {task.name}")
                     success = False
                     break
+
+            # Pace the control loop to the configured control frequency
+            time.sleep(dt)
 
         # Check if reached target positions
         final_positions_dict = self.robot.get_current_position()
