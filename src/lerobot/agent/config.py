@@ -113,6 +113,7 @@ class OrchestratorConfig(TasksOrchestratorConfig):
     save_actions: bool = False
     save_dir: str = "/tmp/task_agent_debug"
 
-    # Monitoring dashboard settings
-    enable_monitoring_dashboard: bool = True
+    # Monitoring dashboard settings (opt-in: enable to visualize robot+AGV state)
+    # Requires thread-safe AGV controller (seer_agv_controller.py with per-port locks).
+    enable_monitoring_dashboard: bool = False
     monitoring_dashboard_port: int = 8080

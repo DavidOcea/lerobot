@@ -26,6 +26,7 @@ import json
 import logging
 import socket
 import struct
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -171,6 +172,7 @@ class SeerAGVController:
 
         # Socket连接池 (多端口)
         self._sockets: dict[int, socket.socket] = {}
+        self._socket_locks: dict[int, threading.Lock] = {}  # Per-port thread safety
 
         # 序列号 (自增)
         self._seq_num = 0
@@ -213,6 +215,7 @@ class SeerAGVController:
                     sock.connect((self.host, port))
                     sock.settimeout(self.read_timeout)
                     self._sockets[port] = sock
+                    self._socket_locks[port] = threading.Lock()
                     connected_ports.append(port)
                     logger.info(f"Connected to AGV at {self.host}:{port}")
                 except Exception as e:
@@ -377,49 +380,49 @@ class SeerAGVController:
                 raise ConnectionError(f"Not connected to port {port}")
 
         sock = self._sockets[port]
+        lock = self._socket_locks.get(port)
+        if lock is None:
+            lock = threading.Lock()
+            self._socket_locks[port] = lock
 
-        for attempt in range(retry_count + 1):
-            try:
-                # 构建请求包
-                packet = self._build_packet(api_type, data)
-                logger.debug(f"Sending packet to port {port}: api={api_type:#x}, len={len(packet)}")
+        # Serialize socket access per port to prevent request/response
+        # interleaving when multiple threads share the same AGV connection
+        # (e.g. main control loop + monitoring dashboard background poller).
+        with lock:
+            for attempt in range(retry_count + 1):
+                try:
+                    packet = self._build_packet(api_type, data)
+                    logger.debug(f"Sending packet to port {port}: api={api_type:#x}, len={len(packet)}")
 
-                # 发送
-                sock.sendall(packet)
+                    sock.sendall(packet)
+                    header_bytes = self._recv_exact(sock, 16)
+                    seq, data_len, api_type_resp = self._parse_response_header(header_bytes)
 
-                # 接收响应header (16 bytes)
-                header_bytes = self._recv_exact(sock, 16)
+                    if data_len > 0:
+                        payload_bytes = self._recv_exact(sock, data_len)
+                        payload = json.loads(payload_bytes.decode('utf-8'))
+                    else:
+                        payload = {}
 
-                # 解析header
-                seq, data_len, api_type_resp = self._parse_response_header(header_bytes)
+                    logger.debug(f"Response: seq={seq}, api={api_type_resp:#x}, data={payload}")
+                    return payload
 
-                # 接收payload
-                if data_len > 0:
-                    payload_bytes = self._recv_exact(sock, data_len)
-                    payload = json.loads(payload_bytes.decode('utf-8'))
-                else:
-                    payload = {}
-
-                logger.debug(f"Response: seq={seq}, api={api_type_resp:#x}, data={payload}")
-
-                return payload
-
-            except socket.timeout:
-                logger.warning(f"Timeout on port {port}, attempt {attempt + 1}")
-                if attempt < retry_count:
-                    continue
-                raise TimeoutError(f"Timeout waiting for response on port {port}")
-
-            except (ConnectionError, socket.error) as e:
-                logger.warning(f"Connection error on port {port}: {e}")
-                if attempt < retry_count and self.auto_reconnect:
-                    self.reconnect()
-                    sock = self._sockets.get(port)
-                    if sock:
+                except socket.timeout:
+                    logger.warning(f"Timeout on port {port}, attempt {attempt + 1}")
+                    if attempt < retry_count:
                         continue
-                raise ConnectionError(f"Failed to communicate on port {port}: {e}")
+                    raise TimeoutError(f"Timeout waiting for response on port {port}")
 
-        raise ConnectionError(f"Failed after {retry_count + 1} attempts")
+                except (ConnectionError, socket.error) as e:
+                    logger.warning(f"Connection error on port {port}: {e}")
+                    if attempt < retry_count and self.auto_reconnect:
+                        self.reconnect()
+                        sock = self._sockets.get(port)
+                        if sock:
+                            continue
+                    raise ConnectionError(f"Failed to communicate on port {port}: {e}")
+
+            raise ConnectionError(f"Failed after {retry_count + 1} attempts")
 
     def _recv_exact(self, sock: socket.socket, n: int) -> bytes:
         """精确接收n字节.
