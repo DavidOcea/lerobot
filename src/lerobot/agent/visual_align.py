@@ -336,10 +336,15 @@ def execute_visual_align(
         # Step 1a: Turn AGV to face marker
         if abs(dtheta_deg) > config.angle_tolerance:
             turn_deg = dtheta_deg  # positive = CCW (left turn)
+            # Seer AGV: angle=absolute magnitude, vw sign controls direction
+            # vw > 0 = CCW (left), vw < 0 = CW (right)
+            vw = config.turn_speed * DEG_TO_RAD
+            if turn_deg < 0:
+                vw = -vw
             logger.info(f"  Turning {turn_deg:.2f}°")
             agv_controller.turn(
                 angle=abs(turn_deg) * DEG_TO_RAD,
-                vw=config.turn_speed * DEG_TO_RAD,
+                vw=vw,
                 mode=0,
             )
             agv_controller.wait_for_turn_complete(timeout=10.0)
