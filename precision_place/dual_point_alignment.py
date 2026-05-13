@@ -27,7 +27,7 @@ Z轴控制:
 import cv2
 import numpy as np
 from typing import Tuple, Optional, List, Dict, Callable, Any
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dc_fields
 from abc import ABC, abstractmethod
 import time
 import json
@@ -180,6 +180,8 @@ class JointSensitivity:
     # 关节移动1度时，末端在相机中的像素变化
     pixel_dx_per_deg: float = 0.0  # X方向像素变化
     pixel_dy_per_deg: float = 0.0  # Y方向像素变化
+    # 关节移动1度时，末端在相机中的深度变化 (mm/deg)
+    depth_dz_per_deg: float = 0.0
     # 关节移动1度时，末端的实际毫米移动 (近似)
     mm_dx_per_deg: float = 0.0
     mm_dy_per_deg: float = 0.0
@@ -1681,9 +1683,12 @@ class PrecisionPlaceController:
                 data = json.load(f)
 
             self.calibration_points = []
+            # 只取 JointSensitivity 支持的字段，兼容新旧格式
+            js_fields = {f.name for f in dc_fields(JointSensitivity)}
             for cp_data in data.get('points', []):
                 sensitivities = [
-                    JointSensitivity(**s) for s in cp_data.get('sensitivities', [])
+                    JointSensitivity(**{k: v for k, v in s.items() if k in js_fields})
+                    for s in cp_data.get('sensitivities', [])
                 ]
                 cp = CalibrationPoint(
                     height_level=cp_data['height_level'],
@@ -1719,6 +1724,7 @@ class PrecisionPlaceController:
                         'joint_name': s.joint_name,
                         'pixel_dx_per_deg': s.pixel_dx_per_deg,
                         'pixel_dy_per_deg': s.pixel_dy_per_deg,
+                        'depth_dz_per_deg': getattr(s, 'depth_dz_per_deg', 0.0),
                         'mm_dx_per_deg': s.mm_dx_per_deg,
                         'mm_dy_per_deg': s.mm_dy_per_deg,
                         'calibration_angles': s.calibration_angles

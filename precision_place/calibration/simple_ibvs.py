@@ -34,7 +34,7 @@ import json
 import time
 from collections import deque
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dc_fields
 from typing import Dict, List, Optional, Tuple
 
 from precision_place.models.calibration_data import ARM_CONFIGS, JointSensitivity, CalibrationPoint
@@ -347,7 +347,9 @@ class SimpleIBVSController:
             for cp_data in data.get('points', []):
                 if cp_data.get('arm', 'right') != self.arm:
                     continue
-                sensitivities = [JointSensitivity(**s) for s in cp_data.get('sensitivities', [])]
+                sensitivities = [JointSensitivity(**{k: v for k, v in s.items()
+                    if k in {f.name for f in dc_fields(JointSensitivity)}})
+                    for s in cp_data.get('sensitivities', [])]
                 cp = CalibrationPoint(
                     height_level=cp_data['height_level'],
                     joint_states=cp_data['joint_states'],
