@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AGV + Robot Monitor</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0a14; --surface:#121222; --border:#252540;
+  --text:#b0b0c0; --dim:#686880; --bright:#e0e0f0;
+  --ok:#00e676; --warn:#ffab00; --err:#ff5252; --info:#448aff;
+  --left:#4488ff; --right:#ff8844; --trunk:#aa44ff;
+}
+body{
+  font-family:'SF Mono','Cascadia Code','JetBrains Mono',monospace;
+  background:var(--bg); color:var(--text); padding:16px; min-height:100vh;
+}
+h1{color:var(--ok);font-size:20px;margin-bottom:12px;display:flex;align-items:center;gap:12px}
+h1 .subtitle{font-size:12px;color:var(--dim);font-weight:normal}
+h2{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;margin-top:16px}
+.status-bar{display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 14px;min-width:150px;flex:1}
+.card h3{color:var(--dim);font-size:10px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.card .val{font-size:20px;font-weight:bold;line-height:1.2}
+.card .sub{font-size:10px;color:var(--dim);margin-top:2px}
+.ok{color:var(--ok)} .warn{color:var(--warn)} .err{color:var(--err)} .info{color:var(--info)}
+.main-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+@media(max-width:900px){.main-grid{grid-template-columns:1fr}}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px 14px}
+.joint-section{margin-bottom:6px}
+.joint-section h3{font-size:11px;color:var(--dim);margin-bottom:4px;text-transform:uppercase}
+.joint-row{display:flex;align-items:center;gap:6px;font-size:11px;margin-bottom:3px}
+.joint-name{width:130px;text-align:right;color:var(--dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.joint-bar{flex:1;height:12px;background:#1a1a30;border-radius:3px;overflow:hidden;position:relative}
+.joint-fill{height:100%;border-radius:3px;transition:width 0.4s ease}
+.joint-val{width:56px;text-align:right;font-size:10px}
+.joint-force{width:44px;text-align:right;font-size:9px;color:var(--dim)}
+#agv-canvas{border:1px solid var(--border);border-radius:4px;display:block;margin:8px auto}
+.agv-detail{display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:10px;margin-top:8px}
+.agv-detail span{color:var(--dim)}
+.agv-detail b{color:var(--bright)}
+#event-log-container{max-height:160px;overflow-y:auto;font-size:10px}
+.event-row{display:flex;gap:8px;padding:2px 0;border-bottom:1px solid var(--border)}
+.event-time{color:var(--dim);width:70px;flex-shrink:0}
+.event-src{width:50px;flex-shrink:0;text-align:center}
+.event-msg{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ev-INFO .event-src{color:var(--info)} .ev-WARN .event-src{color:var(--warn)} .ev-ERROR .event-src{color:var(--err)}
+.footer{font-size:9px;color:var(--dim);text-align:center;margin-top:12px}
+.blink{animation:blink 1s infinite}
+@keyframes blink{50%{opacity:0.3}}
+.progress-bar{height:4px;background:#1a1a30;border-radius:2px;overflow:hidden;margin-top:6px}
+.progress-fill{height:100%;background:var(--ok);border-radius:2px;transition:width .5s}
+.progress-label{font-size:9px;color:var(--dim);margin-top:2px}
+</style>
+</head>
+<body>
+<h1>
+  &#9881; AGV + Robot Monitor
+  <span class="subtitle" id="conn-status">connecting...</span>
+</h1>
+<div class="status-bar" id="status-bar"></div>
+<div class="main-grid">
+  <div class="panel"><h2>Joint Angles</h2><div id="joints"></div></div>
+  <div class="panel">
+    <h2>AGV Position (top-down)</h2>
+    <canvas id="agv-canvas" width="320" height="240"></canvas>
+    <div class="agv-detail" id="agv-detail"></div>
+  </div>
+</div>
+<div class="panel" style="margin-bottom:12px">
+  <h2>Task Progress</h2>
+  <div id="task-progress" style="font-size:12px"></div>
+</div>
+<div class="panel">
+  <h2>Event Log</h2>
+  <div id="event-log-container"></div>
+</div>
+<div class="footer">Dashboard &bull; refresh 1s &bull; <span id="clock"></span></div>
+<script>
+var lastData = null;
+var agvTrail = [];
+function refresh(){
+  fetch('/api/status')
+    .then(function(r){return r.json()})
+    .then(function(d){lastData=d;renderAll(d);})
+    .catch(function(e){console.log('fetch error:',e)});
+  setTimeout(refresh,1000);
+}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function el(tag,cls,parent){
+  var e=document.createElement(tag);if(cls)e.className=cls;if(parent)parent.appendChild(e);return e;
+}
+function txt(text,parent){var t=document.createTextNode(String(text));if(parent)parent.appendChild(t);return t;}
+
+function renderAll(d){
+  renderStatusBar(d); renderJoints(d); renderAGV(d);
+  renderTask(d); renderEvents(d);
+  document.getElementById('clock').textContent=new Date().toLocaleTimeString();
+  var cs=document.getElementById('conn-status');
+  if(d.robot&&d.robot.connected){cs.textContent='connected';cs.className='subtitle ok';}
+  else{cs.textContent='no data';cs.className='subtitle err blink';}
+}
+
+function card(title,val,cls,sub){
+  var c=el('div','card'); el('h3','',c).textContent=title;
+  var v=el('div','val'+(cls?' '+cls:''),c); v.textContent=val;
+  if(sub){var s=el('div','sub',c); s.textContent=sub;}
+  return c;
+}
+
+function renderStatusBar(d){
+  var r=d.robot||{},a=d.agv||{},t=d.task||{},p=a.position||{};
+  var bar=document.getElementById('status-bar'); bar.textContent='';
+  bar.appendChild(card('Robot FPS',(r.fps||0).toFixed(1),r.connected?'ok':'err',(r.joint_count||0)+' joints'));
+  bar.appendChild(card('Battery',(a.battery_pct||0)+'%',a.battery_pct>20?'ok':(a.battery_pct>10?'warn':'err'),(a.battery_voltage||0).toFixed(1)+'V'+(a.charging?' CHG':'')));
+  bar.appendChild(card('AGV',a.running_status_label||'N/A',a.connected?(a.emergency?'err':'ok'):'err',a.current_station||'-'));
+  bar.appendChild(card('Emergency',a.emergency?'ACTIVE':'Clear',a.emergency?'err blink':'ok',''));
+  bar.appendChild(card('Position','x='+p.x+' y='+p.y,'','θ='+p.theta_deg+'°'));
+  bar.appendChild(card('Task',t.task_name||'idle',t.last_error?'warn':'info',t.task_type||''));
+  bar.appendChild(card('Cycle',t.cycle+'/'+t.total_cycles,'',(t.completed_tasks||0)+'/'+(t.total_tasks||0)+' done'));
+}
+
+function renderJoints(d){
+  var pos=(d.robot||{}).positions||{};
+  var keys=Object.keys(pos).sort();
+  var panel=document.getElementById('joints'); panel.textContent='';
+  if(!keys.length){panel.textContent='no data';return;}
+  var groups={left:[],right:[],trunk:[],other:[]};
+  for(var i=0;i<keys.length;i++){
+    var k=keys[i];
+    if(k.indexOf('left')===0) groups.left.push(k);
+    else if(k.indexOf('right')===0) groups.right.push(k);
+    else if(k.indexOf('trunk')===0) groups.trunk.push(k);
+    else groups.other.push(k);
+  }
+  var defs=[['LEFT ARM',groups.left,'var(--left)'],['RIGHT ARM',groups.right,'var(--right)'],['TRUNK',groups.trunk,'var(--trunk)']];
+  if(groups.other.length) defs.push(['OTHER',groups.other,'var(--info)']);
+  for(var g=0;g<defs.length;g++){
+    var gd=defs[g],jn=gd[1];if(!jn.length)continue;
+    var sec=el('div','joint-section',panel);
+    el('h3','',sec).textContent=gd[0];
+    for(var j=0;j<jn.length;j++){
+      var name=jn[j],v=pos[name],abs=Math.abs(v),pct=Math.min(100,abs/180*100);
+      var cls='';if(abs>150)cls='err';else if(abs>120)cls='warn';
+      var row=el('div','joint-row',sec);
+      el('span','joint-name',row).textContent=name;
+      var barDiv=el('div','joint-bar',row);
+      var fill=el('div','joint-fill',barDiv);fill.style.width=pct+'%';fill.style.background=gd[2];
+      el('span','joint-val'+(cls?' '+cls:''),row).textContent=v.toFixed(1)+'°';
+    }
+  }
+}
+
+function renderAGV(d){
+  var a=d.agv||{},canvas=document.getElementById('agv-canvas');
+  var ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height,mx=w/2,my=h/2,range=4;
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle='#1a1a30';ctx.lineWidth=1;
+  for(var i=-range;i<=range;i+=1){
+    var sx=mx+i/range*mx,sy=my+i/range*my;
+    ctx.beginPath();ctx.moveTo(sx,0);ctx.lineTo(sx,h);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(0,sy);ctx.lineTo(w,sy);ctx.stroke();
+  }
+  ctx.strokeStyle='#333350';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(mx,0);ctx.lineTo(mx,h);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(0,my);ctx.lineTo(w,my);ctx.stroke();
+  if(!a.connected)return;
+  var px=mx+(a.position||{}).x/range*mx,py=my-(a.position||{}).y/range*my;
+  agvTrail.push({x:px,y:py});if(agvTrail.length>60)agvTrail.shift();
+  ctx.strokeStyle='rgba(68,136,255,0.3)';ctx.lineWidth=1;
+  ctx.beginPath();
+  for(var t=0;t<agvTrail.length;t++){
+    if(t===0)ctx.moveTo(agvTrail[t].x,agvTrail[t].y);
+    else ctx.lineTo(agvTrail[t].x,agvTrail[t].y);
+  }
+  ctx.stroke();
+  var theta=(a.position||{}).theta||0,size=8;
+  ctx.save();ctx.translate(px,py);ctx.rotate(-theta);
+  ctx.fillStyle=a.emergency?'#ff5252':(a.is_moving?'#00e676':'#448aff');
+  ctx.beginPath();ctx.moveTo(size,0);ctx.lineTo(-size*0.6,size*0.6);ctx.lineTo(-size*0.6,-size*0.6);
+  ctx.closePath();ctx.fill();ctx.restore();
+  if(a.current_station){ctx.fillStyle='#ffab00';ctx.font='9px monospace';ctx.fillText(a.current_station,px+10,py-10);}
+
+  var detail=document.getElementById('agv-detail');detail.textContent='';
+  var p=a.position||{},v=a.velocity||{};
+  var items=[
+    ['Station',a.current_station||'-'],['Heading',p.theta_deg+'°'],
+    ['Speed vx',v.vx+' m/s'],['Speed vy',v.vy+' m/s'],
+    ['Speed w',v.vtheta+' rad/s'],['Odometer',a.odo+' m'],
+    ['Controller T',a.controller_temp+'°C'],['Errors',String((a.errors||[]).length)]
+  ];
+  for(var i=0;i<items.length;i++){
+    el('span','',detail).textContent=items[i][0];
+    var b=el('b','',detail);b.textContent=items[i][1];
+    if(items[i][0]==='Errors'&&parseInt(items[i][1])>0)b.className='err';
+    else if(items[i][0]==='Errors')b.className='ok';
+  }
+}
+
+function renderTask(d){
+  var t=d.task||{},total=t.total_tasks||0,done=t.completed_tasks||0,fail=t.failed_tasks||0;
+  var pct=total>0?Math.round(done/total*100):0;
+  var panel=document.getElementById('task-progress');panel.textContent='';
+  var frag=document.createDocumentFragment();
+  var line=el('div','',frag);
+  txt('Task: ',line);var b1=el('b','',line);b1.textContent=t.task_name||'idle';
+  txt(' ('+esc(t.task_type||'-')+') • Cycle '+t.cycle+'/'+t.total_cycles+' • Collisions: ',line);
+  var b2=el('b',t.collision_count>0?'warn':'ok',line);b2.textContent=String(t.collision_count);
+  if(t.last_error){txt(' • ',line);var sp=el('span','err',line);sp.textContent='Last error: '+esc(t.last_error);}
+  var pb=el('div','progress-bar',frag);
+  el('div','progress-fill',pb).style.width=pct+'%';
+  el('div','progress-label',frag).textContent=done+' done / '+fail+' failed / '+total+' total';
+  panel.appendChild(frag);
+}
+
+function renderEvents(d){
+  var events=d.events||[],container=document.getElementById('event-log-container');
+  container.textContent='';
+  if(!events.length){var sp=el('span','',container);sp.style.color='var(--dim)';sp.textContent='no events';return;}
+  var start=Math.max(0,events.length-20);
+  for(var i=events.length-1;i>=start;i--){
+    var e=events[i],row=el('div','event-row ev-'+e.level,container);
+    el('span','event-time',row).textContent=new Date(e.ts*1000).toLocaleTimeString();
+    el('span','event-src',row).textContent='['+esc(e.source)+']';
+    el('span','event-msg',row).textContent=esc(e.message);
+  }
+}
+refresh();
+</script>
+</body>
+</html>
