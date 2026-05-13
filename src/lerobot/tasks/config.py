@@ -645,6 +645,8 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
                 robot_smoothing_level if robot_smoothing_level is not None
                 else config_dict.get("action_smoothing_level", "medium")
             ),
+            enable_monitoring_dashboard=config_dict.get("enable_monitoring_dashboard", False),
+            monitoring_dashboard_port=config_dict.get("monitoring_dashboard_port", 8080),
         )
     except ImportError:
         # Fall back to base config
