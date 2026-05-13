@@ -6,6 +6,7 @@ This module provides:
 - Anomaly detection
 - Prometheus metrics integration
 - Observation and action history tracking
+- Real-time HTTP dashboard (MonitorCollector + HTTPDashboard)
 """
 
 from .config import MonitoringConfig
@@ -15,6 +16,13 @@ from .state_monitor import (
     StateMonitor,
     StateSnapshot,
 )
+from .dashboard import (
+    MonitorCollector,
+    HTTPDashboard,
+    RobotSnapshot,
+    AGVSnapshot,
+    TaskSnapshot,
+)
 
 __all__ = [
     "MonitoringConfig",
@@ -22,4 +30,9 @@ __all__ = [
     "MonitoringStats",
     "StateMonitor",
     "StateSnapshot",
+    "MonitorCollector",
+    "HTTPDashboard",
+    "RobotSnapshot",
+    "AGVSnapshot",
+    "TaskSnapshot",
 ]

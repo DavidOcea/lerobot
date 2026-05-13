@@ -106,6 +106,9 @@ class AdaptiveTaskScheduler:
         self.successful_grasps = 0
         self.action_smooth_count = 0
 
+        # Monitoring collector (set by orchestrator after construction)
+        self.monitor_collector = None
+
     def _initialize_action_post_processor(self):
         """Initialize the action post-processor."""
         try:
@@ -262,6 +265,24 @@ class AdaptiveTaskScheduler:
                 # Update monitor
                 if state_monitor is not None:
                     state_monitor.update(observation, last_action)
+
+                # Update real-time monitoring dashboard (non-blocking)
+                if self.monitor_collector is not None:
+                    try:
+                        task_info = {
+                            "task_name": task.name,
+                            "task_type": task.task_type,
+                            "cycle": getattr(task, '_cycle', 0),
+                            "total_cycles": getattr(task, '_total_cycles', 0),
+                            "collision_count": self.total_collisions,
+                            "total_tasks": getattr(task, '_total_tasks', 0),
+                            "completed_tasks": getattr(task, '_completed_tasks', 0),
+                            "failed_tasks": getattr(task, '_failed_tasks', 0),
+                            "last_error": getattr(task, '_last_error', ""),
+                        }
+                        self.monitor_collector.update_robot_state(observation, last_action, task_info)
+                    except Exception:
+                        pass  # Never let monitoring errors affect the control loop
 
                 # Check collision with per-joint thresholds
                 # NOTE: This is the primary collision detection for physical collisions

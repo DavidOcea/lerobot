@@ -52,6 +52,9 @@ from lerobot.safety.emergency_stop_controller import (
 from lerobot.robots.agv.seer_agv_controller import SeerAGVController, AGVPosition
 from lerobot.tasks.agv_executor import AGVTaskExecutor, AGVExecutionResult, create_task_result_from_agv_result
 
+# Monitoring imports (NEW)
+from lerobot.monitoring.dashboard import MonitorCollector, HTTPDashboard
+
 from .config import OrchestratorConfig, AGVGlobalConfig
 
 if TYPE_CHECKING:
@@ -113,6 +116,10 @@ class TaskAgentOrchestrator:
         # AGV components (NEW)
         self.agv_controller: SeerAGVController | None = None
         self.agv_executor: AGVTaskExecutor | None = None
+
+        # Monitoring dashboard (NEW)
+        self.monitor_collector: "MonitorCollector | None" = None
+        self.http_dashboard: "HTTPDashboard | None" = None
 
         # Execution state
         self.is_initialized = False
@@ -260,6 +267,9 @@ class TaskAgentOrchestrator:
         agv_config = getattr(self.config, 'agv_config', None)
         if agv_config and agv_config.enabled:
             self._init_agv(agv_config)
+
+        # 11. Initialize monitoring dashboard (NEW)
+        self._init_monitoring()
 
         self.is_initialized = True
         logger.info("Initialization complete (LOCAL mode)")
@@ -532,6 +542,42 @@ class TaskAgentOrchestrator:
             self.agv_controller = None
             self.agv_executor = None
             return False
+
+    def _init_monitoring(self):
+        """Initialize the real-time monitoring dashboard.
+
+        Creates a MonitorCollector (background AGV polling) and HTTPDashboard
+        (lightweight HTTP server).  The monitor_collector is attached to the
+        task_scheduler so the main action loop can push robot state updates.
+        """
+        dashboard_port = getattr(self.config, 'monitoring_dashboard_port', 8080)
+        enable_dashboard = getattr(self.config, 'enable_monitoring_dashboard', True)
+
+        if not enable_dashboard:
+            logger.info("Monitoring dashboard disabled")
+            return
+
+        try:
+            # Create collector (AGV polling in background thread)
+            self.monitor_collector = MonitorCollector(
+                agv_controller=self.agv_controller,
+                robot=self.robot,
+            )
+            self.monitor_collector.start()
+
+            # Attach to task scheduler for frame-level robot state updates
+            if self.task_scheduler and hasattr(self.task_scheduler, 'monitor_collector'):
+                self.task_scheduler.monitor_collector = self.monitor_collector
+
+            # Start HTTP dashboard
+            self.http_dashboard = HTTPDashboard(self.monitor_collector, port=dashboard_port)
+            self.http_dashboard.start()
+
+            logger.info(f"Monitoring dashboard initialized on port {dashboard_port}")
+        except Exception as e:
+            logger.error(f"Failed to initialize monitoring dashboard: {e}", exc_info=True)
+            self.monitor_collector = None
+            self.http_dashboard = None
 
     def _handle_exit_request(self) -> bool:
         """Handle user request to exit.
@@ -1500,6 +1546,18 @@ class TaskAgentOrchestrator:
         # Stop state monitor
         if self.state_monitor is not None:
             self.state_monitor.stop()
+
+        # Stop monitoring dashboard (NEW)
+        if self.http_dashboard is not None:
+            try:
+                self.http_dashboard.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping dashboard: {e}")
+        if self.monitor_collector is not None:
+            try:
+                self.monitor_collector.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping monitor collector: {e}")
 
         # Disconnect AGV (NEW)
         if self.agv_controller is not None:

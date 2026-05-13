@@ -112,3 +112,7 @@ class OrchestratorConfig(TasksOrchestratorConfig):
     save_observations: bool = False
     save_actions: bool = False
     save_dir: str = "/tmp/task_agent_debug"
+
+    # Monitoring dashboard settings
+    enable_monitoring_dashboard: bool = True
+    monitoring_dashboard_port: int = 8080
