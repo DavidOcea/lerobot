@@ -820,15 +820,19 @@ class PrecisionPlaceController:
             self.z_controller.set_cameras(self.camera, camera2)
 
     def _build_joint_names(self) -> Dict[int, str]:
-        """构建关节索引到名称的映射"""
+        """构建16维关节索引到名称的映射"""
         names = {}
-        # 左臂
-        for i in range(7):
+        # 左臂 (indices 0-5)
+        for i in range(6):
             names[i] = f"left_arm_joint_{i+1}"
-        # 右臂
-        for i in range(7, 14):
+        # 左夹爪 (index 6)
+        names[6] = "left_arm_joint_7"
+        # 右臂 (indices 7-12)
+        for i in range(7, 13):
             names[i] = f"right_arm_joint_{i-6}"
-        # 躯干
+        # 右夹爪 (index 13)
+        names[13] = "right_arm_joint_7"
+        # 躯干 (indices 14-15)
         names[14] = "trunk_joint_1"
         names[15] = "trunk_joint_2"
         return names
@@ -843,6 +847,29 @@ class PrecisionPlaceController:
             # 方案A: 使用空模型
             self.kinematics_model = DummyKinematicsModel()
             print("使用多点标定模式 (方案A)")
+
+    # ----------------- 关节映射 helper -----------------
+
+    def _build_action_from_16dim(self, joints_16: np.ndarray) -> Dict[str, float]:
+        """
+        将16维关节数组转换为action dict (name.pos → value)
+
+        16维布局: [left_arm_1..6, left_gripper, right_arm_1..6, right_gripper, trunk_1, trunk_2]
+        14维action: 只包含 observation_joint_names 中存在的关节
+
+        这是唯一安全的16维→action转换方法，替代危险的 enumerate 模式。
+        """
+        action = {}
+        for name in self.robot.observation_joint_names:
+            # 从 joint_names 反查16维索引
+            idx_16 = None
+            for idx, n in self.joint_names.items():
+                if n == name:
+                    idx_16 = idx
+                    break
+            if idx_16 is not None and idx_16 < len(joints_16):
+                action[f"{name}.pos"] = float(joints_16[idx_16])
+        return action
 
     # ----------------- 手臂切换 -----------------
 
@@ -869,7 +896,9 @@ class PrecisionPlaceController:
         """
         获取关节状态
 
-        在被动模式下从共享文件读取，在主动模式下直接从机器人读取
+        返回16维数组，语义布局:
+          [left_arm_1..6, left_gripper, right_arm_1..6, right_gripper, trunk_1, trunk_2]
+          紐引: 0-5=左臂, 6=左夹爪, 7-12=右臂, 13=右夹爪, 14-15=躯干
 
         Args:
             max_age_ms: 最大数据年龄 (毫秒)，仅被动模式有效
@@ -888,17 +917,19 @@ class PrecisionPlaceController:
             if self.robot is None:
                 return None
             try:
-                # 使用 get_current_position() 获取关节位置
                 pos_dict = self.robot.get_current_position()
-                # 按照配置的 joint_order 转换为数组
-                joint_order = self.robot.observation_joint_names
-                joints = np.array([pos_dict.get(name, 0.0) for name in joint_order])
-                if len(joints) >= 14:  # 至少需要14个关节
-                    if len(joints) < 16:
-                        # 补齐到16维
-                        joints = np.pad(joints, (0, 16 - len(joints)))
-                    return joints
-                return None
+                # 构建16维数组，按语义布局映射
+                joints_16 = np.zeros(16)
+                for name in self.robot.observation_joint_names:
+                    # 通过 joint_names 反查16维索引
+                    for idx_16, name_16 in self.joint_names.items():
+                        if name == name_16:
+                            joints_16[idx_16] = pos_dict.get(name, 0.0)
+                            break
+                # 夹爪位置: 机器人不报告，使用0.0占位
+                joints_16[6] = pos_dict.get('left_arm_joint_7', 0.0)
+                joints_16[13] = pos_dict.get('right_arm_joint_7', 0.0)
+                return joints_16
             except Exception as e:
                 print(f"读取关节状态失败: {e}")
                 return None
@@ -2499,47 +2530,29 @@ class PrecisionPlaceController:
         if steps is None:
             steps = self.smooth_steps
 
-        print(f"[DEBUG] _smooth_move_all_joints: steps={steps}, smooth_delay={self.smooth_delay}")
-        print(f"[DEBUG] observation_joint_names: {self.robot.observation_joint_names}")
-
         current_joints = self.get_joint_states()
 
         if current_joints is None or len(current_joints) < 16:
-            print(f"[DEBUG] get_joint_states failed: current_joints={current_joints}")
             return False
 
         # 保存夹爪初始位置（仅当夹爪启用时）
         if GRIPPER_ENABLED:
             gripper_initial_pos = current_joints[self.arm_config.gripper_idx]
 
-        # DEBUG: 打印目标关节值
-        print(f"[DEBUG] 开始平滑移动:")
-        print(f"  current_joints[7] (right_arm_joint_1) = {current_joints[7]:.4f}")
-        print(f"  target_joints[7] = {target_joints[7]:.4f}")
-        print(f"  delta = {target_joints[7] - current_joints[7]:.4f}")
-        print(f"  GRIPPER_ENABLED = {GRIPPER_ENABLED}")
-
         for step in range(1, steps + 1):
             alpha = step / steps
             alpha = alpha * alpha * (3 - 2 * alpha)  # ease-in-out
 
             interp = current_joints * (1 - alpha) + target_joints * alpha
-            # 保持夹爪在初始位置（仅当夹爪启用时）
             if GRIPPER_ENABLED:
                 interp[self.arm_config.gripper_idx] = gripper_initial_pos
 
-            # DEBUG: 打印每步的插值值
-            if step <= 3 or step == steps:
-                print(f"[DEBUG] step {step}/{steps}: alpha={alpha:.4f}, interp[7]={interp[7]:.4f}")
-
-            # 转换为正确的action格式: {'joint_name.pos': value}
-            action = {f"{name}.pos": float(interp[i])
-                      for i, name in enumerate(self.robot.observation_joint_names)
-                      if i < len(interp)}
+            # 使用16维→action helper (正确映射)
+            action = self._build_action_from_16dim(interp)
             self.robot.send_action(action)
             time.sleep(self.smooth_delay)
 
-        print(f"[DEBUG] 平滑移动完成")
+        return True
         return True
 
     # ==================== 对齐流程 ====================
