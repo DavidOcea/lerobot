@@ -483,13 +483,16 @@ h1{color:#00ff88;margin-bottom:16px}
 .trunk .joint-fill{background:#aa44ff}
 .event-log{margin-top:16px}
 .event-log h3{color:#888;font-size:12px;text-transform:uppercase;margin-bottom:8px}
-.event-table{width:100%;font-size:11px;border-collapse:collapse}
+.event-table{width:100%;font-size:11px;border-collapse:collapse;table-layout:fixed}
 .event-table th{color:#666;text-align:left;padding:4px 8px;border-bottom:1px solid #2a2a3a}
-.event-table td{padding:3px 8px;border-bottom:1px solid #1a1a2a;vertical-align:top}
-.event-table .ev-time{color:#555;white-space:nowrap;width:80px}
-.event-table .ev-level{white-space:nowrap;width:50px}
-.event-table .ev-source{color:#888;white-space:nowrap;width:140px}
-.event-table .ev-msg{color:#c0c0c0;word-break:break-word}
+.event-table th.th-time{width:90px}
+.event-table th.th-level{width:55px}
+.event-table th.th-source{width:130px}
+.event-table td{padding:3px 8px;border-bottom:1px solid #1a1a2a;vertical-align:top;overflow:hidden;text-overflow:ellipsis}
+.event-table .ev-time{color:#555;white-space:nowrap}
+.event-table .ev-level{white-space:nowrap}
+.event-table .ev-source{color:#888;white-space:nowrap}
+.event-table .ev-msg{color:#c0c0c0;word-break:break-word;overflow-wrap:break-word}
 .event-table tr.ev-warn{background:#332200}
 .event-table tr.ev-error{background:#330000}
 pre{font-size:11px;color:#666;max-height:200px;overflow-y:auto;margin-top:16px}
@@ -547,7 +550,7 @@ function buildUI(d){
     evDiv.appendChild(evHdr);
     const tbl=document.createElement('table'); tbl.className='event-table';
     const thead=document.createElement('thead');
-    thead.innerHTML='<tr><th>Time</th><th>Level</th><th>Source</th><th>Message</th></tr>';
+    thead.innerHTML='<tr><th class="th-time">Time</th><th class="th-level">Level</th><th class="th-source">Source</th><th>Message</th></tr>';
     tbl.appendChild(thead);
     const tbody=document.createElement('tbody');
     for(const e of d.events.slice(-30)){
