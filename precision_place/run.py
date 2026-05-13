@@ -4431,8 +4431,8 @@ Z轴控制关节 (全部6个):
                             tag_state.error_x, tag_state.error_y, current_joints,
                             depth_error_mm=tag_state.depth_error_mm,
                             current_depth_mm=tag_state.depth_filtered)
-                        rot_adj = self.simple_ibvs.compute_rotation_adjustment(
-                            tag_state.error_rotation)
+                        # 对齐模式禁用旋转伺服: 旋转会改变相机朝向→改变像素灵敏度→干扰XY伺服
+                        rot_adj = {}
                         print(f"  [Align iter {iteration+1}] "
                               f"pixel={tag_state.error_total_px:.1f}px "
                               f"depth={tag_state.depth_filtered:.0f}mm "
