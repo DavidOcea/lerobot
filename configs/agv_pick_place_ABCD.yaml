@@ -204,7 +204,10 @@ robot_config:
   type: "supre_robot_follower"
   control_frequency: 50
   prometheus_port: 8000
-  max_relative_joint_move: 2.0
+  max_relative_joint_move: 2.0 #默认15.0  
+  # Action smoothing (applied before send_action, 6 levels: none 1/minimal 0.95/light 0.9/moderate 0.85/medium 0.7/heavy 0.5)
+  # For ACT policy: "light" or "moderate"; for position_sequence: "medium" or "heavy"
+  action_smoothing_level: "medium" 
   joint_config_file: "trunk_config_supre_robot_joint.yaml"
   cameras:
     head_cam:
