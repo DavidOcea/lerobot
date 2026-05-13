@@ -506,15 +506,20 @@ class SimpleIBVSController:
 
         return state
 
-    def get_interpolated_sensitivities(self, current_joints: np.ndarray) -> List[JointSensitivity]:
+    def get_interpolated_sensitivities(self, current_joints: np.ndarray) -> Tuple[List[JointSensitivity], float]:
         """获取当前姿态的插值灵敏度（反距离加权）
 
         pixel_dx/dy 仅从传统标定点 (low/medium/high) 插值，排除 apriltag_3d。
         depth_dz 仅从 apriltag_3d 点插值（当前禁用深度伺服，仅供记录）。
         若没有传统标定点，回退到全部点并发出警告。
+
+        Returns:
+            (sensitivities, calibration_depth_mm)
+            calibration_depth_mm 是标定时的相机-tag距离估计值，用于深度自适应缩放。
+            由 pixel_to_mm * camera_fx 推算 (D = pixel_to_mm * fx)。
         """
         if not self.calibration_points:
-            return []
+            return [], 0.0
 
         primary_joints = self.arm_config.primary_joints
 
@@ -529,9 +534,23 @@ class SimpleIBVSController:
             print("⚠ 缺少传统标定点 (low/medium/high)，像素灵敏度可能不准")
             pixel_points = self.calibration_points
 
+        def _compute_weights(points):
+            """计算反距离权重"""
+            dists = []
+            for cp in points:
+                cp_joints = np.array(cp.joint_states)
+                dist = np.linalg.norm(
+                    np.array([cp_joints[i] for i in primary_joints]) -
+                    np.array([current_joints[i] for i in primary_joints])
+                )
+                dists.append(dist)
+            epsilon = 0.001
+            w_list = [1.0 / (d + epsilon) for d in dists]
+            total = sum(w_list)
+            return [w / total for w in w_list], w_list
+
         def _interp_weighted(points, extract_fn):
-            """对 points 做反距离加权插值，extract_fn(s) → (value, weight)"""
-            # 计算距离
+            """对 points 做反距离加权插值，extract_fn(s) → value"""
             dists = []
             for cp in points:
                 cp_joints = np.array(cp.joint_states)
@@ -545,7 +564,6 @@ class SimpleIBVSController:
             total = sum(w_list)
             w_list = [w / total for w in w_list]
 
-            # 收集关节索引
             joint_indices = set()
             for cp in points:
                 for s in cp.sensitivities:
@@ -575,6 +593,14 @@ class SimpleIBVSController:
             depth_dz = _interp_weighted(depth_points,
                                        lambda s: getattr(s, 'depth_dz_per_deg', 0.0))
 
+        # 插值标定深度 (用于深度自适应缩放)
+        # 从 pixel_to_mm * fx 估算标定时相机-tag距离: D = pixel_to_mm * fx
+        calibration_depth = 0.0
+        if pixel_points:
+            weights, _ = _compute_weights(pixel_points)
+            cal_depths = [cp.pixel_to_mm * self.camera_fx for cp in pixel_points]
+            calibration_depth = sum(w * d for w, d in zip(weights, cal_depths))
+
         # 组装结果
         all_joint_indices = set(pixel_dx.keys()) | set(pixel_dy.keys()) | set(depth_dz.keys())
         interpolated = []
@@ -599,18 +625,26 @@ class SimpleIBVSController:
                 calibration_angles=current_joints.tolist()
             ))
 
-        return interpolated
+        return interpolated, calibration_depth
 
     def compute_joint_adjustments(self, pixel_error_x: float, pixel_error_y: float,
                                   current_joints: np.ndarray,
-                                  depth_error_mm: float = 0.0) -> Dict[int, float]:
+                                  depth_error_mm: float = 0.0,
+                                  current_depth_mm: float = None) -> Dict[int, float]:
         """
         核心IBVS控制律: 始终使用 2×N 雅可比 (仅XY伺服)
 
         depth_error_mm 参数保留但不用于伺服 (深度灵敏度目前不可靠)。
         深度仅用于对齐判定 (detect_and_compute_error 中检查)。
+
+        current_depth_mm: 当前相机-tag距离(mm)，用于深度自适应缩放。
+          像素灵敏度随距离变化(越近同角度位移越大)，
+          需要将标定灵敏度缩放到当前距离:
+            depth_scale = current_depth / calibration_depth
+            当 current_depth < calibration_depth (更近): scale < 1 → 减小调整量，防过冲
+            当 current_depth > calibration_depth (更远): scale > 1 → 增大调整量，防欠校正
         """
-        sensitivities = self.get_interpolated_sensitivities(current_joints)
+        sensitivities, calibration_depth = self.get_interpolated_sensitivities(current_joints)
         if not sensitivities:
             print("⚠ 无标定数据，无法计算调整量")
             return {}
@@ -645,6 +679,16 @@ class SimpleIBVSController:
                                                        sensitivities)
 
         delta_angles = delta_angles * self.gain
+
+        # 深度自适应缩放: 将标定灵敏度缩放到当前距离
+        if current_depth_mm is not None and current_depth_mm > 0 and calibration_depth > 0:
+            depth_scale = current_depth_mm / calibration_depth
+            depth_scale = float(np.clip(depth_scale, 0.3, 3.0))
+            delta_angles = delta_angles * depth_scale
+            if abs(depth_scale - 1.0) > 0.15:
+                print(f"  [IBVS] depth_scale={depth_scale:.2f} "
+                      f"(calib_depth={calibration_depth:.0f}mm, cur_depth={current_depth_mm:.0f}mm)")
+
         delta_angles = np.clip(delta_angles, -self.max_single_adjust, self.max_single_adjust)
 
         adjustments = {}
@@ -930,12 +974,19 @@ class SimpleIBVSController:
         print(f"  目标像素位置: ({self.target_pixel_x:.1f}, {self.target_pixel_y:.1f})")
         print(f"  目标深度: {self.target_depth_mm:.0f}mm (容差: ±{self.depth_tolerance_mm:.0f}mm)")
         print(f"  深度权重: {self.depth_weight}")
-        print(f"  深度伺服: 已禁用 (仅2×N XY伺服)")
+        print(f"  深度伺服: 已禁用 (仅2×N XY伺服, 含深度自适应缩放)")
         print(f"  相机焦距: {self.camera_fx:.0f}px")
         print(f"  增益: {self.gain}")
         print(f"  像素容差: {self.pixel_tolerance}px")
         print(f"  最大迭代: {self.max_iterations}")
         print(f"  pixel_to_mm_ratio: {self.pixel_to_mm_ratio:.3f}")
+        if self.calibration_points:
+            pixel_points = [cp for cp in self.calibration_points
+                          if cp.height_level != 'apriltag_3d']
+            depth_ests = [cp.pixel_to_mm * self.camera_fx for cp in pixel_points]
+            if depth_ests:
+                print(f"  标定距离估计: {np.mean(depth_ests):.0f}mm "
+                      f"(来自 pixel_to_mm×fx)")
         print(f"  相机翻转: X={self._camera_flip_x}, Y={self._camera_flip_y}")
         print(f"  标定点数量: {len(self.calibration_points)}")
 

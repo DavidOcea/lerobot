@@ -4429,7 +4429,8 @@ Z轴控制关节 (全部6个):
                     if current_joints is not None:
                         xy_adj = self.simple_ibvs.compute_joint_adjustments(
                             tag_state.error_x, tag_state.error_y, current_joints,
-                            depth_error_mm=tag_state.depth_error_mm)
+                            depth_error_mm=tag_state.depth_error_mm,
+                            current_depth_mm=tag_state.depth_filtered)
                         rot_adj = self.simple_ibvs.compute_rotation_adjustment(
                             tag_state.error_rotation)
                         print(f"  [Align iter {iteration+1}] "
@@ -4451,7 +4452,8 @@ Z轴控制关节 (全部6个):
                     if current_joints is not None:
                         xy_adj = self.simple_ibvs.compute_joint_adjustments(
                             tag_state.error_x, tag_state.error_y, current_joints,
-                            depth_error_mm=tag_state.depth_error_mm)
+                            depth_error_mm=tag_state.depth_error_mm,
+                            current_depth_mm=tag_state.depth_filtered)
                         rot_adj = self.simple_ibvs.compute_rotation_adjustment(
                             tag_state.error_rotation)
                         if tag_state.error_total_px > 5.0 or abs(tag_state.depth_error_mm) > 5.0:
@@ -4473,7 +4475,8 @@ Z轴控制关节 (全部6个):
                     if current_joints is not None:
                         xy_adj = self.simple_ibvs.compute_joint_adjustments(
                             tag_state.error_x, tag_state.error_y, current_joints,
-                            depth_error_mm=tag_state.depth_error_mm)
+                            depth_error_mm=tag_state.depth_error_mm,
+                            current_depth_mm=tag_state.depth_filtered)
                         rot_adj = self.simple_ibvs.compute_rotation_adjustment(
                             tag_state.error_rotation)
                         print(f"  [Step] pixel={tag_state.error_total_px:.1f}px "

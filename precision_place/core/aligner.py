@@ -184,7 +184,7 @@ class SensitivityAligner(PrecisionAligner):
         Returns:
             关节角度调整量
         """
-        sensitivities = self.calibrator.get_interpolated_sensitivities(current_joints)
+        sensitivities, _ = self.calibrator.get_interpolated_sensitivities(current_joints)
 
         # 使用最小二乘求解关节调整量
         # pixel_offset = J * joint_delta
