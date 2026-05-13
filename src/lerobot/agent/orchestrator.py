@@ -823,6 +823,8 @@ class TaskAgentOrchestrator:
             # Execute tasks with cycle support
             while True:
                 cycle_count += 1
+                self.current_cycle = cycle_count
+                self.total_cycles = max_cycles
 
                 # Check cycle limit
                 if max_cycles != -1 and cycle_count > max_cycles:
@@ -832,6 +834,8 @@ class TaskAgentOrchestrator:
                 # Log cycle start
                 if max_cycles > 1 or max_cycles == -1:
                     logger.info(f"=== Starting Cycle {cycle_count} ===")
+                    self._add_monitor_event("info", "Orchestrator",
+                        f"Cycle {cycle_count}/{max_cycles if max_cycles != -1 else '∞'} started")
 
                 # Reset task index for new cycle
                 if self.interactive_selector is not None:
@@ -852,6 +856,8 @@ class TaskAgentOrchestrator:
                 if max_cycles > 1 or max_cycles == -1:
                     logger.info(f"=== Cycle {cycle_count} Completed ===")
                     logger.info(f"  Completed: {summary.completed_tasks}, Failed: {summary.failed_tasks}")
+                    self._add_monitor_event("info", "Orchestrator",
+                        f"Cycle {cycle_count} done — {summary.completed_tasks} ok, {summary.failed_tasks} failed")
 
                     # Prompt for next cycle if interactive
                     if enable_cycle_prompt and self.config.enable_interactive_mode:
@@ -1079,23 +1085,48 @@ class TaskAgentOrchestrator:
         """
         # Handle AGV tasks separately
         if task.task_type == "agv":
-            return self._execute_agv_task(task)
+            self._add_monitor_event("info", task.name, "AGV navigation started")
+            result = self._execute_agv_task(task)
+            self._add_monitor_event(
+                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                f"{result.status.value} ({result.duration:.1f}s)"
+                + (f" — {result.error_message}" if result.error_message else ""))
+            return result
 
         # Handle position tasks (direct joint position movement)
         if task.task_type == "position":
-            return self._execute_position_task(task)
+            self._add_monitor_event("info", task.name, "Moving to target position")
+            result = self._execute_position_task(task)
+            self._add_monitor_event(
+                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                f"{result.status.value} ({result.duration:.1f}s)"
+                + (f" — {result.error_message}" if result.error_message else ""))
+            return result
 
         # Handle position_sequence tasks (multi-step position movement)
         if task.task_type == "position_sequence":
-            return self._execute_position_sequence_task(task)
+            self._add_monitor_event("info", task.name, f"Executing {len(task.steps)} steps")
+            result = self._execute_position_sequence_task(task)
+            self._add_monitor_event(
+                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                f"{result.status.value} ({result.duration:.1f}s)"
+                + (f" — {result.error_message}" if result.error_message else ""))
+            return result
 
         # Handle visual_align tasks (AprilTag-guided AGV fine alignment)
         if task.task_type == "visual_align":
-            return self._execute_visual_align_task(task)
+            self._add_monitor_event("info", task.name, "Visual alignment started")
+            result = self._execute_visual_align_task(task)
+            self._add_monitor_event(
+                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                f"{result.status.value} ({result.duration:.1f}s)"
+                + (f" — {result.error_message}" if result.error_message else ""))
+            return result
 
         # Handle policy tasks (existing logic)
         # Switch cameras for this task
         self._switch_cameras_for_task(task)
+        self._add_monitor_event("info", task.name, "Policy task started")
 
         # Set completion detector for this task
         print(f"[_execute_single_task] Setting completion detector for task: {task.name}")
@@ -1163,6 +1194,11 @@ class TaskAgentOrchestrator:
         task.max_retries = original_max_retries
         task.max_duration = original_max_duration
 
+        self._add_monitor_event(
+            "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+            f"{result.status.value} ({result.duration:.1f}s)"
+            + (f" — {result.error_message}" if result.error_message else ""))
+
         return result
 
     def _execute_agv_task(self, task: TaskConfig) -> TaskResult:
@@ -1217,8 +1253,8 @@ class TaskAgentOrchestrator:
                 task_info = {
                     "task_name": task.name,
                     "task_type": task.task_type,
-                    "cycle": getattr(task, '_cycle', 0),
-                    "total_cycles": getattr(task, '_total_cycles', 0),
+                    "cycle": getattr(self, 'current_cycle', 0),
+                    "total_cycles": getattr(self, 'total_cycles', 0),
                     "collision_count": self.total_collision_count,
                     "total_tasks": len(self.config.tasks),
                     "completed_tasks": getattr(task, '_completed_tasks', 0),
@@ -1328,8 +1364,8 @@ class TaskAgentOrchestrator:
                 task_info = {
                     "task_name": task.name,
                     "task_type": task.task_type,
-                    "cycle": getattr(task, '_cycle', 0),
-                    "total_cycles": getattr(task, '_total_cycles', 0),
+                    "cycle": getattr(self, 'current_cycle', 0),
+                    "total_cycles": getattr(self, 'total_cycles', 0),
                     "collision_count": self.total_collision_count,
                     "total_tasks": len(self.config.tasks),
                     "completed_tasks": getattr(task, '_completed_tasks', 0),
@@ -1470,8 +1506,8 @@ class TaskAgentOrchestrator:
                     task_info = {
                         "task_name": task.name,
                         "task_type": task.task_type,
-                        "cycle": getattr(task, '_cycle', 0),
-                        "total_cycles": getattr(task, '_total_cycles', 0),
+                        "cycle": getattr(self, 'current_cycle', 0),
+                        "total_cycles": getattr(self, 'total_cycles', 0),
                         "collision_count": self.total_collision_count,
                         "total_tasks": len(self.config.tasks),
                         "completed_tasks": getattr(task, '_completed_tasks', 0),
@@ -1487,6 +1523,7 @@ class TaskAgentOrchestrator:
                 collision_result = self.collision_detector.check_collision(observation, target_action)
                 if collision_result.is_detected:
                     logger.warning(f"Collision detected during position task {task.name}")
+                    self._add_monitor_event("warn", task.name, "Collision detected — stopping")
                     success = False
                     break
 
@@ -1594,6 +1631,14 @@ class TaskAgentOrchestrator:
             start_time=start_time,
             end_time=time.time(),
         )
+
+    def _add_monitor_event(self, level: str, source: str, message: str):
+        """Thread-safe helper to log an event to the monitoring dashboard."""
+        if self.monitor_collector is not None:
+            try:
+                self.monitor_collector.add_event(level, source, message)
+            except Exception:
+                pass
 
     def _cleanup(self):
         """Clean up resources after execution."""
