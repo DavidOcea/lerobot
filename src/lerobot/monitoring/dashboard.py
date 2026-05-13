@@ -481,7 +481,17 @@ h1{color:#00ff88;margin-bottom:16px}
 .joint-val{width:60px;text-align:right}
 .l-arm .joint-fill{background:#4488ff} .r-arm .joint-fill{background:#ff8844}
 .trunk .joint-fill{background:#aa44ff}
-pre{font-size:11px;color:#666;max-height:200px;overflow-y:auto}
+.event-log{margin-top:16px}
+.event-log h3{color:#888;font-size:12px;text-transform:uppercase;margin-bottom:8px}
+.event-table{width:100%;font-size:11px;border-collapse:collapse}
+.event-table th{color:#666;text-align:left;padding:4px 8px;border-bottom:1px solid #2a2a3a}
+.event-table td{padding:3px 8px;border-bottom:1px solid #1a1a2a;white-space:nowrap}
+.event-table .ev-time{color:#555}
+.event-table .ev-source{color:#888}
+.event-table .ev-msg{color:#c0c0c0}
+.event-table tr.ev-warn{background:#332200}
+.event-table tr.ev-error{background:#330000}
+pre{font-size:11px;color:#666;max-height:200px;overflow-y:auto;margin-top:16px}
 </style>
 </head>
 <body>
@@ -529,6 +539,30 @@ function buildUI(d){
       }
     }
     frag.appendChild(grid);
+  }
+  if((d.events||[]).length){
+    const evDiv=document.createElement('div'); evDiv.className='event-log';
+    const evHdr=document.createElement('h3'); evHdr.textContent='Event Log';
+    evDiv.appendChild(evHdr);
+    const tbl=document.createElement('table'); tbl.className='event-table';
+    const thead=document.createElement('thead');
+    thead.innerHTML='<tr><th>Time</th><th>Level</th><th>Source</th><th>Message</th></tr>';
+    tbl.appendChild(thead);
+    const tbody=document.createElement('tbody');
+    for(const e of d.events.slice(-30)){
+      const row=document.createElement('tr');
+      if(e.level==='warn') row.className='ev-warn';
+      else if(e.level==='error') row.className='ev-error';
+      const ts=new Date(e.ts*1000).toLocaleTimeString();
+      row.innerHTML='<td class="ev-time">'+ts+'</td>'
+        +'<td class="ev-'+(e.level||'info')+'">'+e.level+'</td>'
+        +'<td class="ev-source">'+e.source+'</td>'
+        +'<td class="ev-msg">'+e.message+'</td>';
+      tbody.appendChild(row);
+    }
+    tbl.appendChild(tbody);
+    evDiv.appendChild(tbl);
+    frag.appendChild(evDiv);
   }
   return frag;
 }
