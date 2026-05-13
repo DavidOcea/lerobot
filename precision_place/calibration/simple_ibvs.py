@@ -507,66 +507,97 @@ class SimpleIBVSController:
         return state
 
     def get_interpolated_sensitivities(self, current_joints: np.ndarray) -> List[JointSensitivity]:
-        """获取当前姿态的插值灵敏度（反距离加权，含深度维度）"""
+        """获取当前姿态的插值灵敏度（反距离加权）
+
+        pixel_dx/dy 仅从传统标定点 (low/medium/high) 插值，排除 apriltag_3d。
+        depth_dz 仅从 apriltag_3d 点插值（当前禁用深度伺服，仅供记录）。
+        若没有传统标定点，回退到全部点并发出警告。
+        """
         if not self.calibration_points:
             return []
 
         primary_joints = self.arm_config.primary_joints
 
-        distances = []
-        for cp in self.calibration_points:
-            cp_joints = np.array(cp.joint_states)
-            dist = np.linalg.norm(
-                np.array([cp_joints[i] for i in primary_joints]) -
-                np.array([current_joints[i] for i in primary_joints])
-            )
-            distances.append(dist)
+        # 分离像素标定点和深度标定点
+        pixel_points = [cp for cp in self.calibration_points
+                       if cp.height_level != 'apriltag_3d']
+        depth_points = [cp for cp in self.calibration_points
+                       if cp.height_level == 'apriltag_3d']
 
-        epsilon = 0.001
-        weights = [1.0 / (d + epsilon) for d in distances]
-        total_weight = sum(weights)
-        weights = [w / total_weight for w in weights]
+        # 像素标定点已空 → 回退到全部点
+        if not pixel_points:
+            print("⚠ 缺少传统标定点 (low/medium/high)，像素灵敏度可能不准")
+            pixel_points = self.calibration_points
 
-        joint_indices = set()
-        for cp in self.calibration_points:
-            for s in cp.sensitivities:
-                joint_indices.add(s.joint_idx)
-        joint_indices = sorted(joint_indices)
+        def _interp_weighted(points, extract_fn):
+            """对 points 做反距离加权插值，extract_fn(s) → (value, weight)"""
+            # 计算距离
+            dists = []
+            for cp in points:
+                cp_joints = np.array(cp.joint_states)
+                dist = np.linalg.norm(
+                    np.array([cp_joints[i] for i in primary_joints]) -
+                    np.array([current_joints[i] for i in primary_joints])
+                )
+                dists.append(dist)
+            epsilon = 0.001
+            w_list = [1.0 / (d + epsilon) for d in dists]
+            total = sum(w_list)
+            w_list = [w / total for w in w_list]
 
-        interpolated = []
-        for jidx in joint_indices:
-            dx_values, dy_values, dz_values, dx_weights, dy_weights, dz_weights = [], [], [], [], [], []
-            for cp, w in zip(self.calibration_points, weights):
+            # 收集关节索引
+            joint_indices = set()
+            for cp in points:
                 for s in cp.sensitivities:
-                    if s.joint_idx == jidx:
-                        dx_values.append(s.pixel_dx_per_deg)
-                        dy_values.append(s.pixel_dy_per_deg)
-                        dz_values.append(getattr(s, 'depth_dz_per_deg', 0.0))
-                        dx_weights.append(w)
-                        dy_weights.append(w)
-                        dz_weights.append(w)
-                        break
+                    joint_indices.add(s.joint_idx)
+            joint_indices = sorted(joint_indices)
 
-            if dx_values:
-                interp_dx = sum(v * w for v, w in zip(dx_values, dx_weights))
-                interp_dy = sum(v * w for v, w in zip(dy_values, dy_weights))
-                interp_dz = sum(v * w for v, w in zip(dz_values, dz_weights))
+            result = {}
+            for jidx in joint_indices:
+                values, iweights = [], []
+                for cp, w in zip(points, w_list):
+                    for s in cp.sensitivities:
+                        if s.joint_idx == jidx:
+                            values.append(extract_fn(s))
+                            iweights.append(w)
+                            break
+                if values:
+                    result[jidx] = sum(v * w for v, w in zip(values, iweights))
+            return result
 
-                if self._camera_flip_x:
-                    interp_dx = -interp_dx
-                if self._camera_flip_y:
-                    interp_dy = -interp_dy
+        # 像素灵敏度：仅从传统标定点插值
+        pixel_dx = _interp_weighted(pixel_points, lambda s: s.pixel_dx_per_deg)
+        pixel_dy = _interp_weighted(pixel_points, lambda s: s.pixel_dy_per_deg)
 
-                interpolated.append(JointSensitivity(
-                    joint_idx=jidx,
-                    joint_name=self.joint_names.get(jidx, f"joint_{jidx}"),
-                    pixel_dx_per_deg=interp_dx,
-                    pixel_dy_per_deg=interp_dy,
-                    depth_dz_per_deg=interp_dz,
-                    mm_dx_per_deg=interp_dx * self.pixel_to_mm_ratio,
-                    mm_dy_per_deg=interp_dy * self.pixel_to_mm_ratio,
-                    calibration_angles=current_joints.tolist()
-                ))
+        # 深度灵敏度：仅从 apriltag_3d 点插值（当前不用于伺服）
+        depth_dz = {}
+        if depth_points:
+            depth_dz = _interp_weighted(depth_points,
+                                       lambda s: getattr(s, 'depth_dz_per_deg', 0.0))
+
+        # 组装结果
+        all_joint_indices = set(pixel_dx.keys()) | set(pixel_dy.keys()) | set(depth_dz.keys())
+        interpolated = []
+        for jidx in sorted(all_joint_indices):
+            dx = pixel_dx.get(jidx, 0.0)
+            dy = pixel_dy.get(jidx, 0.0)
+            dz = depth_dz.get(jidx, 0.0)
+
+            if self._camera_flip_x:
+                dx = -dx
+            if self._camera_flip_y:
+                dy = -dy
+
+            interpolated.append(JointSensitivity(
+                joint_idx=jidx,
+                joint_name=self.joint_names.get(jidx, f"joint_{jidx}"),
+                pixel_dx_per_deg=dx,
+                pixel_dy_per_deg=dy,
+                depth_dz_per_deg=dz,
+                mm_dx_per_deg=dx * self.pixel_to_mm_ratio,
+                mm_dy_per_deg=dy * self.pixel_to_mm_ratio,
+                calibration_angles=current_joints.tolist()
+            ))
 
         return interpolated
 
@@ -574,15 +605,10 @@ class SimpleIBVSController:
                                   current_joints: np.ndarray,
                                   depth_error_mm: float = 0.0) -> Dict[int, float]:
         """
-        核心IBVS控制律: [像素误差, 深度误差] → 关节调整量
+        核心IBVS控制律: 始终使用 2×N 雅可比 (仅XY伺服)
 
-        使用 3×N 或 2×N 雅可比 (取决于是否有深度灵敏度数据):
-          J·W·Δθ = -e  →  Δθ = (J·W)^+ · (-e)
-
-        e = [pixel_err_x, pixel_err_y, depth_err_mm * depth_weight]
-
-        自动检测标定数据中是否有深度灵敏度，没有则回退到2×N模式。
-        2×N模式仍可进行XY伺服，深度仅用于判定(不做深度伺服)。
+        depth_error_mm 参数保留但不用于伺服 (深度灵敏度目前不可靠)。
+        深度仅用于对齐判定 (detect_and_compute_error 中检查)。
         """
         sensitivities = self.get_interpolated_sensitivities(current_joints)
         if not sensitivities:
@@ -592,30 +618,13 @@ class SimpleIBVSController:
         joint_indices = [s.joint_idx for s in sensitivities]
         n_joints = len(joint_indices)
 
-        # 检测是否有深度灵敏度数据
-        has_depth = any(
-            getattr(s, 'depth_dz_per_deg', 0.0) != 0.0 for s in sensitivities
-        )
+        # 始终使用 2×N 雅可比
+        J = np.zeros((2, n_joints))
+        for i, s in enumerate(sensitivities):
+            J[0, i] = s.pixel_dx_per_deg
+            J[1, i] = s.pixel_dy_per_deg
 
-        if has_depth and abs(depth_error_mm) > 0.01:
-            # 3×N 雅可比
-            n_rows = 3
-            J = np.zeros((n_rows, n_joints))
-            for i, s in enumerate(sensitivities):
-                J[0, i] = s.pixel_dx_per_deg
-                J[1, i] = s.pixel_dy_per_deg
-                J[2, i] = getattr(s, 'depth_dz_per_deg', 0.0)
-            error = np.array([pixel_error_x, pixel_error_y, depth_error_mm * self.depth_weight])
-            jacobian_type = "3×N"
-        else:
-            # 2×N 雅可比 (回退模式: 无深度灵敏度或深度误差很小)
-            n_rows = 2
-            J = np.zeros((n_rows, n_joints))
-            for i, s in enumerate(sensitivities):
-                J[0, i] = s.pixel_dx_per_deg
-                J[1, i] = s.pixel_dy_per_deg
-            error = np.array([pixel_error_x, pixel_error_y])
-            jacobian_type = "2×N"
+        error = np.array([pixel_error_x, pixel_error_y])
 
         W = np.zeros((n_joints, n_joints))
         for i, s in enumerate(sensitivities):
@@ -628,12 +637,12 @@ class SimpleIBVSController:
             delta_angles = JW_pinv @ (-error)
         except np.linalg.LinAlgError:
             delta_angles = self._single_joint_fallback(pixel_error_x, pixel_error_y,
-                                                       sensitivities, depth_error_mm, has_depth)
+                                                       sensitivities)
 
         max_delta = np.max(np.abs(delta_angles))
         if max_delta > 5.0:
             delta_angles = self._single_joint_fallback(pixel_error_x, pixel_error_y,
-                                                       sensitivities, depth_error_mm, has_depth)
+                                                       sensitivities)
 
         delta_angles = delta_angles * self.gain
         delta_angles = np.clip(delta_angles, -self.max_single_adjust, self.max_single_adjust)
@@ -642,15 +651,6 @@ class SimpleIBVSController:
         for i, (jidx, delta) in enumerate(zip(joint_indices, delta_angles)):
             if abs(delta) > 0.01:
                 adjustments[jidx] = float(delta)
-
-        if has_depth and abs(depth_error_mm) > 0.01:
-            depth_parts = [f"{jidx}:{delta:.3f}" for jidx, delta in adjustments.items()
-                          if abs(getattr(
-                              sensitivities[joint_indices.index(jidx)], 'depth_dz_per_deg', 0.0)
-                          ) > 0.01]
-            if depth_parts:
-                print(f"  [{jacobian_type}] depth_err={depth_error_mm:.1f}mm, "
-                      f"Z joints: {', '.join(depth_parts[:3])}")
 
         return adjustments
 
@@ -666,7 +666,7 @@ class SimpleIBVSController:
                                sensitivities: List[JointSensitivity],
                                depth_error_mm: float = 0.0,
                                has_depth: bool = False) -> np.ndarray:
-        """单关节fallback: 选灵敏度最高的关节分别控制X/Y/Z"""
+        """单关节fallback: 选灵敏度最高的关节分别控制X和Y (深度维度已禁用)"""
         n = len(sensitivities)
         delta = np.zeros(n)
 
@@ -677,13 +677,6 @@ class SimpleIBVSController:
         best_y = max(range(n), key=lambda i: abs(sensitivities[i].pixel_dy_per_deg))
         if abs(sensitivities[best_y].pixel_dy_per_deg) > 0.01:
             delta[best_y] += -pixel_error_y / sensitivities[best_y].pixel_dy_per_deg
-
-        if has_depth and abs(depth_error_mm) > 0.01:
-            best_z = max(range(n),
-                        key=lambda i: abs(getattr(sensitivities[i], 'depth_dz_per_deg', 0.0)))
-            dz = getattr(sensitivities[best_z], 'depth_dz_per_deg', 0.0)
-            if abs(dz) > 0.001:
-                delta[best_z] += -depth_error_mm * self.depth_weight / dz
 
         return delta
 
@@ -937,7 +930,7 @@ class SimpleIBVSController:
         print(f"  目标像素位置: ({self.target_pixel_x:.1f}, {self.target_pixel_y:.1f})")
         print(f"  目标深度: {self.target_depth_mm:.0f}mm (容差: ±{self.depth_tolerance_mm:.0f}mm)")
         print(f"  深度权重: {self.depth_weight}")
-        print(f"  3D雅可比: {'已启用' if has_depth else '仅2D (缺少深度灵敏度数据)'}")
+        print(f"  深度伺服: 已禁用 (仅2×N XY伺服)")
         print(f"  相机焦距: {self.camera_fx:.0f}px")
         print(f"  增益: {self.gain}")
         print(f"  像素容差: {self.pixel_tolerance}px")
