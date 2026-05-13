@@ -600,5 +600,7 @@ reset_positions: {}
 # ========== Monitoring Dashboard ==========
 # Lightweight HTTP dashboard for real-time robot + AGV state visualization.
 # Access at http://<robot-ip>:8080 after orchestrator starts.
-enable_monitoring_dashboard: true
+# NOTE: Requires thread-safe AGV controller (seer_agv_controller.py with per-port locks).
+#       Safe to enable after deploying the fix from commit on/after 2026-05-13.
+enable_monitoring_dashboard: false
 monitoring_dashboard_port: 8080
