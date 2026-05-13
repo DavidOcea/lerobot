@@ -204,7 +204,10 @@ robot_config:
   type: "supre_robot_follower"
   control_frequency: 50
   prometheus_port: 8000
-  max_relative_joint_move: 2.0
+  max_relative_joint_move: 2.0 #默认15.0  
+  # Action smoothing (applied before send_action, 6 levels: none 1/minimal 0.95/light 0.9/moderate 0.85/medium 0.7/heavy 0.5)
+  # For ACT policy: "light" or "moderate"; for position_sequence: "medium" or "heavy"
+  action_smoothing_level: "medium" 
   joint_config_file: "trunk_config_supre_robot_joint.yaml"
   cameras:
     head_cam:
@@ -593,10 +596,3 @@ observation_timeout: 5.0
 action_timeout: 5.0
 reset_duration: 3.0
 reset_positions: {}
-
-# ========== Action Smoothing Settings ==========
-# 6 levels: "none", "minimal", "light", "moderate", "medium", "heavy"
-# For ACT policy: "light" or "moderate" recommended (preserves action fidelity)
-# For position_sequence: "medium" or "heavy" recommended
-enable_action_smoothing: true
-action_smoothing_level: "light"

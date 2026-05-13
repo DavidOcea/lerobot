@@ -484,6 +484,9 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
 
     # Parse robot config using draccus to handle polymorphic types
     robot_config_dict = config_dict.get("robot_config", {})
+    # Extract action smoothing fields from robot_config (they belong to orchestrator, not robot)
+    robot_enable_smoothing = robot_config_dict.pop("enable_action_smoothing", None)
+    robot_smoothing_level = robot_config_dict.pop("action_smoothing_level", None)
     if robot_config_dict:
         # Import robot config modules to register their configs
         # Use direct import to avoid triggering hardware dependencies
@@ -634,8 +637,14 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             cycle_delay=config_dict.get("cycle_delay", 2.0),
             enable_cycle_prompt=config_dict.get("enable_cycle_prompt", True),
             enable_interactive_mode=config_dict.get("enable_interactive_mode", False),
-            enable_action_smoothing=config_dict.get("enable_action_smoothing", True),
-            action_smoothing_level=config_dict.get("action_smoothing_level", "medium"),
+            enable_action_smoothing=(
+                robot_enable_smoothing if robot_enable_smoothing is not None
+                else config_dict.get("enable_action_smoothing", True)
+            ),
+            action_smoothing_level=(
+                robot_smoothing_level if robot_smoothing_level is not None
+                else config_dict.get("action_smoothing_level", "medium")
+            ),
         )
     except ImportError:
         # Fall back to base config
