@@ -2839,10 +2839,6 @@ class PrecisionPlaceSystem:
 当前目标偏移: ({:.1f}, {:.1f}) 像素
 """.format(self.target_offset_x, self.target_offset_y))
 
-        # 颜色配置
-        workpiece_color = WORKPIECE_COLOR
-        slot_color = SLOT_COLOR
-
         cv2.namedWindow("Hand-Eye Alignment", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Hand-Eye Alignment", 1000, 800)
 
@@ -2858,7 +2854,7 @@ class PrecisionPlaceSystem:
             display = image.copy()
 
             # 检测标记
-            state = self.controller.detector.detect(image, workpiece_color, slot_color)
+            state = self.controller.detector.detect_triple_marker_state(image)
 
             # 绘制检测结果
             if state.workpiece_detected:
