@@ -1399,7 +1399,7 @@ class PrecisionPlaceSystem:
         extrinsic_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
         if not extrinsic_path.exists():
             print(f"✗ 未找到手眼标定结果: {extrinsic_path}")
-            print("  请先运行手眼标定 (选项 H)")
+            print("  请先运行手眼标定: 主菜单选 4 → 再选 H")
             return
 
         result = HandEyeCalibrator.load(str(extrinsic_path))
@@ -2771,7 +2771,7 @@ class PrecisionPlaceSystem:
         extrinsic_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
         if not extrinsic_path.exists():
             print(f"✗ 未找到手眼标定结果: {extrinsic_path}")
-            print("  请先运行手眼标定 (选项 H)")
+            print("  请先运行手眼标定: 主菜单选 4 → 再选 H")
             return False
 
         try:
@@ -4662,7 +4662,7 @@ Z轴控制关节 (全部6个):
         he_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
         if not he_path.exists():
             print(f"✗ 手眼标定文件不存在: {he_path}")
-            print("  请先运行手眼标定 (菜单 8.5 或 calibrate_hand_eye)")
+            print("  请先运行手眼标定: 主菜单选 4 → 再选 H")
             return
 
         # 加载手眼标定
@@ -4764,6 +4764,7 @@ Z轴控制关节 (全部6个):
         # FK-IBVS状态
         tag_estimated = False
         fk_depth_mm = 0.0
+        jacobian_diag_printed = False  # Jacobian诊断: 每个tag估计周期打印一次
 
         while True:
             image = camera.read()
@@ -4865,6 +4866,11 @@ Z轴控制关节 (全部6个):
                                       f"{self.fk_ibvs.tag_world_pos[2]*1000:.0f}]mm")
                                 print(f"  [FK-IBVS] FK深度={fk_depth_mm:.0f}mm, "
                                       f"tag深度={tag_state.depth_filtered:.0f}mm")
+
+                                # Jacobian方向诊断 (每个tag估计周期打印一次)
+                                if not jacobian_diag_printed:
+                                    self._print_jacobian_comparison(current_joints)
+                                    jacobian_diag_printed = True
 
                         # 更新FK深度
                         if tag_estimated:
@@ -4979,6 +4985,7 @@ Z轴控制关节 (全部6个):
                 best_error = float('inf')
                 stuck_counter = 0
                 adaptive_gain = 1.0
+                jacobian_diag_printed = False
                 if not tag_estimated:
                     print("▶ 对齐模式启动 (首帧将估计tag世界坐标)")
                 else:
@@ -5024,6 +5031,95 @@ Z轴控制关节 (全部6个):
             print(f"{'='*40}")
             print(f"  迭代数: {len(error_history)}")
             print(f"  初始→最终误差: {error_history[0]:.1f}→{error_history[-1]:.1f}px")
+
+    def _print_jacobian_comparison(self, current_joints: np.ndarray):
+        """
+        Jacobian方向诊断: 逐列比较FK-IBVS解析雅可比 vs SimpleIBVS插值灵敏度。
+        发现方向(符号)不一致的关节。
+        """
+        # 获取FK-IBVS解析雅可比
+        J_fk, fk_indices, _, _ = self.fk_ibvs.compute_jacobian(current_joints)
+        if J_fk is None:
+            print("  [诊断] FK雅可比计算失败")
+            return
+
+        # 获取SimpleIBVS插值灵敏度
+        sensitivities, _ = self.simple_ibvs.get_interpolated_sensitivities(current_joints)
+        if not sensitivities:
+            print("  [诊断] SimpleIBVS灵敏度不可用")
+            return
+
+        simple_indices = [s.joint_idx for s in sensitivities]
+
+        # 构建每关节的对比数据
+        all_indices = sorted(set(fk_indices) | set(simple_indices))
+
+        print(f"\n{'='*72}")
+        print(f"  Jacobian方向诊断: FK-IBVS vs SimpleIBVS")
+        print(f"  {'关节':<8} {'FK_dx':>8} {'Simple_dx':>8} {'DIR':>5}  |  {'FK_dy':>8} {'Simple_dy':>8} {'DIR':>5}")
+        print(f"  {'-'*68}")
+
+        mismatches = []
+        for jidx in all_indices:
+            fk_dx, fk_dy = 0.0, 0.0
+            simple_dx, simple_dy = 0.0, 0.0
+
+            if jidx in fk_indices:
+                fi = fk_indices.index(jidx)
+                fk_dx = float(J_fk[0, fi])
+                fk_dy = float(J_fk[1, fi])
+
+            if jidx in simple_indices:
+                si = simple_indices.index(jidx)
+                simple_dx = float(sensitivities[si].pixel_dx_per_deg)
+                simple_dy = float(sensitivities[si].pixel_dy_per_deg)
+
+            # 方向判定
+            dx_match = (fk_dx * simple_dx >= 0) if abs(fk_dx) > 0.01 and abs(simple_dx) > 0.01 else True
+            dy_match = (fk_dy * simple_dy >= 0) if abs(fk_dy) > 0.01 and abs(simple_dy) > 0.01 else True
+            dx_flag = "OK" if dx_match else "FLIP"
+            dy_flag = "OK" if dy_match else "FLIP"
+
+            if not dx_match or not dy_match:
+                mismatches.append(jidx)
+
+            # 高亮显示方向不匹配的行
+            marker = " <---" if (not dx_match or not dy_match) else ""
+            print(f"  j{jidx:<7} {fk_dx:>8.2f} {simple_dx:>8.2f} {dx_flag:>5}  |  "
+                  f"{fk_dy:>8.2f} {simple_dy:>8.2f} {dy_flag:>5}{marker}")
+
+        if mismatches:
+            print(f"\n  ⚠ 方向不匹配的关节: {mismatches}")
+            print(f"  FK-IBVS的雅可比来自URDF+手眼标定+投影链,")
+            print(f"  SimpleIBVS的灵敏度来自真实机器人标定数据.")
+            print(f"  标记为FLIP的关节可能在URDF中旋转方向与真实机器人相反.")
+            print(f"  建议: 为这些关节添加方向修正系数.")
+
+        # 还比较Jacobian的范数(灵敏度大小)
+        print(f"  {'-'*68}")
+        fk_norms = np.sqrt(np.sum(J_fk**2, axis=0))
+        simple_dx_arr = np.array([float(s.pixel_dx_per_deg) for s in sensitivities])
+        simple_dy_arr = np.array([float(s.pixel_dy_per_deg) for s in sensitivities])
+
+        # 只对共有关节比较
+        common_fk_norms = []
+        common_simple_norms = []
+        for jidx in fk_indices:
+            if jidx in simple_indices:
+                fi = fk_indices.index(jidx)
+                si = simple_indices.index(jidx)
+                common_fk_norms.append(fk_norms[fi])
+                common_simple_norms.append(np.sqrt(simple_dx_arr[si]**2 + simple_dy_arr[si]**2))
+
+        if common_fk_norms:
+            avg_ratio = np.mean([s/f if f > 0.01 else 1.0 for f, s in zip(common_fk_norms, common_simple_norms)])
+            print(f"  灵敏度范数比 (FK/Simple): avg={avg_ratio:.2f}")
+            if avg_ratio < 0.5:
+                print(f"  ⚠ FK灵敏度过低, 可能是URDF关节长度偏短或FK链有误")
+            elif avg_ratio > 2.0:
+                print(f"  ⚠ FK灵敏度过高, 可能是URDF关节长度偏长")
+
+        print(f"{'='*72}\n")
 
     def run_full(self):
         """完整流程"""
@@ -5121,7 +5217,7 @@ def main():
             print("6. 预设位置")
             print("7. 设置对齐目标偏移")
             print("8. 运行对齐 (传统灵敏度方法)")
-            print("8.5 手眼标定对齐 (PBVS，需手眼标定)")
+            print("8.5 PBVS对齐 (需手眼标定 → 先在菜单4按H标定)")
             print("--- IBVS 视觉伺服 ---")
             print("B. 简单IBVS对齐 (纯灵敏度，无需手眼标定) [推荐尝试]")
             print("B2. FK-IBVS对齐 (FK解析雅可比，需URDF+手眼标定) [对比测试]")
