@@ -4692,6 +4692,13 @@ Z轴控制关节 (全部6个):
             camera_matrix = np.array([[fx, 0, 320], [0, fx, 240], [0, 0, 1]])
             print(f"⚠ 使用默认相机内参 fx={fx}")
 
+        # 先初始化SimpleIBVS (FK-IBVS需要引用它做动态方向检查)
+        if self.simple_ibvs is None:
+            self.simple_ibvs = SimpleIBVSController(arm=self.current_arm)
+            self.simple_ibvs.load_calibration()
+
+        self.simple_ibvs.camera_fx = float(camera_matrix[0, 0])
+
         # 创建FK求解器
         try:
             fk = create_fk_from_urdf(self.urdf_path, self.current_arm)
@@ -4700,27 +4707,26 @@ Z轴控制关节 (全部6个):
             print(f"✗ FK初始化失败: {e}")
             return
 
+        # 位置权重 (与SimpleIBVS一致, 引导LS求解器偏好主要臂关节)
+        from precision_place.calibration.simple_ibvs import POSITION_WEIGHTS_RIGHT
+        position_weights = POSITION_WEIGHTS_RIGHT
+
         # 初始化FK-IBVS控制器
         self.fk_ibvs = FKIBVSController(
             fk_solver=fk,
             T_flange_cam=T_flange_cam,
             camera_matrix=camera_matrix,
             gain=0.6,
+            position_weights=position_weights,
+            simple_ibvs=self.simple_ibvs,
             joint_sign_corrections={
-                7:  (1, -1),    # dy FLIP (FK_dy=+36 vs Simple_dy=-2.84)
-                8:  (-1, 1),    # dx FLIP (FK_dx=-27 vs Simple_dx=+4.18)
-                9:  (1, -1),    # dy FLIP (FK_dy=+0.78 vs Simple_dy=-6.10)
+                7:  (-1, -1),   # dx FLIP + dy FLIP (最新诊断)
+                8:  (-1, -1),   # dx FLIP + dy FLIP (最新诊断)
+                9:  (1, -1),    # dy FLIP
                 10: (-1, -1),   # dx+dy FLIP
-                12: (-1, 1),    # dx FLIP (FK_dx=-15 vs Simple_dx=+0.24)
+                12: (-1, 1),    # dx FLIP
             },
         )
-
-        # 初始化SimpleIBVS用于AprilTag检测 (共享检测管道)
-        if self.simple_ibvs is None:
-            self.simple_ibvs = SimpleIBVSController(arm=self.current_arm)
-            self.simple_ibvs.load_calibration()
-
-        self.simple_ibvs.camera_fx = float(camera_matrix[0, 0])
 
         frame = camera.read()
         if frame is not None:

@@ -33,7 +33,9 @@ class FKIBVSController:
                  gain: float = 0.8,
                  damping_ratio: float = 0.03,
                  jacobian_delta: float = 0.15,
-                 joint_sign_corrections: Dict[int, Tuple[int, int]] = None):
+                 joint_sign_corrections: Dict[int, Tuple[int, int]] = None,
+                 position_weights: Dict[int, float] = None,
+                 simple_ibvs = None):
         """
         Args:
             fk_solver: ForwardKinematics实例
@@ -45,7 +47,10 @@ class FKIBVSController:
             jacobian_delta: 数值雅可比的关节扰动 (度)
             joint_sign_corrections: 关节方向修正 {joint_idx: (dx_sign, dy_sign)}
                 用于修正URDF与真实机器人关节旋转方向的差异。
-                例如 {8: (-1, 1)} 表示j8的dx灵敏度翻转、dy保持。
+            position_weights: 关节位置权重 {joint_idx: weight}
+                引导阻尼最小二乘求解器偏好主要臂关节，避免力分配到末端/trunk。
+            simple_ibvs: SimpleIBVSController引用，用于动态方向检查。
+                每帧比对FK雅可比与SimpleIBVS灵敏度，自动修正符号不匹配的关节列。
         """
         self.fk = fk_solver
         self.T_flange_cam = T_flange_cam
@@ -62,6 +67,8 @@ class FKIBVSController:
         self.jacobian_delta = jacobian_delta
         self.max_adjust = 2.0
         self.joint_sign_corrections = joint_sign_corrections or {}
+        self.position_weights = position_weights or {}
+        self.simple_ibvs = simple_ibvs
 
         # 状态
         self.tag_world_pos: Optional[np.ndarray] = None  # tag在世界坐标系中的位置
@@ -201,12 +208,37 @@ class FKIBVSController:
                 J[:, i] = 0.0
                 active_indices.append(jidx)
 
-        # 应用关节方向修正 (修正URDF与真实机器人旋转方向的差异)
+        # 阶段1: 应用静态方向修正 (URDF配置)
         for i, jidx in enumerate(active_indices):
             if jidx in self.joint_sign_corrections:
                 dx_sign, dy_sign = self.joint_sign_corrections[jidx]
                 J[0, i] *= dx_sign
                 J[1, i] *= dy_sign
+
+        # 阶段2: 动态方向检查 (对照SimpleIBVS真实灵敏度)
+        if self.simple_ibvs is not None:
+            try:
+                ref_sens, _ = self.simple_ibvs.get_interpolated_sensitivities(joints)
+                if ref_sens:
+                    ref_map = {s.joint_idx: (s.pixel_dx_per_deg, s.pixel_dy_per_deg) for s in ref_sens}
+                    flips = []
+                    for i, jidx in enumerate(active_indices):
+                        if jidx not in ref_map:
+                            continue
+                        ref_dx, ref_dy = ref_map[jidx]
+                        # 仅当FK和ref都有足够幅值时才比较 (排除近零的噪声误判)
+                        if abs(J[0, i]) > 0.05 and abs(ref_dx) > 0.05:
+                            if np.sign(J[0, i]) != np.sign(ref_dx):
+                                J[0, i] *= -1
+                                flips.append(f"j{jidx}_dx")
+                        if abs(J[1, i]) > 0.05 and abs(ref_dy) > 0.05:
+                            if np.sign(J[1, i]) != np.sign(ref_dy):
+                                J[1, i] *= -1
+                                flips.append(f"j{jidx}_dy")
+                    if flips:
+                        print(f"  [FK-IBVS] 动态方向修正: {flips}")
+            except Exception:
+                pass  # SimpleIBVS查询失败则跳过动态修正
 
         return J, active_indices, base_pixel, base_depth
 
@@ -235,11 +267,17 @@ class FKIBVSController:
 
         error = np.array([pixel_error_x, pixel_error_y])
 
-        # 阻尼最小二乘
+        # 阻尼最小二乘 (带位置权重)
         error_norm = float(np.linalg.norm(error))
         damping = max(0.3, error_norm * self.damping_ratio)
 
-        JW = J  # 解析雅可比不需要位置权重缩放
+        # 构建位置权重矩阵: 引导求解器偏好主要臂关节 (j7-j9)
+        n_joints = len(active_indices)
+        if self.position_weights:
+            W = np.diag([self.position_weights.get(jidx, 0.5) for jidx in active_indices])
+        else:
+            W = np.eye(n_joints)
+        JW = J @ W  # 加权雅可比
         JW_JWT = JW @ JW.T  # 2×2
 
         try:
