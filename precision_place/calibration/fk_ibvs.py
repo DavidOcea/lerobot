@@ -65,7 +65,7 @@ class FKIBVSController:
         self.gain = gain
         self.damping_ratio = damping_ratio
         self.jacobian_delta = jacobian_delta
-        self.max_adjust = 2.0
+        self.max_adjust = 0.5  # 小步移动, 保持在线性假设区域内
         self.joint_sign_corrections = joint_sign_corrections or {}
         self.position_weights = position_weights or {}
         self.simple_ibvs = simple_ibvs

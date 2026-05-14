@@ -4716,7 +4716,7 @@ Z轴控制关节 (全部6个):
             fk_solver=fk,
             T_flange_cam=T_flange_cam,
             camera_matrix=camera_matrix,
-            gain=0.6,
+            gain=0.3,  # 小步增益, 保持在线性区域内
             position_weights=position_weights,
             simple_ibvs=self.simple_ibvs,
             joint_sign_corrections={
