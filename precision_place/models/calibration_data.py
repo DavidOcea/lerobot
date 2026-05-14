@@ -18,6 +18,8 @@ class JointSensitivity:
     pixel_dy_per_deg: float = 0.0
     # 关节移动1度时，末端在相机中的深度变化 (mm/deg)
     depth_dz_per_deg: float = 0.0
+    # 关节移动1度时，tag旋转角变化 (deg/deg)
+    rotation_ddeg_per_deg: float = 0.0
     # 关节移动1度时，末端的实际毫米移动
     mm_dx_per_deg: float = 0.0
     mm_dy_per_deg: float = 0.0

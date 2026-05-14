@@ -140,7 +140,9 @@ class PrecisionPlaceSystem:
         self.forward_kinematics = None  # 正运动学计算器
         self.coordinate_transformer = None  # 坐标变换器（基于手眼标定）
         self.ibvs_controller = None  # IBVS控制器
-        self.simple_ibvs = None  # SimpleIBVS控制器
+        self.simple_ibvs = None  # SimpleIBVS控制器 (2D)
+        self.simple_ibvs_3d = None  # SimpleIBVS控制器 (3D: XY+旋转)
+        self.simple_ibvs_4d = None  # SimpleIBVS控制器 (4D: XY+旋转+深度)
         self.fk_ibvs = None      # FK-IBVS控制器 (基于正运动学)
         self.urdf_path = None  # URDF文件路径
         # 目标偏移量（用于标记点有固定偏移的情况）
@@ -852,8 +854,13 @@ class PrecisionPlaceSystem:
 
         self.controller.calibrate_all_joints_auto(move_deg, settle_time, return_after)
 
-    def ibvs_calibrate_apriltag_3d(self):
-        """SimpleIBVS AprilTag 3D灵敏度标定 (含深度维度)"""
+    def ibvs_calibrate_apriltag_3d(self, dimension: int = 2):
+        """SimpleIBVS AprilTag 灵敏度标定 (支持2D/3D/4D)"""
+
+        dim_names = {2: "2D (XY)", 3: "3D (XY+旋转)", 4: "4D (XY+旋转+深度)"}
+        dim_name = dim_names.get(dimension, f"{dimension}D")
+        calib_file = SimpleIBVSController.CALIBRATION_FILES.get(dimension, "calibration_points.json")
+
         if not _has_simple_ibvs:
             print("✗ SimpleIBVS模块未加载")
             return
@@ -869,18 +876,24 @@ class PrecisionPlaceSystem:
             return
 
         print("\n" + "="*60)
-        print("SimpleIBVS AprilTag 3D灵敏度标定 (含深度)")
+        print(f"SimpleIBVS AprilTag {dim_name} 灵敏度标定")
+        print(f"  标定文件: {calib_file}")
         print("="*60)
-        print("""
+        print(f"""
 说明:
-  使用 AprilTag 检测来标定每个关节的3D灵敏度:
+  使用 AprilTag 检测来标定每个关节的{dim_name}灵敏度:
     - 像素X灵敏度 (px/deg)
-    - 像素Y灵敏度 (px/deg)
-    - 深度灵敏度 (mm/deg)  ← 新增
-
+    - 像素Y灵敏度 (px/deg)""")
+        if dimension >= 3:
+            print("    - 旋转灵敏度 (deg/deg)  ← 3D/4D新增")
+        if dimension >= 4:
+            print("    - 深度灵敏度 (mm/deg)  ← 4D新增")
+        print("""
 原理:
-  每个关节移动时，通过before/after的tag像素位置变化和尺寸变化，
-  计算完整的3D灵敏度，用于3×N雅可比控制。
+  每个关节移动时，通过before/after的tag像素位置变化、旋转变化和尺寸变化，
+  计算完整的灵敏度，用于雅可比控制。""")
+        print(f"  标定完成后保存到 {calib_file}")
+        print("""
 
 要求:
   1. 打印 AprilTag (36h11, ID=0) 放在目标位置
@@ -912,12 +925,16 @@ class PrecisionPlaceSystem:
 
         input("\n按 Enter 开始...")
 
-        # 初始化控制器
-        if self.simple_ibvs is None:
-            self.simple_ibvs = SimpleIBVSController(arm=self.current_arm)
+        # 初始化或复用指定维度的IBVS控制器
+        ibvs_attrs = {2: 'simple_ibvs', 3: 'simple_ibvs_3d', 4: 'simple_ibvs_4d'}
+        attr_name = ibvs_attrs.get(dimension, 'simple_ibvs')
+        if getattr(self, attr_name) is None:
+            ctrl = SimpleIBVSController(arm=self.current_arm, dimension=dimension)
+            setattr(self, attr_name, ctrl)
+        ibvs = getattr(self, attr_name)
 
         # 加载已有标定数据
-        self.simple_ibvs.load_calibration()
+        ibvs.load_calibration()
 
         # 设置相机焦距 (尝试从相机内参文件加载)
         intrinsics_path = Path(__file__).parent / "camera_intrinsics.yaml"
@@ -927,16 +944,16 @@ class PrecisionPlaceSystem:
                 with open(intrinsics_path, 'r') as f:
                     data = yaml.safe_load(f)
                 camera_matrix = np.array(data['camera_matrix']['data']).reshape(3, 3)
-                self.simple_ibvs.camera_fx = float(camera_matrix[0, 0])
-                print(f"✓ 从内参文件加载 fx={self.simple_ibvs.camera_fx:.1f}")
+                ibvs.camera_fx = float(camera_matrix[0, 0])
+                print(f"✓ 从内参文件加载 fx={ibvs.camera_fx:.1f}")
             except Exception:
-                print(f"⚠ 使用默认 fx={self.simple_ibvs.camera_fx:.1f}")
+                print(f"⚠ 使用默认 fx={ibvs.camera_fx:.1f}")
 
         # 设置目标像素位置为图像中心
         frame = camera.read()
         if frame is not None:
             h, w = frame.shape[:2]
-            self.simple_ibvs.set_target_pixel(w/2, h/2)
+            ibvs.set_target_pixel(w/2, h/2)
 
         # get_joints_fn
         def get_joints_fn():
@@ -956,22 +973,22 @@ class PrecisionPlaceSystem:
         except (ValueError, EOFError):
             return_after = True
 
-        sensitivities = self.simple_ibvs.calibrate_all_joints_apriltag(
+        sensitivities = ibvs.calibrate_all_joints_apriltag(
             camera, get_joints_fn, move_joint_fn, return_after
         )
 
         if sensitivities:
-            # 保存
-            self.simple_ibvs.save_calibration()
+            # 保存 (自动存入对应维度的标定文件)
+            ibvs.save_calibration()
             print(f"\n{'='*60}")
-            print("3D标定结果汇总:")
+            print(f"{dim_name}标定结果汇总:")
             print(f"{'='*60}")
             for s in sensitivities:
                 has_dz = abs(getattr(s, 'depth_dz_per_deg', 0.0)) > 0.001
                 dz_str = f", Z={getattr(s, 'depth_dz_per_deg', 0.0):.1f}mm/deg" if has_dz else ""
                 print(f"  {s.joint_name}: X={s.pixel_dx_per_deg:.2f}px/deg, "
                       f"Y={s.pixel_dy_per_deg:.2f}px/deg{dz_str}")
-            print(f"\n✓ 已保存到 calibration_points.json (可直接用于SimpleIBVS)")
+            print(f"\n✓ 已保存到 {calib_file} (可直接用于SimpleIBVS-{dimension}D)")
         else:
             print("\n✗ 标定未产生任何数据")
 
@@ -4245,15 +4262,19 @@ Z轴控制关节 (全部6个):
 
         return success
 
-    def simple_ibvs_alignment(self):
+    def simple_ibvs_alignment(self, dimension: int = 2):
         """
-        SimpleIBVS对齐/跟踪 - AprilTag + 灵敏度雅可比 (2×N XY伺服)
+        SimpleIBVS对齐/跟踪 - AprilTag + 灵敏度雅可比
 
-        对齐判定: tag居中(像素误差<容差) AND 相机距离≈目标深度
+        控制维度:
+          2D (dimension=2): XY only (当前B2)
+          3D (dimension=3): XY + 旋转联合求解
+          4D (dimension=4): XY + 旋转 + 深度联合求解
 
-        两种模式:
-          对齐(A): 伺服XY+深度 → tag居中且深度达标 → 自动停止
-          跟踪(F): 持续伺服XY+深度，tag移动时机器人跟随
+        对齐判定:
+          2D: XY居中 且 深度≈目标深度
+          3D: XY居中 + 旋转对准 + 深度≈目标深度 (深度仅判定)
+          4D: XY居中 + 旋转对准 + 深度≈目标深度 (深度参与伺服)
         """
         if not _has_simple_ibvs:
             print("✗ SimpleIBVS模块未加载")
@@ -4263,18 +4284,28 @@ Z轴控制关节 (全部6个):
             print("请先连接设备")
             return
 
-        # 初始化 SimpleIBVS 控制器
-        if self.simple_ibvs is None:
-            self.simple_ibvs = SimpleIBVSController(arm=self.current_arm)
+        dim_names = {2: "2D (XY)", 3: "3D (XY+旋转)", 4: "4D (XY+旋转+深度)"}
+        dim_name = dim_names.get(dimension, f"{dimension}D")
+        dim_key = {2: "B2", 3: "B3", 4: "B4"}.get(dimension, f"B{dimension}")
+
+        # 初始化或复用 SimpleIBVS 控制器 (按dimension独立实例)
+        ibvs_attrs = {2: 'simple_ibvs', 3: 'simple_ibvs_3d', 4: 'simple_ibvs_4d'}
+        attr_name = ibvs_attrs.get(dimension, 'simple_ibvs')
+        if getattr(self, attr_name) is None:
+            ctrl = SimpleIBVSController(arm=self.current_arm, dimension=dimension)
+            setattr(self, attr_name, ctrl)
+        ibvs = getattr(self, attr_name)
 
         # 加载标定数据
-        if not self.simple_ibvs.calibration_points:
-            if not self.simple_ibvs.load_calibration():
-                print("\n请先运行关节灵敏度标定: 主菜单 -> 4 (标定) -> 2 或 3")
-                print("  或使用 AprilTag 3D标定: 主菜单 -> 4 -> J")
+        if not ibvs.calibration_points:
+            if not ibvs.load_calibration():
+                calib_file = SimpleIBVSController.CALIBRATION_FILES.get(dimension, "calibration_points.json")
+                print(f"\n请先运行标定: 主菜单 -> 4 (标定) -> J{dimension} "
+                      f"(AprilTag {dim_name}标定)")
+                print(f"  标定文件: {calib_file}")
                 return
 
-        self.simple_ibvs.print_summary()
+        ibvs.print_summary()
 
         # 获取相机
         arm_config = ARM_CONFIGS.get(self.current_arm)
@@ -4284,44 +4315,40 @@ Z轴控制关节 (全部6个):
             return
 
         print(f"\n{'='*60}")
-        print("SimpleIBVS 对齐/跟踪模式 (AprilTag + 深度)")
+        print(f"SimpleIBVS {dim_name} 对齐/跟踪模式 [{dim_key}]")
         print(f"{'='*60}")
-        print("""
+
+        dim_desc = {
+            2: "2×N雅可比: 像素误差 → 关节调整量 (仅XY伺服)\n深度仅用于收敛判定 (tag居中 且 距离≈目标深度)",
+            3: "3×N雅可比: XY+旋转联合求解\n旋转参与伺服。深度仅用于收敛判定 (不做伺服)",
+            4: "4×N雅可比: XY+旋转+深度联合求解\n所有维度参与伺服。深度容差宽松 (20mm)",
+        }
+        print(f"""
 原理:
   1. 在目标位置放置 AprilTag (36h11, 推荐ID=0)
-  2. 相机检测 tag 中心像素位置 + tag尺寸 → 估算深度
-  3. IBVS 2×N雅可比: 像素误差 → 关节调整量 (仅XY伺服)
-  4. 深度仅用于收敛判定 (tag居中 且 距离≈目标深度)
-
-注意:
-  深度伺服已禁用。机器人仅做XY伺服将tag居中。
-  深度需手动调整 (或通过机器人示教器) 到达目标距离。
-  对齐完成: tag居中 且 距离≈目标深度。两个条件都满足才停止。
+  2. 相机检测 tag 中心像素位置 + 旋转角 + tag尺寸 → 估算深度
+  3. {dim_desc.get(dimension, dim_desc[2])}
 
 两种模式:
-  [对齐] A键: 自动伺服 → tag居中+深度达标 → 自动停止
-  [跟踪] F键: 持续伺服，维持tag在中心+目标深度，不会自动停止
+  [对齐] A键: 自动伺服 → 达标 → 自动停止
+  [跟踪] F键: 持续伺服，维持tag对准，不会自动停止
 
 按键说明:
-  A - 对齐模式 (居中+深度达标后自动停止)
-  F - 跟踪模式 (持续伺服，不会自动停止)
-  S - 单步对齐 (一步后暂停)
-  T - 设置目标像素 (当前tag中心作为目标)
+  A - 对齐模式  F - 跟踪模式  S - 单步
+  T - 设置目标 (当前tag状态作为目标)
   G - 设置目标像素为图像中心
   D - 设置目标深度 (当前深度作为目标)
-  R - 切换深度要求 (XY居中即完成 ↔ 居中+深度达标)
-  + - 加快跟踪速度
-  - - 减慢跟踪速度
-  X - 停止自动/跟踪模式
-  Q - 退出
+  R - 切换深度要求 (XY居中即完成 ↔ 全维度达标)
+  +/-- 跟踪速度  X - 停止  Q - 退出
 """)
-        print(f"  当前目标: 像素({self.simple_ibvs.target_pixel_x:.1f}, "
-              f"{self.simple_ibvs.target_pixel_y:.1f}), "
-              f"深度{self.simple_ibvs.target_depth_mm:.0f}mm")
-        print(f"  像素容差: {self.simple_ibvs.pixel_tolerance}px, "
-              f"深度容差: ±{self.simple_ibvs.depth_tolerance_mm:.0f}mm")
-        print(f"  pixel_to_mm_ratio: {self.simple_ibvs.pixel_to_mm_ratio:.3f}")
-        print(f"  AprilTag家族: {self.simple_ibvs.tag_detector.tag_family}")
+        print(f"  当前目标: 像素({ibvs.target_pixel_x:.1f}, "
+              f"{ibvs.target_pixel_y:.1f}), "
+              f"深度{ibvs.target_depth_mm:.0f}mm")
+        print(f"  像素容差: {ibvs.pixel_tolerance}px, "
+              f"旋转容差: {ibvs.rotation_tolerance}°, "
+              f"深度容差: ±{ibvs.depth_tolerance_mm:.0f}mm")
+        print(f"  pixel_to_mm_ratio: {ibvs.pixel_to_mm_ratio:.3f}")
+        print(f"  AprilTag家族: {ibvs.tag_detector.tag_family}")
 
         cv2.namedWindow("SimpleIBVS Alignment", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("SimpleIBVS Alignment", 800, 600)
@@ -4354,14 +4381,14 @@ Z轴控制关节 (全部6个):
             h, w = image.shape[:2]
 
             # AprilTag 检测 + 误差计算
-            tag_state = self.simple_ibvs.detect_and_compute_error(image)
+            tag_state = ibvs.detect_and_compute_error(image)
 
             # 绘制tag检测结果
-            tags = self.simple_ibvs.tag_detector.detect(image)
-            display = self.simple_ibvs.tag_detector.draw_tags(display, tags, False)
+            tags = ibvs.tag_detector.detect(image)
+            display = ibvs.tag_detector.draw_tags(display, tags, False)
 
             # 绘制目标位置十字线
-            tx, ty = self.simple_ibvs.target_pixel_x, self.simple_ibvs.target_pixel_y
+            tx, ty = ibvs.target_pixel_x, ibvs.target_pixel_y
             cv2.line(display, (int(tx)-20, int(ty)), (int(tx)+20, int(ty)), (0, 255, 255), 2)
             cv2.line(display, (int(tx), int(ty)-20), (int(tx), int(ty)+20), (0, 255, 255), 2)
             cv2.putText(display, "TARGET", (int(tx)+8, int(ty)-8),
@@ -4382,7 +4409,7 @@ Z轴控制关节 (全部6个):
                 mode_name = mode_names[mode]
                 mode_color = mode_colors[mode]
 
-            cv2.putText(display, f"SimpleIBVS [{mode_name}]  Iter:{iteration}",
+            cv2.putText(display, f"SimpleIBVS-{dimension}D [{mode_name}]  Iter:{iteration}",
                        (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.55, mode_color, 2)
             y_pos += 25
 
@@ -4406,7 +4433,7 @@ Z轴控制关节 (全部6个):
                 # 深度信息
                 depth_color = (0, 255, 0) if tag_state.depth_reached else (0, 200, 255)
                 cv2.putText(display, f"Depth: {tag_state.depth_filtered:.0f}mm "
-                           f"(target={self.simple_ibvs.target_depth_mm:.0f}mm, "
+                           f"(target={ibvs.target_depth_mm:.0f}mm, "
                            f"err={tag_state.depth_error_mm:+.0f}mm) "
                            f"{'[OK]' if tag_state.depth_reached else ''}",
                            (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.45, depth_color, 1)
@@ -4417,13 +4444,36 @@ Z轴控制关节 (全部6个):
                            (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 200, 0), 1)
                 y_pos += 22
 
+                # 旋转对准状态 (3D/4D)
+                rotation_ok = abs(tag_state.error_rotation) < ibvs.rotation_tolerance
+                if dimension >= 3:
+                    rot_color = (0, 255, 0) if rotation_ok else (0, 200, 255)
+                    cv2.putText(display, f"Rotation err: {tag_state.error_rotation:+.1f} deg "
+                               f"{'[OK]' if rotation_ok else ''}",
+                               (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.45, rot_color, 1)
+                    y_pos += 22
+
                 # 对齐状态
-                is_aligned = (tag_state.xy_centered if not require_depth_for_align
-                             else tag_state.aligned)
+                if dimension >= 4:
+                    is_aligned = (tag_state.xy_centered if not require_depth_for_align
+                                 else (tag_state.xy_centered and rotation_ok and tag_state.depth_reached))
+                elif dimension == 3:
+                    is_aligned = (tag_state.xy_centered if not require_depth_for_align
+                                 else (tag_state.xy_centered and rotation_ok and tag_state.depth_reached))
+                else:
+                    is_aligned = (tag_state.xy_centered if not require_depth_for_align
+                                 else tag_state.aligned)
                 if is_aligned:
-                    cv2.putText(display, ">> ALIGNED: CENTERED + DEPTH OK <<" if require_depth_for_align
-                                else ">> ALIGNED: XY CENTERED <<", (10, y_pos),
+                    if dimension >= 3:
+                        align_text = ">> ALIGNED: XY+ROT+DEPTH OK <<" if require_depth_for_align else ">> ALIGNED: XY+ROT OK <<"
+                    else:
+                        align_text = ">> ALIGNED: CENTERED + DEPTH OK <<" if require_depth_for_align else ">> ALIGNED: XY CENTERED <<"
+                    cv2.putText(display, align_text, (10, y_pos),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
+                    y_pos += 22
+                elif tag_state.xy_centered and dimension >= 3 and not rotation_ok:
+                    cv2.putText(display, "XY centered, aligning rotation...", (10, y_pos),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 255), 1)
                     y_pos += 22
                 elif tag_state.xy_centered:
                     cv2.putText(display, "Centered, adjusting depth...", (10, y_pos),
@@ -4439,44 +4489,49 @@ Z轴控制关节 (全部6个):
 
             # ========== 控制逻辑 ==========
             if mode == MODE_ALIGN and not converged:
-                # XY-only模式: 仅检查居中, 忽略深度; 正常模式: 居中+深度都需达标
-                is_aligned = (tag_state.xy_centered if not require_depth_for_align
-                             else tag_state.aligned)
+                # 复用上面的 is_aligned (已根据dimension计算)
                 if is_aligned:
                     aligned_frames += 1
                     if aligned_frames >= align_confirm_frames:
                         converged = True
                         mode = MODE_IDLE
-                        align_type = "XY居中" if not require_depth_for_align else "Tag居中+深度达标"
+                        dim_align_names = {2: "XY居中" if not require_depth_for_align else "Tag居中+深度达标",
+                                          3: "XY+旋转对准" if not require_depth_for_align else "XY+旋转+深度达标",
+                                          4: "XY+旋转+深度达标"}
+                        align_type = dim_align_names.get(dimension, dim_align_names[2])
                         print(f"\n✓ 对齐完成! {align_type}! (连续{aligned_frames}帧确认)")
                         if tag_state.tag_visible:
                             print(f"  像素误差: {tag_state.error_total_px:.1f}px "
                                   f"({tag_state.error_total_mm:.1f}mm)")
+                            print(f"  旋转误差: {tag_state.error_rotation:.1f}°")
                             print(f"  深度: {tag_state.depth_filtered:.0f}mm "
-                                  f"(目标{self.simple_ibvs.target_depth_mm:.0f}mm)")
+                                  f"(目标{ibvs.target_depth_mm:.0f}mm)")
                         if error_history:
                             print(f"  初始→最终像素误差: {error_history[0]:.1f}→"
                                   f"{error_history[-1]:.1f}px")
                     else:
+                        rot_info = f" rot={tag_state.error_rotation:.1f}°" if dimension >= 3 else ""
                         print(f"  [Align] aligned 确认中 {aligned_frames}/{align_confirm_frames} "
-                              f"(pixel={tag_state.error_total_px:.1f}px, depth={tag_state.depth_filtered:.0f}mm)")
+                              f"(pixel={tag_state.error_total_px:.1f}px, depth={tag_state.depth_filtered:.0f}mm{rot_info})")
                 elif tag_state.tag_visible:
-                    aligned_frames = 0  # 未对齐则重置确认计数
+                    aligned_frames = 0
                     current_joints = self.controller.get_joint_states()
                     if current_joints is not None:
-                        xy_adj = self.simple_ibvs.compute_joint_adjustments(
+                        # 3D/4D: 传入 rotation_error; 4D: 同时传入 depth_error_mm 参与伺服
+                        depth_err = tag_state.depth_error_mm if dimension >= 4 else 0.0
+                        xy_rot_depth_adj = ibvs.compute_joint_adjustments(
                             tag_state.error_x, tag_state.error_y, current_joints,
-                            depth_error_mm=tag_state.depth_error_mm,
-                            current_depth_mm=tag_state.depth_filtered)
-                        # 对齐模式禁用旋转伺服: 旋转会改变相机朝向→改变像素灵敏度→干扰XY伺服
-                        rot_adj = {}
+                            depth_error_mm=depth_err,
+                            current_depth_mm=tag_state.depth_filtered,
+                            rotation_error=tag_state.error_rotation if dimension >= 3 else 0.0)
+                        # 对齐模式: 所有维度由统一雅可比处理, 不需要独立旋转伺服
+                        rot_adj = {}  # 旋转已包含在 xy_rot_depth_adj 中
 
-                        # 卡死检测: 若像素误差连续3轮未改善，降低增益防震荡
+                        # 卡死检测
                         current_error = tag_state.error_total_px
                         if current_error < best_error * 0.9:
                             best_error = current_error
                             stuck_counter = 0
-                            # 误差改善 → 缓慢恢复增益
                             adaptive_gain = min(1.0, adaptive_gain * 1.3)
                         else:
                             stuck_counter += 1
@@ -4485,46 +4540,49 @@ Z轴控制关节 (全部6个):
                                 stuck_counter = 0
                                 print(f"  [Align] stuck detected, gain→{adaptive_gain:.2f}")
 
-                        # 自适应增益缩放
                         if adaptive_gain < 0.99:
-                            xy_adj = {k: v * adaptive_gain for k, v in xy_adj.items()}
+                            xy_rot_depth_adj = {k: v * adaptive_gain for k, v in xy_rot_depth_adj.items()}
 
+                        rot_info = f" rot={tag_state.error_rotation:.1f}°" if dimension >= 3 else ""
                         print(f"  [Align iter {iteration+1}] "
                               f"pixel={tag_state.error_total_px:.1f}px "
                               f"depth={tag_state.depth_filtered:.0f}mm "
-                              f"(target={self.simple_ibvs.target_depth_mm:.0f}mm)"
+                              f"(target={ibvs.target_depth_mm:.0f}mm){rot_info}"
                               f"{' gain=' + f'{adaptive_gain:.2f}' if adaptive_gain < 0.99 else ''}")
                         if self.controller and not self.controller.passive_mode:
-                            self.controller.apply_joint_adjustments(xy_adj, rot_adj)
+                            self.controller.apply_joint_adjustments(xy_rot_depth_adj, rot_adj)
                             time.sleep(align_delay)
                         iteration += 1
                         error_history.append(tag_state.error_total_px)
-                        if iteration >= self.simple_ibvs.max_iterations:
-                            print(f"\n⚠ 达到最大迭代数 {self.simple_ibvs.max_iterations}")
+                        if iteration >= ibvs.max_iterations:
+                            print(f"\n⚠ 达到最大迭代数 {ibvs.max_iterations}")
                             mode = MODE_IDLE
                 else:
-                    aligned_frames = 0  # tag不可见 → 重置
+                    aligned_frames = 0
 
             elif mode == MODE_TRACK:
                 if tag_state.tag_visible:
                     current_joints = self.controller.get_joint_states()
                     if current_joints is not None:
-                        xy_adj = self.simple_ibvs.compute_joint_adjustments(
+                        depth_err = tag_state.depth_error_mm if dimension >= 4 else 0.0
+                        xy_rot_depth_adj = ibvs.compute_joint_adjustments(
                             tag_state.error_x, tag_state.error_y, current_joints,
-                            depth_error_mm=tag_state.depth_error_mm,
-                            current_depth_mm=tag_state.depth_filtered)
-                        # 跟踪模式旋转修正减半 (避免j12饱和累积)
-                        rot_raw = self.simple_ibvs.compute_rotation_adjustment(
-                            tag_state.error_rotation)
-                        rot_adj = {k: v * 0.3 for k, v in rot_raw.items()} if rot_raw else {}
+                            depth_error_mm=depth_err,
+                            current_depth_mm=tag_state.depth_filtered,
+                            rotation_error=tag_state.error_rotation if dimension >= 3 else 0.0)
+                        # 2D模式独立旋转伺服; 3D/4D旋转由雅可比统一处理
+                        if dimension == 2:
+                            rot_raw = ibvs.compute_rotation_adjustment(
+                                tag_state.error_rotation)
+                            rot_adj = {k: v * 0.3 for k, v in rot_raw.items()} if rot_raw else {}
+                        else:
+                            rot_adj = {}
                         if tag_state.error_total_px > 5.0 or abs(tag_state.depth_error_mm) > 5.0:
                             print(f"  [Track iter {iteration+1}] "
                                   f"pixel={tag_state.error_total_px:.1f}px "
                                   f"depth={tag_state.depth_filtered:.0f}mm")
                         if self.controller and not self.controller.passive_mode:
-                            # 跟踪模式: 使用较少平滑步数以获得快速响应
-                            # 小调整→3步, 中等→8步, 大调整→15步
-                            self.controller.apply_joint_adjustments(xy_adj, rot_adj)
+                            self.controller.apply_joint_adjustments(xy_rot_depth_adj, rot_adj)
                             time.sleep(track_delay)
                         iteration += 1
                         error_history.append(tag_state.error_total_px)
@@ -4536,28 +4594,36 @@ Z轴控制关节 (全部6个):
                 if tag_state.tag_visible:
                     current_joints = self.controller.get_joint_states()
                     if current_joints is not None:
-                        xy_adj = self.simple_ibvs.compute_joint_adjustments(
+                        depth_err = tag_state.depth_error_mm if dimension >= 4 else 0.0
+                        xy_rot_depth_adj = ibvs.compute_joint_adjustments(
                             tag_state.error_x, tag_state.error_y, current_joints,
-                            depth_error_mm=tag_state.depth_error_mm,
-                            current_depth_mm=tag_state.depth_filtered)
-                        rot_adj = self.simple_ibvs.compute_rotation_adjustment(
-                            tag_state.error_rotation)
+                            depth_error_mm=depth_err,
+                            current_depth_mm=tag_state.depth_filtered,
+                            rotation_error=tag_state.error_rotation if dimension >= 3 else 0.0)
+                        if dimension == 2:
+                            rot_adj = ibvs.compute_rotation_adjustment(
+                                tag_state.error_rotation)
+                        else:
+                            rot_adj = {}
+                        rot_info = f" rot={tag_state.error_rotation:.1f}°" if dimension >= 3 else ""
                         print(f"  [Step] pixel={tag_state.error_total_px:.1f}px "
                               f"({tag_state.error_total_mm:.1f}mm), "
-                              f"depth={tag_state.depth_filtered:.0f}mm")
-                        print(f"    XY调整: {xy_adj}")
-                        print(f"    旋转调整: {rot_adj}")
+                              f"depth={tag_state.depth_filtered:.0f}mm{rot_info}")
+                        print(f"    调整: {xy_rot_depth_adj}")
+                        if dimension == 2 and rot_adj:
+                            print(f"    旋转调整: {rot_adj}")
                         if self.controller and not self.controller.passive_mode:
-                            self.controller.apply_joint_adjustments(xy_adj, rot_adj)
+                            self.controller.apply_joint_adjustments(xy_rot_depth_adj, rot_adj)
                         iteration += 1
                         error_history.append(tag_state.error_total_px)
                 mode = MODE_IDLE
 
             # ========== 底部快捷键 ==========
             cv2.rectangle(display, (5, h-50), (w-5, h-5), (0, 0, 0), -1)
-            depth_mode_str = "XYonly" if not require_depth_for_align else "XY+Depth"
-            help_text = "A:align F:track S:step T/G:set target D:depth R:depthReq X:stop Q:quit"
-            help_text2 = f"DepthReq:{depth_mode_str}  TrackDelay:{track_delay*1000:.0f}ms"
+            depth_mode_str = "XYonly" if not require_depth_for_align else ("XY+Depth" if dimension == 2 else "All")
+            dim_label = {2: "", 3: "-3D", 4: "-4D"}.get(dimension, "")
+            help_text = f"A:align F:track S:step T/G:set target D:depth R:depthReq X:stop Q:quit"
+            help_text2 = f"{dim_key}{dim_label} DepthReq:{depth_mode_str}  TrackDelay:{track_delay*1000:.0f}ms"
             cv2.putText(display, help_text, (10, h-30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
             cv2.putText(display, help_text2, (10, h-12),
@@ -4595,14 +4661,14 @@ Z轴控制关节 (全部6个):
             elif key == ord('t') or key == ord('T'):
                 if tag_state.tag_visible:
                     cx, cy = tag_state.tag_center
-                    self.simple_ibvs.set_target_pixel(cx, cy)
+                    ibvs.set_target_pixel(cx, cy)
                 else:
                     print("⚠ 需要检测到tag才能设置目标位置")
             elif key == ord('g') or key == ord('G'):
-                self.simple_ibvs.set_target_pixel(w/2, h/2)
+                ibvs.set_target_pixel(w/2, h/2)
             elif key == ord('d') or key == ord('D'):
                 if tag_state.tag_visible and tag_state.depth_filtered > 0:
-                    self.simple_ibvs.set_target_depth(tag_state.depth_filtered)
+                    ibvs.set_target_depth(tag_state.depth_filtered)
                 else:
                     print("⚠ 需要检测到tag才能设置目标深度")
             elif key == ord('r') or key == ord('R'):
@@ -4621,11 +4687,11 @@ Z轴控制关节 (全部6个):
         # 打印历史
         if error_history:
             print(f"\n{'='*40}")
-            print(f"SimpleIBVS 历史 ({mode_name})")
+            print(f"SimpleIBVS-{dimension}D 历史")
             print(f"{'='*40}")
             print(f"  迭代数: {len(error_history)}")
-            print(f"  初始误差: {error_history[0]:.1f}px ({error_history[0]*self.simple_ibvs.pixel_to_mm_ratio:.1f}mm)")
-            print(f"  最终误差: {error_history[-1]:.1f}px ({error_history[-1]*self.simple_ibvs.pixel_to_mm_ratio:.1f}mm)")
+            print(f"  初始误差: {error_history[0]:.1f}px ({error_history[0]*ibvs.pixel_to_mm_ratio:.1f}mm)")
+            print(f"  最终误差: {error_history[-1]:.1f}px ({error_history[-1]*ibvs.pixel_to_mm_ratio:.1f}mm)")
             if len(error_history) > 1:
                 print(f"  改善量: {error_history[0]-error_history[-1]:.1f}px")
 
@@ -5234,8 +5300,10 @@ def main():
             print("8. 运行对齐 (传统灵敏度方法)")
             print("8.5 PBVS对齐 (需手眼标定 → 先在菜单4按H标定)")
             print("--- IBVS 视觉伺服 ---")
-            print("B. 简单IBVS对齐 (纯灵敏度，无需手眼标定) [推荐尝试]")
+            print("B. 简单IBVS对齐 (2D XY, 纯灵敏度，无需手眼标定) [推荐尝试]")
             print("B2. FK-IBVS对齐 (FK解析雅可比，需URDF+手眼标定) [对比测试]")
+            print("B3. SimpleIBVS-3D (XY+旋转联合求解) [需标定J3]")
+            print("B4. SimpleIBVS-4D (XY+旋转+深度联合求解) [需标定J4]")
             print("M. IBVS记忆 (采集定妆照，需FK+外参)")
             print("I. IBVS对齐 (盲插控制，需FK+外参)")
             print("---")
@@ -5317,7 +5385,9 @@ def main():
                 print("  P. 透视方向校准 (相机倾斜方向)")
                 print("  0. 修复灵敏度方向 (翻转X/Y)")
                 print("  ---")
-                print("  J. AprilTag 3D灵敏度标定 (SimpleIBVS用，含深度)")
+                print("  J. AprilTag 2D灵敏度标定 (SimpleIBVS-B用)")
+                print("  J3. AprilTag 3D灵敏度标定 (SimpleIBVS-B3用, XY+旋转)")
+                print("  J4. AprilTag 4D灵敏度标定 (SimpleIBVS-B4用, XY+旋转+深度)")
 
                 calib_choice = input("选项: ").strip().upper()
 
@@ -5423,10 +5493,20 @@ def main():
                         system.connect()
                     system.flip_sensitivity_direction()
                 elif calib_choice == "J":
-                    # AprilTag 3D灵敏度标定 (SimpleIBVS用)
+                    # AprilTag 2D灵敏度标定 (SimpleIBVS用)
                     if not system.controller:
                         system.connect()
-                    system.ibvs_calibrate_apriltag_3d()
+                    system.ibvs_calibrate_apriltag_3d(dimension=2)
+                elif calib_choice == "J3":
+                    # AprilTag 3D灵敏度标定 (SimpleIBVS 3D用, XY+旋转)
+                    if not system.controller:
+                        system.connect()
+                    system.ibvs_calibrate_apriltag_3d(dimension=3)
+                elif calib_choice == "J4":
+                    # AprilTag 4D灵敏度标定 (SimpleIBVS 4D用, XY+旋转+深度)
+                    if not system.controller:
+                        system.connect()
+                    system.ibvs_calibrate_apriltag_3d(dimension=4)
                 else:
                     print("无效选项")
                 
@@ -5483,6 +5563,18 @@ def main():
                 if not system.controller:
                     system.connect()
                 system.fk_ibvs_alignment()
+
+            elif choice.upper() == "B3":
+                # SimpleIBVS-3D (XY+旋转联合求解)
+                if not system.controller:
+                    system.connect()
+                system.simple_ibvs_alignment(dimension=3)
+
+            elif choice.upper() == "B4":
+                # SimpleIBVS-4D (XY+旋转+深度联合求解)
+                if not system.controller:
+                    system.connect()
+                system.simple_ibvs_alignment(dimension=4)
 
             elif choice.upper() == "M":
                 # IBVS记忆阶段

@@ -252,6 +252,13 @@ class SimpleIBVSController:
     对齐判定: tag 居中 (像素误差<容差) AND 深度≈目标深度。
     """
 
+    # 标定文件路径映射
+    CALIBRATION_FILES = {
+        2: "calibration_points.json",
+        3: "calibration_points_3d.json",
+        4: "calibration_points_4d.json",
+    }
+
     def __init__(self, arm: str = "right", gain: float = 0.6,
                  pixel_tolerance: float = 3.0, max_iterations: int = 25,
                  max_single_adjust: float = 2.0,
@@ -262,7 +269,10 @@ class SimpleIBVSController:
                  depth_tolerance_mm: float = 5.0,
                  depth_weight: float = 0.1,
                  depth_filter_window: int = 5,
-                 camera_fx: float = 531.0):
+                 camera_fx: float = 531.0,
+                 dimension: int = 2,
+                 rotation_tolerance: float = 2.0,
+                 rotation_weight: float = 1.5):
         """
         Args:
             arm: 'left' or 'right'
@@ -275,9 +285,12 @@ class SimpleIBVSController:
             tag_size_mm: tag物理尺寸 (mm)
             target_depth_mm: 目标深度距离 (相机到tag的期望距离, mm)
             depth_tolerance_mm: 深度收敛容差 (mm)
-            depth_weight: 深度误差在雅可比中的权重 (平衡px和mm维度)
+            depth_weight: 深度误差在雅可比中的权重 (仅4D, 建议0.03-0.1)
             depth_filter_window: 深度滤波窗口大小 (帧数)
             camera_fx: 相机焦距 (像素)
+            dimension: 雅可比维度 2=XY, 3=XY+旋转, 4=XY+旋转+深度
+            rotation_tolerance: 旋转收敛容差 (deg)
+            rotation_weight: 旋转误差在雅可比中的权重 (平衡度vs像素)
         """
         self.arm = arm
         self.arm_config = ARM_CONFIGS[arm]
@@ -286,6 +299,9 @@ class SimpleIBVSController:
         self.max_iterations = max_iterations
         self.max_single_adjust = max_single_adjust
         self.camera_fx = camera_fx
+        self.dimension = dimension
+        self.rotation_tolerance = rotation_tolerance
+        self.rotation_weight = rotation_weight
 
         # AprilTag 检测器
         self.tag_detector = AprilTagDetector(
@@ -330,9 +346,10 @@ class SimpleIBVSController:
         self.joint_names[15] = "trunk_joint_2"
 
     def load_calibration(self, filepath: str = None) -> bool:
-        """加载标定数据"""
+        """加载标定数据（按dimension选择默认文件）"""
         if filepath is None:
-            filepath = str(Path(__file__).parent.parent / "calibration_points.json")
+            default_file = self.CALIBRATION_FILES.get(self.dimension, "calibration_points.json")
+            filepath = str(Path(__file__).parent.parent / default_file)
 
         path = Path(filepath)
         if not path.exists():
@@ -376,9 +393,10 @@ class SimpleIBVSController:
             return False
 
     def save_calibration(self, filepath: str = None) -> bool:
-        """保存标定数据 (含深度灵敏度 depth_dz_per_deg)"""
+        """保存标定数据 (含深度/旋转灵敏度)"""
         if filepath is None:
-            filepath = str(Path(__file__).parent.parent / "calibration_points.json")
+            default_file = self.CALIBRATION_FILES.get(self.dimension, "calibration_points.json")
+            filepath = str(Path(__file__).parent.parent / default_file)
 
         path = Path(filepath)
         try:
@@ -399,6 +417,7 @@ class SimpleIBVSController:
                             'pixel_dx_per_deg': s.pixel_dx_per_deg,
                             'pixel_dy_per_deg': s.pixel_dy_per_deg,
                             'depth_dz_per_deg': getattr(s, 'depth_dz_per_deg', 0.0),
+                            'rotation_ddeg_per_deg': getattr(s, 'rotation_ddeg_per_deg', 0.0),
                             'mm_dx_per_deg': s.mm_dx_per_deg,
                             'mm_dy_per_deg': s.mm_dy_per_deg,
                             'calibration_angles': s.calibration_angles,
@@ -587,9 +606,17 @@ class SimpleIBVSController:
         pixel_dx = _interp_weighted(pixel_points, lambda s: s.pixel_dx_per_deg)
         pixel_dy = _interp_weighted(pixel_points, lambda s: s.pixel_dy_per_deg)
 
-        # 深度灵敏度：仅从 apriltag_3d 点插值（当前不用于伺服）
+        # 旋转灵敏度: 从所有标定点插值 (与XY同源，精度可靠)
+        # 仅在3D/4D模式下需要
+        rotation_ddeg = {}
+        if self.dimension >= 3:
+            all_points = pixel_points + depth_points
+            rotation_ddeg = _interp_weighted(all_points if all_points else self.calibration_points,
+                                             lambda s: getattr(s, 'rotation_ddeg_per_deg', 0.0))
+
+        # 深度灵敏度：仅从 apriltag_3d 点插值（仅4D模式使用）
         depth_dz = {}
-        if depth_points:
+        if self.dimension >= 4 and depth_points:
             depth_dz = _interp_weighted(depth_points,
                                        lambda s: getattr(s, 'depth_dz_per_deg', 0.0))
 
@@ -602,12 +629,13 @@ class SimpleIBVSController:
             calibration_depth = sum(w * d for w, d in zip(weights, cal_depths))
 
         # 组装结果
-        all_joint_indices = set(pixel_dx.keys()) | set(pixel_dy.keys()) | set(depth_dz.keys())
+        all_joint_indices = set(pixel_dx.keys()) | set(pixel_dy.keys()) | set(depth_dz.keys()) | set(rotation_ddeg.keys())
         interpolated = []
         for jidx in sorted(all_joint_indices):
             dx = pixel_dx.get(jidx, 0.0)
             dy = pixel_dy.get(jidx, 0.0)
             dz = depth_dz.get(jidx, 0.0)
+            dr = rotation_ddeg.get(jidx, 0.0)
 
             if self._camera_flip_x:
                 dx = -dx
@@ -620,6 +648,7 @@ class SimpleIBVSController:
                 pixel_dx_per_deg=dx,
                 pixel_dy_per_deg=dy,
                 depth_dz_per_deg=dz,
+                rotation_ddeg_per_deg=dr,
                 mm_dx_per_deg=dx * self.pixel_to_mm_ratio,
                 mm_dy_per_deg=dy * self.pixel_to_mm_ratio,
                 calibration_angles=current_joints.tolist()
@@ -630,19 +659,18 @@ class SimpleIBVSController:
     def compute_joint_adjustments(self, pixel_error_x: float, pixel_error_y: float,
                                   current_joints: np.ndarray,
                                   depth_error_mm: float = 0.0,
-                                  current_depth_mm: float = None) -> Dict[int, float]:
+                                  current_depth_mm: float = None,
+                                  rotation_error: float = 0.0) -> Dict[int, float]:
         """
-        核心IBVS控制律: 始终使用 2×N 雅可比 (仅XY伺服)
+        核心IBVS控制律: 根据dimension构建 N×D 雅可比
 
-        depth_error_mm 参数保留但不用于伺服 (深度灵敏度目前不可靠)。
-        深度仅用于对齐判定 (detect_and_compute_error 中检查)。
+        dimension=2: J = 2×N (XY only), error = [px_err, py_err]
+        dimension=3: J = 3×N (XY + rotation), error = [px_err, py_err, rot_err]
+        dimension=4: J = 4×N (XY + rotation + depth), error = [px_err, py_err, rot_err, depth_err]
 
-        current_depth_mm: 当前相机-tag距离(mm)，用于深度自适应缩放。
-          像素灵敏度随距离变化(越近同角度位移越大)，
-          需要将标定灵敏度缩放到当前距离:
-            depth_scale = current_depth / calibration_depth
-            当 current_depth < calibration_depth (更近): scale < 1 → 减小调整量，防过冲
-            当 current_depth > calibration_depth (更远): scale > 1 → 增大调整量，防欠校正
+        depth_error_mm: 仅4D模式参与伺服 (其他模式忽略)
+        rotation_error: 仅3D/4D模式参与伺服 (其他模式忽略)
+        current_depth_mm: 深度自适应缩放 (所有模式生效)
         """
         sensitivities, calibration_depth = self.get_interpolated_sensitivities(current_joints)
         if not sensitivities:
@@ -652,13 +680,29 @@ class SimpleIBVSController:
         joint_indices = [s.joint_idx for s in sensitivities]
         n_joints = len(joint_indices)
 
-        # 始终使用 2×N 雅可比
-        J = np.zeros((2, n_joints))
+        # 构建雅可比 (维度由 self.dimension 决定)
+        dim = self.dimension
+        J = np.zeros((dim, n_joints))
         for i, s in enumerate(sensitivities):
-            J[0, i] = s.pixel_dx_per_deg
-            J[1, i] = s.pixel_dy_per_deg
+            J[0, i] = s.pixel_dx_per_deg   # X
+            J[1, i] = s.pixel_dy_per_deg   # Y
+            if dim >= 3:
+                J[2, i] = getattr(s, 'rotation_ddeg_per_deg', 0.0) * self.rotation_weight
+            if dim >= 4:
+                J[3, i] = getattr(s, 'depth_dz_per_deg', 0.0) * self.depth_weight
 
-        error = np.array([pixel_error_x, pixel_error_y])
+        # 构建误差向量
+        if dim == 2:
+            error = np.array([pixel_error_x, pixel_error_y])
+        elif dim == 3:
+            error = np.array([pixel_error_x, pixel_error_y,
+                            rotation_error * self.rotation_weight])
+        elif dim == 4:
+            error = np.array([pixel_error_x, pixel_error_y,
+                            rotation_error * self.rotation_weight,
+                            depth_error_mm * self.depth_weight])
+        else:
+            error = np.array([pixel_error_x, pixel_error_y])
 
         W = np.zeros((n_joints, n_joints))
         for i, s in enumerate(sensitivities):
@@ -667,14 +711,11 @@ class SimpleIBVSController:
         JW = J @ W
 
         # 阻尼最小二乘 (Tikhonov regularization)
-        # 防止雅可比病态时所有调整量集中到1-2个关节导致饱和
-        # λ ∝ error: 大误差分散到多关节，小误差精确求解
         damping = max(1.0, float(np.linalg.norm(error)) * 0.05)
 
-        JW_JWT = JW @ JW.T  # 2×2
+        JW_JWT = JW @ JW.T  # D×D
         try:
-            # 解 (J J^T + λ²I) z = -error, 然后 delta = J^T z
-            z = np.linalg.solve(JW_JWT + damping**2 * np.eye(2), -error)
+            z = np.linalg.solve(JW_JWT + damping**2 * np.eye(dim), -error)
             delta_angles = JW.T @ z
         except np.linalg.LinAlgError:
             delta_angles = self._single_joint_fallback(pixel_error_x, pixel_error_y,
@@ -687,7 +728,7 @@ class SimpleIBVSController:
 
         delta_angles = delta_angles * self.gain
 
-        # 深度自适应缩放: 将标定灵敏度缩放到当前距离
+        # 深度自适应缩放
         if current_depth_mm is not None and current_depth_mm > 0 and calibration_depth > 0:
             depth_scale = current_depth_mm / calibration_depth
             depth_scale = float(np.clip(depth_scale, 0.3, 3.0))
@@ -779,7 +820,7 @@ class SimpleIBVSController:
         """
         joint_name = self.joint_names.get(joint_idx, f"joint_{joint_idx}")
         print(f"\n{'='*60}")
-        print(f"AprilTag关节灵敏度标定: {joint_name} (3D)")
+        print(f"AprilTag关节灵敏度标定: {joint_name} ({self.dimension}D)")
         print(f"{'='*60}")
 
         # 获取初始关节状态
@@ -814,9 +855,10 @@ class SimpleIBVSController:
 
         cx_before, cy_before = tag_before['center']
         size_before = tag_before['size_px']
+        rot_before = tag_before['rotation_deg']
         depth_before = self.tag_detector.estimate_depth_mm(tag_before, self.camera_fx)
         print(f"    中心: ({cx_before:.1f}, {cy_before:.1f}), "
-              f"尺寸: {size_before:.1f}px, 深度: {depth_before:.0f}mm")
+              f"尺寸: {size_before:.1f}px, 旋转: {rot_before:.1f}°, 深度: {depth_before:.0f}mm")
 
         # Phase 2: 移动关节
         print(f"  [Phase 2] 移动关节 {joint_name} {move_degrees}°...")
@@ -855,9 +897,10 @@ class SimpleIBVSController:
 
         cx_after, cy_after = tag_after['center']
         size_after = tag_after['size_px']
+        rot_after = tag_after['rotation_deg']
         depth_after = self.tag_detector.estimate_depth_mm(tag_after, self.camera_fx)
         print(f"    中心: ({cx_after:.1f}, {cy_after:.1f}), "
-              f"尺寸: {size_after:.1f}px, 深度: {depth_after:.0f}mm")
+              f"尺寸: {size_after:.1f}px, 旋转: {rot_after:.1f}°, 深度: {depth_after:.0f}mm")
 
         # 计算灵敏度
         actual_deg = abs(actual_move) if abs(actual_move) > 0.1 else move_degrees
@@ -865,6 +908,7 @@ class SimpleIBVSController:
         pixel_dx = (cx_after - cx_before) / actual_deg
         pixel_dy = (cy_after - cy_before) / actual_deg
         depth_dz = (depth_after - depth_before) / actual_deg
+        rotation_ddeg = (rot_after - rot_before) / actual_deg
 
         # 相机翻转
         if self._camera_flip_x:
@@ -878,16 +922,18 @@ class SimpleIBVSController:
             pixel_dx_per_deg=pixel_dx,
             pixel_dy_per_deg=pixel_dy,
             depth_dz_per_deg=depth_dz,
+            rotation_ddeg_per_deg=rotation_ddeg,
             mm_dx_per_deg=pixel_dx * self.pixel_to_mm_ratio,
             mm_dy_per_deg=pixel_dy * self.pixel_to_mm_ratio,
             calibration_angles=joints_after.tolist() if joints_after is not None else [],
         )
 
-        print(f"\n  标定结果 (3D):")
+        print(f"\n  标定结果 ({self.dimension}D):")
         print(f"    像素灵敏度: X={pixel_dx:.2f} px/deg, Y={pixel_dy:.2f} px/deg")
+        print(f"    旋转灵敏度: {rotation_ddeg:.2f} deg/deg")
         print(f"    深度灵敏度: Z={depth_dz:.1f} mm/deg")
-        print(f"    初始深度: {depth_before:.0f}mm → 最终深度: {depth_after:.0f}mm "
-              f"(Δ={depth_after-depth_before:.0f}mm)")
+        print(f"    初始: ({cx_before:.0f},{cy_before:.0f}) rot={rot_before:.1f}° depth={depth_before:.0f}mm")
+        print(f"    最终: ({cx_after:.0f},{cy_after:.0f}) rot={rot_after:.1f}° depth={depth_after:.0f}mm")
 
         return True, sensitivity
 
@@ -972,16 +1018,26 @@ class SimpleIBVSController:
             for cp in self.calibration_points
             for s in cp.sensitivities
         )
+        has_rotation = any(
+            getattr(s, 'rotation_ddeg_per_deg', 0.0) != 0.0
+            for cp in self.calibration_points
+            for s in cp.sensitivities
+        )
+        dim_names = {2: "2D (XY)", 3: "3D (XY+旋转)", 4: "4D (XY+旋转+深度)"}
         print(f"\n{'='*50}")
-        print(f"SimpleIBVS 配置摘要 (arm={self.arm})")
+        print(f"SimpleIBVS 配置摘要 (arm={self.arm}, dimension={self.dimension})")
         print(f"{'='*50}")
+        print(f"  控制维度: {dim_names.get(self.dimension, f'{self.dimension}D')}")
         print(f"  AprilTag家族: {self.tag_detector.tag_family}")
         print(f"  目标tag ID: {self.tag_detector.target_tag_ids or '全部'}")
         print(f"  tag物理尺寸: {self.tag_detector.tag_size_mm:.1f}mm")
         print(f"  目标像素位置: ({self.target_pixel_x:.1f}, {self.target_pixel_y:.1f})")
         print(f"  目标深度: {self.target_depth_mm:.0f}mm (容差: ±{self.depth_tolerance_mm:.0f}mm)")
         print(f"  深度权重: {self.depth_weight}")
-        print(f"  深度伺服: 已禁用 (仅2×N XY伺服, 含深度自适应缩放)")
+        print(f"  旋转权重: {self.rotation_weight}, 旋转容差: {self.rotation_tolerance}°")
+        print(f"  深度伺服: {'已禁用 (2D/3D仅用于判定)' if self.dimension < 4 else '4D模式 (权重=' + str(self.depth_weight) + ')'}")
+        rot_mode = '3D' if self.dimension == 3 else '4D'
+        print(f"  旋转伺服: {'已禁用 (2D模式)' if self.dimension < 3 else rot_mode + '模式 (权重=' + str(self.rotation_weight) + ')'}")
         print(f"  相机焦距: {self.camera_fx:.0f}px")
         print(f"  增益: {self.gain}")
         print(f"  像素容差: {self.pixel_tolerance}px")
@@ -1003,5 +1059,12 @@ class SimpleIBVSController:
                     getattr(s, 'depth_dz_per_deg', 0.0) != 0.0
                     for s in cp.sensitivities
                 )
-                depth_tag = " [3D]" if has_depth_cp else ""
+                has_rot_cp = any(
+                    getattr(s, 'rotation_ddeg_per_deg', 0.0) != 0.0
+                    for s in cp.sensitivities
+                )
+                tags = []
+                if has_depth_cp: tags.append("3D_depth")
+                if has_rot_cp: tags.append("rot")
+                depth_tag = " [" + "+".join(tags) + "]" if tags else ""
                 print(f"    [{cp.height_level}]{depth_tag} {len(cp.sensitivities)} 关节灵敏度数据")
