@@ -18,6 +18,7 @@ This is lock-protected and will never block the 50Hz control loop.
 
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -348,7 +349,46 @@ class MonitorCollector:
                 "last_update": task.timestamp,
             },
             "events": events,
+            "host": _read_host_battery(),
         }
+
+
+def _read_host_battery() -> dict:
+    """Read host system battery from /sys/class/power_supply (Linux only).
+
+    Returns {"pct": int, "status": str, "voltage": float} or {} if no battery.
+    """
+    import glob
+    bats = sorted(glob.glob("/sys/class/power_supply/BAT[0-9]*"))
+    if not bats:
+        bats = sorted(glob.glob("/sys/class/power_supply/[Bb]attery"))
+    if not bats:
+        bats = sorted(glob.glob("/sys/class/power_supply/*"))
+        bats = [b for b in bats if "AC" not in os.path.basename(b) and "usb" not in os.path.basename(b).lower()]
+    if not bats:
+        return {}
+    base = bats[0]
+    try:
+        with open(os.path.join(base, "capacity"), "r") as f:
+            pct = int(f.read().strip())
+    except Exception:
+        pct = 0
+    try:
+        with open(os.path.join(base, "status"), "r") as f:
+            status = f.read().strip()
+    except Exception:
+        status = "Unknown"
+    voltage = 0.0
+    try:
+        with open(os.path.join(base, "voltage_now"), "r") as f:
+            voltage = float(f.read().strip()) / 1_000_000  # µV → V
+    except Exception:
+        try:
+            with open(os.path.join(base, "voltage_min_design"), "r") as f:
+                voltage = float(f.read().strip()) / 1_000_000
+        except Exception:
+            pass
+    return {"pct": pct, "status": status, "voltage": round(voltage, 1)}
 
 
 def _status_label(code: int) -> str:
@@ -516,10 +556,11 @@ async function refresh(){
 }
 function buildUI(d){
   const frag=document.createDocumentFragment();
-  const r=d.robot||{},a=d.agv||{},t=d.task||{};
+  const r=d.robot||{},a=d.agv||{},t=d.task||{},h=d.host||{};
   const bar=document.createElement('div'); bar.className='status-bar';
   bar.appendChild(card('Robot FPS',(r.fps||0).toFixed(1),r.connected?'ok':'err'));
-  bar.appendChild(card('Battery',(a.battery_pct||0)+'%',a.battery_pct>20?'ok':(a.battery_pct>10?'warn':'err')));
+  bar.appendChild(card('AGV Battery',(a.battery_pct||0)+'%',a.battery_pct>20?'ok':(a.battery_pct>10?'warn':'err')));
+  if(h.pct!==undefined) bar.appendChild(card('System Power',h.pct+'% '+(h.status||''),h.pct>20?'ok':(h.pct>10?'warn':'err')));
   bar.appendChild(card('AGV Status',a.running_status_label||'N/A',a.connected?'ok':'err'));
   bar.appendChild(card('Emergency',a.emergency?'ACTIVE':'OK',a.emergency?'err':'ok'));
   bar.appendChild(card('Task',t.task_name||'-',t.task_type||''));
