@@ -2861,14 +2861,24 @@ class PrecisionPlaceSystem:
                 for m in state.workpiece_markers:
                     if m:
                         cv2.circle(display, (int(m.x), int(m.y)), 5, (0, 255, 0), -1)
-                wp_center = state.workpiece_center
-                cv2.circle(display, (int(wp_center[0]), int(wp_center[1])), 8, (0, 255, 0), 2)
+                wp_markers = [m for m in state.workpiece_markers if m]
+                if wp_markers:
+                    wp_center = (sum(m.x for m in wp_markers) / len(wp_markers),
+                                 sum(m.y for m in wp_markers) / len(wp_markers))
+                    cv2.circle(display, (int(wp_center[0]), int(wp_center[1])), 8, (0, 255, 0), 2)
 
             if state.slot_detected:
                 for m in state.slot_markers:
                     if m:
                         cv2.circle(display, (int(m.x), int(m.y)), 5, (0, 0, 255), -1)
-                slot_center = state.slot_center
+                slot_markers = [m for m in state.slot_markers if m]
+                if slot_markers:
+                    slot_center = (sum(m.x for m in slot_markers) / len(slot_markers),
+                                   sum(m.y for m in slot_markers) / len(slot_markers))
+                elif state.predicted_slot_center:
+                    slot_center = state.predicted_slot_center
+                else:
+                    slot_center = (0, 0)
                 cv2.circle(display, (int(slot_center[0]), int(slot_center[1])), 8, (0, 0, 255), 2)
 
             # 计算偏移（考虑目标偏移量）
