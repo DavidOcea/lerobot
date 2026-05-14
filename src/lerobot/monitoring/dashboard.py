@@ -486,7 +486,7 @@ h1{color:#00ff88;margin-bottom:16px}
 .event-table{width:100%;font-size:11px;border-collapse:collapse;table-layout:fixed}
 .event-table col.col-time{width:90px}
 .event-table col.col-level{width:52px}
-.event-table col.col-source{width:155px}
+.event-table col.col-source{width:250px}
 .event-table th{color:#666;text-align:left;padding:4px 8px;border-bottom:1px solid #2a2a3a}
 .event-table td{padding:3px 8px;border-bottom:1px solid #1a1a2a;vertical-align:top}
 .event-table .ev-time{color:#555}
