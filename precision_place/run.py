@@ -16,6 +16,7 @@
 import sys
 import time
 import json
+import os
 import cv2
 import numpy as np
 from pathlib import Path
@@ -2803,7 +2804,7 @@ class PrecisionPlaceSystem:
             urdf_input = input("请输入URDF文件路径 (或按Enter退出): ").strip()
             if not urdf_input:
                 return
-            self.urdf_path = urdf_input
+            self.urdf_path = os.path.expanduser(urdf_input)
 
             if _has_fk:
                 try:
@@ -2836,7 +2837,7 @@ class PrecisionPlaceSystem:
   Q - 退出
 
 当前目标偏移: ({:.1f}, {:.1f}) 像素
-""").format(self.target_offset_x, self.target_offset_y)
+""".format(self.target_offset_x, self.target_offset_y))
 
         # 颜色配置
         workpiece_color = WORKPIECE_COLOR
@@ -4645,7 +4646,7 @@ Z轴控制关节 (全部6个):
         if not self.urdf_path:
             urdf_input = input("URDF文件路径: ").strip()
             if urdf_input:
-                self.urdf_path = urdf_input
+                self.urdf_path = os.path.expanduser(urdf_input)
             else:
                 print("✗ 需要URDF文件路径")
                 return
