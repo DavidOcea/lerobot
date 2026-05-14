@@ -666,9 +666,16 @@ class SimpleIBVSController:
 
         JW = J @ W
 
+        # 阻尼最小二乘 (Tikhonov regularization)
+        # 防止雅可比病态时所有调整量集中到1-2个关节导致饱和
+        # λ ∝ error: 大误差分散到多关节，小误差精确求解
+        damping = max(1.0, float(np.linalg.norm(error)) * 0.05)
+
+        JW_JWT = JW @ JW.T  # 2×2
         try:
-            JW_pinv = np.linalg.pinv(JW)
-            delta_angles = JW_pinv @ (-error)
+            # 解 (J J^T + λ²I) z = -error, 然后 delta = J^T z
+            z = np.linalg.solve(JW_JWT + damping**2 * np.eye(2), -error)
+            delta_angles = JW.T @ z
         except np.linalg.LinAlgError:
             delta_angles = self._single_joint_fallback(pixel_error_x, pixel_error_y,
                                                        sensitivities)

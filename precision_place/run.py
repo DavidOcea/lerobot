@@ -4325,6 +4325,8 @@ Z轴控制关节 (全部6个):
         iteration = 0
         error_history = []
         converged = False
+        aligned_frames = 0          # 连续对齐帧计数 (防假收敛)
+        align_confirm_frames = 3    # 需连续N帧确认
         track_delay = 0.08
         align_delay = 0.3
 
@@ -4413,18 +4415,24 @@ Z轴控制关节 (全部6个):
             # ========== 控制逻辑 ==========
             if mode == MODE_ALIGN and not converged:
                 if tag_state.aligned:
-                    converged = True
-                    mode = MODE_IDLE
-                    print(f"\n✓ 对齐完成! Tag居中+深度达标!")
-                    if tag_state.tag_visible:
-                        print(f"  像素误差: {tag_state.error_total_px:.1f}px "
-                              f"({tag_state.error_total_mm:.1f}mm)")
-                        print(f"  深度: {tag_state.depth_filtered:.0f}mm "
-                              f"(目标{self.simple_ibvs.target_depth_mm:.0f}mm)")
-                    if error_history:
-                        print(f"  初始→最终像素误差: {error_history[0]:.1f}→"
-                              f"{error_history[-1]:.1f}px")
+                    aligned_frames += 1
+                    if aligned_frames >= align_confirm_frames:
+                        converged = True
+                        mode = MODE_IDLE
+                        print(f"\n✓ 对齐完成! Tag居中+深度达标! (连续{aligned_frames}帧确认)")
+                        if tag_state.tag_visible:
+                            print(f"  像素误差: {tag_state.error_total_px:.1f}px "
+                                  f"({tag_state.error_total_mm:.1f}mm)")
+                            print(f"  深度: {tag_state.depth_filtered:.0f}mm "
+                                  f"(目标{self.simple_ibvs.target_depth_mm:.0f}mm)")
+                        if error_history:
+                            print(f"  初始→最终像素误差: {error_history[0]:.1f}→"
+                                  f"{error_history[-1]:.1f}px")
+                    else:
+                        print(f"  [Align] aligned 确认中 {aligned_frames}/{align_confirm_frames} "
+                              f"(pixel={tag_state.error_total_px:.1f}px, depth={tag_state.depth_filtered:.0f}mm)")
                 elif tag_state.tag_visible:
+                    aligned_frames = 0  # 未对齐则重置确认计数
                     current_joints = self.controller.get_joint_states()
                     if current_joints is not None:
                         xy_adj = self.simple_ibvs.compute_joint_adjustments(
@@ -4445,6 +4453,8 @@ Z轴控制关节 (全部6个):
                         if iteration >= self.simple_ibvs.max_iterations:
                             print(f"\n⚠ 达到最大迭代数 {self.simple_ibvs.max_iterations}")
                             mode = MODE_IDLE
+                else:
+                    aligned_frames = 0  # tag不可见 → 重置
 
             elif mode == MODE_TRACK:
                 if tag_state.tag_visible:
@@ -4504,9 +4514,10 @@ Z轴控制关节 (全部6个):
             elif key == ord('a') or key == ord('A'):
                 mode = MODE_ALIGN
                 converged = False
+                aligned_frames = 0
                 iteration = 0
                 error_history = []
-                print("\n▶ 对齐模式启动 (居中+深度达标后自动停止)")
+                print("\n▶ 对齐模式启动 (居中+深度达标后自动停止, 需连续3帧确认)")
             elif key == ord('f') or key == ord('F'):
                 mode = MODE_TRACK
                 converged = False
