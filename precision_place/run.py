@@ -4513,8 +4513,10 @@ Z轴控制关节 (全部6个):
                             tag_state.error_x, tag_state.error_y, current_joints,
                             depth_error_mm=tag_state.depth_error_mm,
                             current_depth_mm=tag_state.depth_filtered)
-                        # 跟踪模式跳过旋转修正 (旋转已在对齐阶段固定, 跟踪仅维护XY位置)
-                        rot_adj = {}
+                        # 跟踪模式旋转修正减半 (避免j12饱和累积)
+                        rot_raw = self.simple_ibvs.compute_rotation_adjustment(
+                            tag_state.error_rotation)
+                        rot_adj = {k: v * 0.3 for k, v in rot_raw.items()} if rot_raw else {}
                         if tag_state.error_total_px > 5.0 or abs(tag_state.depth_error_mm) > 5.0:
                             print(f"  [Track iter {iteration+1}] "
                                   f"pixel={tag_state.error_total_px:.1f}px "
