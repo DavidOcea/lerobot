@@ -4329,6 +4329,9 @@ Z轴控制关节 (全部6个):
         align_confirm_frames = 3    # 需连续N帧确认
         track_delay = 0.08
         align_delay = 0.3
+        best_error = float('inf')   # 本轮对齐最佳像素误差
+        stuck_counter = 0           # 连续未改善计数 (防卡死/震荡)
+        adaptive_gain = 1.0         # 自适应增益 (卡死时递减)
 
         while True:
             image = camera.read()
@@ -4441,10 +4444,30 @@ Z轴控制关节 (全部6个):
                             current_depth_mm=tag_state.depth_filtered)
                         # 对齐模式禁用旋转伺服: 旋转会改变相机朝向→改变像素灵敏度→干扰XY伺服
                         rot_adj = {}
+
+                        # 卡死检测: 若像素误差连续3轮未改善，降低增益防震荡
+                        current_error = tag_state.error_total_px
+                        if current_error < best_error * 0.9:
+                            best_error = current_error
+                            stuck_counter = 0
+                            # 误差改善 → 缓慢恢复增益
+                            adaptive_gain = min(1.0, adaptive_gain * 1.3)
+                        else:
+                            stuck_counter += 1
+                            if stuck_counter >= 3:
+                                adaptive_gain = max(0.1, adaptive_gain * 0.6)
+                                stuck_counter = 0
+                                print(f"  [Align] stuck detected, gain→{adaptive_gain:.2f}")
+
+                        # 自适应增益缩放
+                        if adaptive_gain < 0.99:
+                            xy_adj = {k: v * adaptive_gain for k, v in xy_adj.items()}
+
                         print(f"  [Align iter {iteration+1}] "
                               f"pixel={tag_state.error_total_px:.1f}px "
                               f"depth={tag_state.depth_filtered:.0f}mm "
-                              f"(target={self.simple_ibvs.target_depth_mm:.0f}mm)")
+                              f"(target={self.simple_ibvs.target_depth_mm:.0f}mm)"
+                              f"{' gain=' + f'{adaptive_gain:.2f}' if adaptive_gain < 0.99 else ''}")
                         if self.controller and not self.controller.passive_mode:
                             self.controller.apply_joint_adjustments(xy_adj, rot_adj)
                             time.sleep(align_delay)
@@ -4517,6 +4540,9 @@ Z轴控制关节 (全部6个):
                 aligned_frames = 0
                 iteration = 0
                 error_history = []
+                best_error = float('inf')
+                stuck_counter = 0
+                adaptive_gain = 1.0
                 print("\n▶ 对齐模式启动 (居中+深度达标后自动停止, 需连续3帧确认)")
             elif key == ord('f') or key == ord('F'):
                 mode = MODE_TRACK

@@ -48,7 +48,7 @@ POSITION_WEIGHTS_RIGHT = {
     10: 0.8,  # joint_4 (前臂)
     11: 0.3,  # joint_5 (腕部俯仰)
     12: 0.3,  # joint_6 (腕部旋转)
-    14: 0.6,  # trunk_1
+    14: 0.1,  # trunk_1 (标定点j14≈0, 对齐时j14≠0 → 外插不可靠)
 }
 
 POSITION_WEIGHTS_LEFT = {
@@ -58,7 +58,7 @@ POSITION_WEIGHTS_LEFT = {
     3: 0.8,   # joint_4 (前臂)
     4: 0.3,   # joint_5 (腕部俯仰)
     5: 0.3,   # joint_6 (腕部旋转)
-    14: 0.6,  # trunk_1
+    14: 0.1,  # trunk_1 (标定点j14≈0, 对齐时j14≠0 → 外插不可靠)
 }
 
 
