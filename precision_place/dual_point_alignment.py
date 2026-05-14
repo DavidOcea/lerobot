@@ -2502,8 +2502,14 @@ class PrecisionPlaceController:
         adjustments[rotation_joint] = delta
         return adjustments
 
-    def apply_joint_adjustments(self, adjustments: Dict[int, float], rotation_adjustments: Dict[int, float] = None) -> bool:
-        """应用关节调整（位置+旋转）"""
+    def apply_joint_adjustments(self, adjustments: Dict[int, float], rotation_adjustments: Dict[int, float] = None, steps: int = None) -> bool:
+        """应用关节调整（位置+旋转）
+
+        Args:
+            adjustments: 关节调整量 {joint_idx: delta_deg}
+            rotation_adjustments: 旋转调整量
+            steps: 平滑步数, None用默认(30), 跟踪模式建议5-8
+        """
         if self.passive_mode:
             print("✗ 被动模式下无法应用关节调整")
             return False
@@ -2523,8 +2529,20 @@ class PrecisionPlaceController:
                 target[jidx] += delta
                 print(f"[DEBUG] 旋转调整: target[{jidx}] += {delta:.4f}")
 
-        # 平滑移动
-        self._smooth_move_all_joints(target)
+        # 平滑移动 (自适应步数: 未指定则用默认)
+        if steps is None:
+            # 根据最大调整量自动选择步数
+            max_adj = max(abs(d) for d in adjustments.values()) if adjustments else 0
+            if max_adj < 0.3:
+                steps = 3
+            elif max_adj < 0.8:
+                steps = 8
+            elif max_adj < 2.0:
+                steps = 15
+            else:
+                steps = self.smooth_steps
+
+        self._smooth_move_all_joints(target, steps)
         return True
 
     def _smooth_move_all_joints(self, target_joints: np.ndarray, steps: int = None):

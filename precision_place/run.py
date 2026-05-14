@@ -4301,6 +4301,9 @@ Z轴控制关节 (全部6个):
   T - 设置目标像素 (当前tag中心作为目标)
   G - 设置目标像素为图像中心
   D - 设置目标深度 (当前深度作为目标)
+  R - 切换深度要求 (XY居中即完成 ↔ 居中+深度达标)
+  + - 加快跟踪速度
+  - - 减慢跟踪速度
   X - 停止自动/跟踪模式
   Q - 退出
 """)
@@ -4329,6 +4332,7 @@ Z轴控制关节 (全部6个):
         align_confirm_frames = 3    # 需连续N帧确认
         track_delay = 0.08
         align_delay = 0.3
+        require_depth_for_align = True   # 对齐时是否要求深度达标 (R键切换)
         best_error = float('inf')   # 本轮对齐最佳像素误差
         stuck_counter = 0           # 连续未改善计数 (防卡死/震荡)
         adaptive_gain = 1.0         # 自适应增益 (卡死时递减)
@@ -4356,7 +4360,7 @@ Z轴控制关节 (全部6个):
                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
 
             # ========== 信息面板 ==========
-            cv2.rectangle(display, (5, 5), (420, 210), (0, 0, 0), -1)
+            cv2.rectangle(display, (5, 5), (420, 240), (0, 0, 0), -1)
             y_pos = 25
 
             # 模式标签
@@ -4373,6 +4377,13 @@ Z轴控制关节 (全部6个):
             cv2.putText(display, f"SimpleIBVS [{mode_name}]  Iter:{iteration}",
                        (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.55, mode_color, 2)
             y_pos += 25
+
+            # 深度要求状态 + 跟踪速度
+            depth_req_str = "DepthReq: XYonly" if not require_depth_for_align else "DepthReq: XY+Depth"
+            speed_str = f"TrackDelay: {track_delay*1000:.0f}ms"
+            cv2.putText(display, f"{depth_req_str}  {speed_str}",
+                       (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 180, 0), 1)
+            y_pos += 22
 
             if tag_state.tag_visible:
                 # 像素误差
@@ -4399,8 +4410,11 @@ Z轴控制关节 (全部6个):
                 y_pos += 22
 
                 # 对齐状态
-                if tag_state.aligned:
-                    cv2.putText(display, ">> ALIGNED: CENTERED + DEPTH OK <<", (10, y_pos),
+                is_aligned = (tag_state.xy_centered if not require_depth_for_align
+                             else tag_state.aligned)
+                if is_aligned:
+                    cv2.putText(display, ">> ALIGNED: CENTERED + DEPTH OK <<" if require_depth_for_align
+                                else ">> ALIGNED: XY CENTERED <<", (10, y_pos),
                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 2)
                     y_pos += 22
                 elif tag_state.xy_centered:
@@ -4417,12 +4431,16 @@ Z轴控制关节 (全部6个):
 
             # ========== 控制逻辑 ==========
             if mode == MODE_ALIGN and not converged:
-                if tag_state.aligned:
+                # XY-only模式: 仅检查居中, 忽略深度; 正常模式: 居中+深度都需达标
+                is_aligned = (tag_state.xy_centered if not require_depth_for_align
+                             else tag_state.aligned)
+                if is_aligned:
                     aligned_frames += 1
                     if aligned_frames >= align_confirm_frames:
                         converged = True
                         mode = MODE_IDLE
-                        print(f"\n✓ 对齐完成! Tag居中+深度达标! (连续{aligned_frames}帧确认)")
+                        align_type = "XY居中" if not require_depth_for_align else "Tag居中+深度达标"
+                        print(f"\n✓ 对齐完成! {align_type}! (连续{aligned_frames}帧确认)")
                         if tag_state.tag_visible:
                             print(f"  像素误差: {tag_state.error_total_px:.1f}px "
                                   f"({tag_state.error_total_mm:.1f}mm)")
@@ -4494,6 +4512,8 @@ Z轴控制关节 (全部6个):
                                   f"pixel={tag_state.error_total_px:.1f}px "
                                   f"depth={tag_state.depth_filtered:.0f}mm")
                         if self.controller and not self.controller.passive_mode:
+                            # 跟踪模式: 使用较少平滑步数以获得快速响应
+                            # 小调整→3步, 中等→8步, 大调整→15步
                             self.controller.apply_joint_adjustments(xy_adj, rot_adj)
                             time.sleep(track_delay)
                         iteration += 1
@@ -4524,9 +4544,13 @@ Z轴控制关节 (全部6个):
                 mode = MODE_IDLE
 
             # ========== 底部快捷键 ==========
-            cv2.rectangle(display, (5, h-35), (w-5, h-5), (0, 0, 0), -1)
-            help_text = "A:align  F:track  S:step  T/G:set target  D:depth  X:stop  Q:quit"
-            cv2.putText(display, help_text, (10, h-15),
+            cv2.rectangle(display, (5, h-50), (w-5, h-5), (0, 0, 0), -1)
+            depth_mode_str = "XYonly" if not require_depth_for_align else "XY+Depth"
+            help_text = "A:align F:track S:step T/G:set target D:depth R:depthReq X:stop Q:quit"
+            help_text2 = f"DepthReq:{depth_mode_str}  TrackDelay:{track_delay*1000:.0f}ms"
+            cv2.putText(display, help_text, (10, h-30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
+            cv2.putText(display, help_text2, (10, h-12),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
 
             cv2.imshow("SimpleIBVS Alignment", display)
@@ -4543,7 +4567,8 @@ Z轴控制关节 (全部6个):
                 best_error = float('inf')
                 stuck_counter = 0
                 adaptive_gain = 1.0
-                print("\n▶ 对齐模式启动 (居中+深度达标后自动停止, 需连续3帧确认)")
+                depth_msg = "XY居中后停止" if not require_depth_for_align else "居中+深度达标后停止"
+                print(f"\n▶ 对齐模式启动 ({depth_msg}, 需连续3帧确认)")
             elif key == ord('f') or key == ord('F'):
                 mode = MODE_TRACK
                 converged = False
@@ -4570,6 +4595,16 @@ Z轴控制关节 (全部6个):
                     self.simple_ibvs.set_target_depth(tag_state.depth_filtered)
                 else:
                     print("⚠ 需要检测到tag才能设置目标深度")
+            elif key == ord('r') or key == ord('R'):
+                require_depth_for_align = not require_depth_for_align
+                mode_str = "XY居中即完成" if not require_depth_for_align else "居中+深度达标"
+                print(f"▶ 深度要求: {mode_str}")
+            elif key == ord('+') or key == ord('='):
+                track_delay = max(0.01, track_delay * 0.7)
+                print(f"▶ 跟踪延迟: {track_delay*1000:.0f}ms (快速)")
+            elif key == ord('-') or key == ord('_'):
+                track_delay = min(0.5, track_delay * 1.4)
+                print(f"▶ 跟踪延迟: {track_delay*1000:.0f}ms (慢速)")
 
         cv2.destroyWindow("SimpleIBVS Alignment")
 
