@@ -491,7 +491,8 @@ h1{color:#00ff88;margin-bottom:16px}
 .event-table td{padding:3px 8px;border-bottom:1px solid #1a1a2a;vertical-align:top}
 .event-table .ev-time{color:#555}
 .event-table .ev-level{}
-.event-table .ev-source{color:#888;overflow:hidden;text-overflow:ellipsis}
+.event-table .ev-source{color:#888}
+.event-table .ev-source span{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .event-table .ev-msg{color:#c0c0c0;word-break:break-word;overflow-wrap:break-word}
 .event-table tr.ev-warn{background:#332200}
 .event-table tr.ev-error{background:#330000}
@@ -563,7 +564,7 @@ function buildUI(d){
       const ts=new Date(e.ts*1000).toLocaleTimeString();
       row.innerHTML='<td class="ev-time">'+ts+'</td>'
         +'<td class="ev-level">'+e.level+'</td>'
-        +'<td class="ev-source">'+e.source+'</td>'
+        +'<td class="ev-source"><span>'+e.source+'</span></td>'
         +'<td class="ev-msg">'+e.message+'</td>';
       tbody.appendChild(row);
     }
