@@ -4643,7 +4643,8 @@ Z轴控制关节 (全部6个):
             print("✗ 请先连接设备")
             return
 
-        camera = self.controller.camera_main
+        arm_config = ARM_CONFIGS.get(self.current_arm)
+        camera = self.cameras.get(arm_config.camera_name)
         if camera is None:
             print("✗ 主相机未连接")
             return
