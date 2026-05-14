@@ -140,6 +140,7 @@ class PrecisionPlaceSystem:
         self.coordinate_transformer = None  # 坐标变换器（基于手眼标定）
         self.ibvs_controller = None  # IBVS控制器
         self.simple_ibvs = None  # SimpleIBVS控制器
+        self.fk_ibvs = None      # FK-IBVS控制器 (基于正运动学)
         self.urdf_path = None  # URDF文件路径
         # 目标偏移量（用于标记点有固定偏移的情况）
         self.target_offset_x = 0.0  # 像素
@@ -4619,6 +4620,403 @@ Z轴控制关节 (全部6个):
             if len(error_history) > 1:
                 print(f"  改善量: {error_history[0]-error_history[-1]:.1f}px")
 
+    def fk_ibvs_alignment(self):
+        """
+        FK-IBVS对齐/跟踪 - 基于正运动学 + 手眼标定 (对比SimpleIBVS)
+
+        与SimpleIBVS使用相同的AprilTag检测，但用FK+投影计算解析雅可比。
+        不需要灵敏度标定数据。
+        """
+        import yaml
+        from precision_place.calibration.fk_ibvs import FKIBVSController
+        from precision_place.calibration.forward_kinematics import create_fk_from_urdf
+
+        # 检查前置条件
+        if self.controller is None:
+            print("✗ 请先连接设备")
+            return
+
+        camera = self.controller.camera_main
+        if camera is None:
+            print("✗ 主相机未连接")
+            return
+
+        # 检查URDF
+        if not self.urdf_path:
+            urdf_input = input("URDF文件路径: ").strip()
+            if urdf_input:
+                self.urdf_path = urdf_input
+            else:
+                print("✗ 需要URDF文件路径")
+                return
+
+        # 检查手眼标定文件
+        he_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
+        if not he_path.exists():
+            print(f"✗ 手眼标定文件不存在: {he_path}")
+            print("  请先运行手眼标定 (菜单 8.5 或 calibrate_hand_eye)")
+            return
+
+        # 加载手眼标定
+        try:
+            with open(he_path, 'r') as f:
+                he_data = yaml.safe_load(f)
+            T_flange_cam = np.array(he_data['extrinsic_matrix']['data']).reshape(4, 4)
+            print(f"✓ 手眼标定加载: {he_path}")
+        except Exception as e:
+            print(f"✗ 手眼标定加载失败: {e}")
+            return
+
+        # 加载相机内参
+        intrinsics_path = Path(__file__).parent / "camera_intrinsics.yaml"
+        camera_matrix = None
+        if intrinsics_path.exists():
+            with open(intrinsics_path, 'r') as f:
+                data = yaml.safe_load(f)
+            camera_matrix = np.array(data['camera_matrix']['data']).reshape(3, 3)
+            print(f"✓ 相机内参加载 fx={camera_matrix[0,0]:.1f}")
+        else:
+            fx = 500.0
+            try:
+                fx = self.simple_ibvs.camera_fx if self.simple_ibvs else 500.0
+            except:
+                pass
+            camera_matrix = np.array([[fx, 0, 320], [0, fx, 240], [0, 0, 1]])
+            print(f"⚠ 使用默认相机内参 fx={fx}")
+
+        # 创建FK求解器
+        try:
+            fk = create_fk_from_urdf(self.urdf_path, self.current_arm)
+            print(f"✓ FK求解器已创建")
+        except Exception as e:
+            print(f"✗ FK初始化失败: {e}")
+            return
+
+        # 初始化FK-IBVS控制器
+        self.fk_ibvs = FKIBVSController(
+            fk_solver=fk,
+            T_flange_cam=T_flange_cam,
+            camera_matrix=camera_matrix,
+            gain=0.6,
+        )
+
+        # 初始化SimpleIBVS用于AprilTag检测 (共享检测管道)
+        if self.simple_ibvs is None:
+            self.simple_ibvs = SimpleIBVSController(arm=self.current_arm)
+            self.simple_ibvs.load_calibration()
+
+        self.simple_ibvs.camera_fx = float(camera_matrix[0, 0])
+
+        frame = camera.read()
+        if frame is not None:
+            h, w = frame.shape[:2]
+            self.simple_ibvs.set_target_pixel(w/2, h/2)
+
+        print(f"\n{'='*60}")
+        print("FK-IBVS 对齐/跟踪模式 (FK解析雅可比 + AprilTag)")
+        print(f"{'='*60}")
+        print(f"""
+原理:
+  1. 首帧检测tag → FK反投影到世界坐标 → 固定tag世界位置
+  2. 后续帧: FK计算当前相机位姿 → 投影tag到像素 → 计算解析雅可比
+  3. J = ∂(pixel)/∂(joint) 通过FK链的数值微分
+  4. 阻尼最小二乘 → 关节调整量
+
+对比SimpleIBVS:
+  - 不需要灵敏度标定
+  - 深度通过FK直接计算 (不需要tag尺寸估算)
+  - 雅可比在任何关节配置下数学精确
+
+按键:
+  A - 对齐模式  F - 跟踪模式  S - 单步
+  T - 设置目标像素  G - 设置目标为图像中心
+  D - 设置目标深度  R - 深度要求切换
+  +/-- 跟踪速度  X - 停止  Q - 退出
+""")
+        input("按 Enter 继续...")
+
+        MODE_IDLE = 0
+        MODE_ALIGN = 1
+        MODE_TRACK = 2
+        MODE_SINGLE = 3
+
+        mode = MODE_IDLE
+        iteration = 0
+        error_history = []
+        converged = False
+        aligned_frames = 0
+        align_confirm_frames = 3
+        require_depth = True
+        track_delay = 0.08
+        align_delay = 0.3
+        best_error = float('inf')
+        stuck_counter = 0
+        adaptive_gain = 1.0
+
+        # FK-IBVS状态
+        tag_estimated = False
+        fk_depth_mm = 0.0
+
+        while True:
+            image = camera.read()
+            if image is None:
+                continue
+
+            display = image.copy()
+            h, w = image.shape[:2]
+
+            # AprilTag检测 (复用SimpleIBVS的检测器)
+            tag_state = self.simple_ibvs.detect_and_compute_error(image)
+
+            # 绘制
+            tags = self.simple_ibvs.tag_detector.detect(image)
+            display = self.simple_ibvs.tag_detector.draw_tags(display, tags, False)
+            tx, ty = self.simple_ibvs.target_pixel_x, self.simple_ibvs.target_pixel_y
+            cv2.line(display, (int(tx)-20, int(ty)), (int(tx)+20, int(ty)), (0, 255, 255), 2)
+            cv2.line(display, (int(tx), int(ty)-20), (int(tx), int(ty)+20), (0, 255, 255), 2)
+            cv2.putText(display, "TARGET", (int(tx)+5, int(ty)-5),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 255, 255), 1)
+
+            # 信息面板
+            cv2.rectangle(display, (5, 5), (440, 260), (0, 0, 0), -1)
+            y_pos = 25
+
+            mode_names = {MODE_IDLE: "IDLE", MODE_ALIGN: "ALIGN", MODE_TRACK: "TRACK", MODE_SINGLE: "STEP"}
+            mode_color = (0, 200, 255) if mode != MODE_IDLE else (200, 200, 200)
+            if converged:
+                mode_color = (0, 255, 0)
+
+            cv2.putText(display, f"FK-IBVS [{mode_names[mode]}]  Iter:{iteration}",
+                       (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.55, mode_color, 2)
+            y_pos += 25
+
+            method_str = "FK-IBVS"
+            cv2.putText(display, f"Method: {method_str} | DepthReq: {'ON' if require_depth else 'XYonly'}",
+                       (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 180, 0), 1)
+            y_pos += 22
+
+            if tag_state.tag_visible:
+                err_color = (0, 255, 0) if tag_state.error_total_px < 3.0 else \
+                            (0, 255, 255) if tag_state.error_total_px < 10.0 else (0, 0, 255)
+                cv2.putText(display, f"Pixel err: {tag_state.error_total_px:.1f}px",
+                           (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.45, err_color, 1)
+                y_pos += 22
+
+                # 深度对比: tag-size vs FK
+                tag_depth = tag_state.depth_filtered
+                cv2.putText(display, f"Depth(tag): {tag_depth:.0f}mm  FK: {fk_depth_mm:.0f}mm",
+                           (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 220, 220), 1)
+                y_pos += 22
+
+                if tag_estimated:
+                    cv2.putText(display, f"Tag world: [{self.fk_ibvs.tag_world_pos[0]*1000:.0f}, "
+                               f"{self.fk_ibvs.tag_world_pos[1]*1000:.0f}, "
+                               f"{self.fk_ibvs.tag_world_pos[2]*1000:.0f}]mm",
+                               (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+                    y_pos += 20
+
+                if tag_state.xy_centered:
+                    cv2.putText(display, ">> XY CENTERED <<", (10, y_pos),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    y_pos += 20
+            else:
+                cv2.putText(display, "No tag detected", (10, y_pos),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+
+            # ========== 控制逻辑 ==========
+            if mode == MODE_ALIGN and not converged:
+                is_aligned = (tag_state.xy_centered if not require_depth
+                             else (tag_state.xy_centered and
+                                   (abs(fk_depth_mm - self.simple_ibvs.target_depth_mm) < 10 if tag_estimated
+                                    else tag_state.depth_reached)))
+                if is_aligned:
+                    aligned_frames += 1
+                    if aligned_frames >= align_confirm_frames:
+                        converged = True
+                        mode = MODE_IDLE
+                        print(f"\n✓ [FK-IBVS] 对齐完成! (连续{aligned_frames}帧确认)")
+                        print(f"  像素误差: {tag_state.error_total_px:.1f}px")
+                        if tag_estimated:
+                            print(f"  FK深度: {fk_depth_mm:.0f}mm (目标{self.simple_ibvs.target_depth_mm:.0f}mm)")
+                elif tag_state.tag_visible:
+                    aligned_frames = 0
+                    current_joints = self.controller.get_joint_states()
+                    if current_joints is not None:
+                        # 首次检测: 估计tag世界位置
+                        if not tag_estimated and tag_state.depth_filtered > 0:
+                            self.fk_ibvs.estimate_tag_world_pos(
+                                current_joints,
+                                tag_state.tag_center,
+                                tag_state.depth_filtered)
+                            tag_estimated = self.fk_ibvs.is_ready()
+                            if tag_estimated:
+                                fk_depth_mm = self.fk_ibvs.get_fk_depth(current_joints)
+                                print(f"  [FK-IBVS] Tag世界坐标已估计: "
+                                      f"[{self.fk_ibvs.tag_world_pos[0]*1000:.0f}, "
+                                      f"{self.fk_ibvs.tag_world_pos[1]*1000:.0f}, "
+                                      f"{self.fk_ibvs.tag_world_pos[2]*1000:.0f}]mm")
+                                print(f"  [FK-IBVS] FK深度={fk_depth_mm:.0f}mm, "
+                                      f"tag深度={tag_state.depth_filtered:.0f}mm")
+
+                        # 更新FK深度
+                        if tag_estimated:
+                            fk_depth_mm = self.fk_ibvs.get_fk_depth(current_joints)
+
+                        # 计算调整量 (FK-IBVS vs SimpleIBVS)
+                        fk_adj = self.fk_ibvs.compute_joint_adjustments(
+                            tag_state.error_x, tag_state.error_y, current_joints)
+                        # SimpleIBVS作为对比
+                        simple_adj = self.simple_ibvs.compute_joint_adjustments(
+                            tag_state.error_x, tag_state.error_y, current_joints,
+                            current_depth_mm=tag_state.depth_filtered)
+
+                        # 自适应增益
+                        current_error = tag_state.error_total_px
+                        if current_error < best_error * 0.9:
+                            best_error = current_error
+                            stuck_counter = 0
+                            adaptive_gain = min(1.0, adaptive_gain * 1.3)
+                        else:
+                            stuck_counter += 1
+                            if stuck_counter >= 3:
+                                adaptive_gain = max(0.1, adaptive_gain * 0.6)
+                                stuck_counter = 0
+                                print(f"  [FK-IBVS] stuck, gain→{adaptive_gain:.2f}")
+
+                        if adaptive_gain < 0.99:
+                            fk_adj = {k: v * adaptive_gain for k, v in fk_adj.items()}
+
+                        print(f"  [FK-IBVS iter {iteration+1}] pixel={tag_state.error_total_px:.1f}px "
+                              f"FKdepth={fk_depth_mm:.0f}mm "
+                              f"adj={ {k: f'{v:.3f}' for k, v in sorted(fk_adj.items())} }")
+                        if simple_adj:
+                            print(f"  [SimpleIBVS对比]     "
+                                  f"adj={ {k: f'{v:.3f}' for k, v in sorted(simple_adj.items())} }")
+
+                        if self.controller and not self.controller.passive_mode:
+                            self.controller.apply_joint_adjustments(fk_adj)
+                            time.sleep(align_delay)
+                        iteration += 1
+                        error_history.append(tag_state.error_total_px)
+                        if iteration >= 25:
+                            print(f"\n⚠ 达到最大迭代数")
+                            mode = MODE_IDLE
+                else:
+                    aligned_frames = 0
+
+            elif mode == MODE_TRACK:
+                if tag_state.tag_visible:
+                    current_joints = self.controller.get_joint_states()
+                    if current_joints is not None:
+                        if not tag_estimated and tag_state.depth_filtered > 0:
+                            self.fk_ibvs.estimate_tag_world_pos(
+                                current_joints, tag_state.tag_center,
+                                tag_state.depth_filtered)
+                            tag_estimated = self.fk_ibvs.is_ready()
+
+                        if tag_estimated:
+                            fk_depth_mm = self.fk_ibvs.get_fk_depth(current_joints)
+
+                        fk_adj = self.fk_ibvs.compute_joint_adjustments(
+                            tag_state.error_x, tag_state.error_y, current_joints)
+
+                        if tag_state.error_total_px > 5.0:
+                            print(f"  [FK-Track {iteration+1}] pixel={tag_state.error_total_px:.1f}px "
+                                  f"FKdepth={fk_depth_mm:.0f}mm")
+
+                        if self.controller and not self.controller.passive_mode:
+                            self.controller.apply_joint_adjustments(fk_adj)
+                            time.sleep(track_delay)
+                        iteration += 1
+                        error_history.append(tag_state.error_total_px)
+                else:
+                    time.sleep(track_delay)
+
+            elif mode == MODE_SINGLE:
+                if tag_state.tag_visible:
+                    current_joints = self.controller.get_joint_states()
+                    if current_joints is not None:
+                        if not tag_estimated and tag_state.depth_filtered > 0:
+                            self.fk_ibvs.estimate_tag_world_pos(
+                                current_joints, tag_state.tag_center,
+                                tag_state.depth_filtered)
+                            tag_estimated = self.fk_ibvs.is_ready()
+
+                        fk_adj = self.fk_ibvs.compute_joint_adjustments(
+                            tag_state.error_x, tag_state.error_y, current_joints)
+                        print(f"  [FK-Step] pixel={tag_state.error_total_px:.1f}px "
+                              f"adj={ {k: f'{v:.3f}' for k, v in sorted(fk_adj.items())} }")
+                        if self.controller and not self.controller.passive_mode:
+                            self.controller.apply_joint_adjustments(fk_adj)
+                        iteration += 1
+                mode = MODE_IDLE
+
+            # 底部快捷键
+            cv2.rectangle(display, (5, h-35), (w-5, h-5), (0, 0, 0), -1)
+            help_text = "A:align  F:track  S:step  T:set target  D:depth  R:depthReq  +/-:speed  X:stop  Q:quit"
+            cv2.putText(display, help_text, (5, h-12),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.32, (200, 200, 200), 1)
+
+            cv2.imshow("FK-IBVS Alignment", display)
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord('q') or key == ord('Q'):
+                break
+            elif key == ord('a') or key == ord('A'):
+                mode = MODE_ALIGN
+                converged = False
+                aligned_frames = 0
+                iteration = 0
+                error_history = []
+                best_error = float('inf')
+                stuck_counter = 0
+                adaptive_gain = 1.0
+                if not tag_estimated:
+                    print("▶ 对齐模式启动 (首帧将估计tag世界坐标)")
+                else:
+                    print("▶ 对齐模式启动")
+            elif key == ord('f') or key == ord('F'):
+                mode = MODE_TRACK
+                iteration = 0
+                error_history = []
+                print("▶ 跟踪模式启动")
+            elif key == ord('s') or key == ord('S'):
+                mode = MODE_SINGLE
+                print("▶ 单步模式")
+            elif key == ord('x') or key == ord('X'):
+                mode = MODE_IDLE
+                print("▶ 已停止")
+            elif key == ord('t') or key == ord('T'):
+                if tag_state.tag_visible:
+                    self.simple_ibvs.set_target_pixel(*tag_state.tag_center)
+            elif key == ord('g') or key == ord('G'):
+                self.simple_ibvs.set_target_pixel(w/2, h/2)
+            elif key == ord('d') or key == ord('D'):
+                if tag_state.tag_visible:
+                    if tag_estimated and fk_depth_mm > 0:
+                        self.simple_ibvs.set_target_depth(fk_depth_mm)
+                        print(f"✓ 目标深度(FK): {fk_depth_mm:.0f}mm")
+                    elif tag_state.depth_filtered > 0:
+                        self.simple_ibvs.set_target_depth(tag_state.depth_filtered)
+            elif key == ord('r') or key == ord('R'):
+                require_depth = not require_depth
+                print(f"▶ 深度要求: {'ON' if require_depth else 'XYonly'}")
+            elif key == ord('+') or key == ord('='):
+                track_delay = max(0.01, track_delay * 0.7)
+                print(f"▶ 跟踪延迟: {track_delay*1000:.0f}ms")
+            elif key == ord('-') or key == ord('_'):
+                track_delay = min(0.5, track_delay * 1.4)
+                print(f"▶ 跟踪延迟: {track_delay*1000:.0f}ms")
+
+        cv2.destroyWindow("FK-IBVS Alignment")
+
+        if error_history:
+            print(f"\n{'='*40}")
+            print(f"FK-IBVS 历史")
+            print(f"{'='*40}")
+            print(f"  迭代数: {len(error_history)}")
+            print(f"  初始→最终误差: {error_history[0]:.1f}→{error_history[-1]:.1f}px")
+
     def run_full(self):
         """完整流程"""
         if not self.controller:
@@ -4718,6 +5116,7 @@ def main():
             print("8.5 手眼标定对齐 (PBVS，需手眼标定)")
             print("--- IBVS 视觉伺服 ---")
             print("B. 简单IBVS对齐 (纯灵敏度，无需手眼标定) [推荐尝试]")
+            print("B2. FK-IBVS对齐 (FK解析雅可比，需URDF+手眼标定) [对比测试]")
             print("M. IBVS记忆 (采集定妆照，需FK+外参)")
             print("I. IBVS对齐 (盲插控制，需FK+外参)")
             print("---")
@@ -4959,6 +5358,12 @@ def main():
                 if not system.controller:
                     system.connect()
                 system.simple_ibvs_alignment()
+
+            elif choice.upper() == "B2":
+                # FK-IBVS对齐 (基于FK解析雅可比)
+                if not system.controller:
+                    system.connect()
+                system.fk_ibvs_alignment()
 
             elif choice.upper() == "M":
                 # IBVS记忆阶段
