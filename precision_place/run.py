@@ -4338,8 +4338,8 @@ Z轴控制关节 (全部6个):
         converged = False
         aligned_frames = 0          # 连续对齐帧计数 (防假收敛)
         align_confirm_frames = 3    # 需连续N帧确认
-        track_delay = 0.08
-        align_delay = 0.3
+        track_delay = 0.03
+        align_delay = 0.1
         require_depth_for_align = True   # 对齐时是否要求深度达标 (R键切换)
         best_error = float('inf')   # 本轮对齐最佳像素误差
         stuck_counter = 0           # 连续未改善计数 (防卡死/震荡)
@@ -4768,8 +4768,8 @@ Z轴控制关节 (全部6个):
         aligned_frames = 0
         align_confirm_frames = 3
         require_depth = True
-        track_delay = 0.08
-        align_delay = 0.3
+        track_delay = 0.03
+        align_delay = 0.1
         best_error = float('inf')
         stuck_counter = 0
         adaptive_gain = 1.0
