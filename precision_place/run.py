@@ -4706,6 +4706,13 @@ Z轴控制关节 (全部6个):
             T_flange_cam=T_flange_cam,
             camera_matrix=camera_matrix,
             gain=0.6,
+            joint_sign_corrections={
+                7:  (1, -1),    # dy FLIP (FK_dy=+36 vs Simple_dy=-2.84)
+                8:  (-1, 1),    # dx FLIP (FK_dx=-27 vs Simple_dx=+4.18)
+                9:  (1, -1),    # dy FLIP (FK_dy=+0.78 vs Simple_dy=-6.10)
+                10: (-1, -1),   # dx+dy FLIP
+                12: (-1, 1),    # dx FLIP (FK_dx=-15 vs Simple_dx=+0.24)
+            },
         )
 
         # 初始化SimpleIBVS用于AprilTag检测 (共享检测管道)

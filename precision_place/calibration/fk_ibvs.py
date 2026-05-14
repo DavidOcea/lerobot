@@ -32,7 +32,8 @@ class FKIBVSController:
                  joint_indices: List[int] = None,
                  gain: float = 0.8,
                  damping_ratio: float = 0.03,
-                 jacobian_delta: float = 0.15):
+                 jacobian_delta: float = 0.15,
+                 joint_sign_corrections: Dict[int, Tuple[int, int]] = None):
         """
         Args:
             fk_solver: ForwardKinematics实例
@@ -42,6 +43,9 @@ class FKIBVSController:
             gain: 控制增益
             damping_ratio: 阻尼比 (λ = error * ratio)
             jacobian_delta: 数值雅可比的关节扰动 (度)
+            joint_sign_corrections: 关节方向修正 {joint_idx: (dx_sign, dy_sign)}
+                用于修正URDF与真实机器人关节旋转方向的差异。
+                例如 {8: (-1, 1)} 表示j8的dx灵敏度翻转、dy保持。
         """
         self.fk = fk_solver
         self.T_flange_cam = T_flange_cam
@@ -57,6 +61,7 @@ class FKIBVSController:
         self.damping_ratio = damping_ratio
         self.jacobian_delta = jacobian_delta
         self.max_adjust = 2.0
+        self.joint_sign_corrections = joint_sign_corrections or {}
 
         # 状态
         self.tag_world_pos: Optional[np.ndarray] = None  # tag在世界坐标系中的位置
@@ -195,6 +200,13 @@ class FKIBVSController:
                 # 关节扰动导致tag移到相机后方 → 灵敏度近似为0
                 J[:, i] = 0.0
                 active_indices.append(jidx)
+
+        # 应用关节方向修正 (修正URDF与真实机器人旋转方向的差异)
+        for i, jidx in enumerate(active_indices):
+            if jidx in self.joint_sign_corrections:
+                dx_sign, dy_sign = self.joint_sign_corrections[jidx]
+                J[0, i] *= dx_sign
+                J[1, i] *= dy_sign
 
         return J, active_indices, base_pixel, base_depth
 
