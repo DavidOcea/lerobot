@@ -4373,6 +4373,8 @@ Z轴控制关节 (全部6个):
         best_error = float('inf')   # 本轮对齐最佳像素误差
         stuck_counter = 0           # 连续未改善计数 (防卡死/震荡)
         adaptive_gain = 1.0         # 自适应增益 (卡死时递减)
+        rotation_input_active = False  # E键旋转角度数字输入模式
+        rotation_input_buffer = ""     # 输入缓冲
 
         while True:
             image = camera.read()
@@ -4632,12 +4634,53 @@ Z轴控制关节 (全部6个):
             cv2.putText(display, help_text2, (10, h-12),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
 
+            # 旋转角度输入模式: 在画面中央显示输入提示
+            if rotation_input_active:
+                prompt = f"Rotation Target: {rotation_input_buffer}_"
+                (tw, th), _ = cv2.getTextSize(prompt, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)
+                cx, cy = w // 2, h // 2
+                cv2.rectangle(display, (cx - tw//2 - 15, cy - th//2 - 10),
+                             (cx + tw//2 + 15, cy + th//2 + 10), (0, 0, 0), -1)
+                cv2.putText(display, prompt, (cx - tw//2, cy + th//2),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                cv2.putText(display, "Enter=confirm  Esc=cancel", (cx - 120, cy + th//2 + 25),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+
             cv2.imshow("SimpleIBVS Alignment", display)
             key = cv2.waitKey(1) & 0xFF
 
             if key == ord('q') or key == ord('Q'):
                 break
-            elif key == ord('a') or key == ord('A'):
+
+            # ========== 旋转角度数字输入模式 ==========
+            if rotation_input_active:
+                if key == 13 or key == 10:  # Enter
+                    try:
+                        val = float(rotation_input_buffer) if rotation_input_buffer else 0.0
+                        ibvs.set_target_rotation(val)
+                        print(f"▶ 旋转目标设为 {val:.1f}°")
+                    except ValueError:
+                        print(f"⚠ 无效输入: {rotation_input_buffer}")
+                    rotation_input_active = False
+                    rotation_input_buffer = ""
+                elif key == 27:  # Esc
+                    rotation_input_active = False
+                    rotation_input_buffer = ""
+                    print("▶ 旋转输入已取消")
+                elif key == 8:  # Backspace
+                    rotation_input_buffer = rotation_input_buffer[:-1]
+                elif key == ord('-') or key == ord('_'):
+                    if not rotation_input_buffer.startswith('-'):
+                        rotation_input_buffer = '-' + rotation_input_buffer
+                    else:
+                        rotation_input_buffer = rotation_input_buffer[1:]
+                elif ord('0') <= key <= ord('9') or key == ord('.'):
+                    rotation_input_buffer += chr(key)
+                # 输入模式下忽略其他键, 继续循环
+                if rotation_input_active:
+                    continue
+
+            if key == ord('a') or key == ord('A'):
                 mode = MODE_ALIGN
                 converged = False
                 aligned_frames = 0
@@ -4681,11 +4724,10 @@ Z轴控制关节 (全部6个):
                 else:
                     print("⚠ 需要检测到tag才能设置目标深度")
             elif key == ord('e') or key == ord('E'):
-                # 设置目标旋转角度
-                if tag_state.tag_visible:
-                    ibvs.set_target_rotation(tag_state.tag_rotation_deg)
-                else:
-                    print("⚠ 需要检测到tag才能设置目标旋转")
+                # 输入目标旋转角度 (数字模式)
+                rotation_input_active = True
+                rotation_input_buffer = ""
+                print("▶ 输入旋转角度 (数字键+Enter确认, Esc取消):")
             elif key == ord('r') or key == ord('R'):
                 require_depth_for_align = not require_depth_for_align
                 mode_str = "XY居中即完成" if not require_depth_for_align else "居中+深度达标"

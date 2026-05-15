@@ -322,9 +322,15 @@ class SimpleIBVSController:
         if arm == 'right':
             self.position_weights = POSITION_WEIGHTS_RIGHT
             self.rotation_joint = 12
+            _default_joints = [7, 8, 9, 10, 11, 12, 14]
         else:
             self.position_weights = POSITION_WEIGHTS_LEFT
             self.rotation_joint = 5
+            _default_joints = [0, 1, 2, 3, 4, 5, 14]
+
+        # 分维度权重: 旋转/深度行不受XY权重压制, 默认统一1.0
+        self.rotation_weights = {j: 1.0 for j in _default_joints}
+        self.depth_weights = {j: 1.0 for j in _default_joints}
 
         # 目标像素位置 (tag中心应该出现的位置)
         self.target_pixel_x = 320.0
@@ -764,11 +770,17 @@ class SimpleIBVSController:
         else:
             error = np.array([pixel_error_x, pixel_error_y])
 
-        W = np.zeros((n_joints, n_joints))
+        # 分维度权重: XY行用position_weights (偏好主力臂关节),
+        # 旋转/深度行用各自权重 (默认统一1.0, 不受XY权重压制)
+        JW = np.zeros_like(J)
         for i, s in enumerate(sensitivities):
-            W[i, i] = self.position_weights.get(s.joint_idx, 0.5)
-
-        JW = J @ W
+            jidx = s.joint_idx
+            JW[0, i] = J[0, i] * self.position_weights.get(jidx, 0.5)
+            JW[1, i] = J[1, i] * self.position_weights.get(jidx, 0.5)
+            if dim >= 3:
+                JW[2, i] = J[2, i] * self.rotation_weights.get(jidx, 1.0)
+            if dim >= 4:
+                JW[3, i] = J[3, i] * self.depth_weights.get(jidx, 1.0)
 
         # 阻尼最小二乘 (Tikhonov regularization)
         damping = max(1.0, float(np.linalg.norm(error)) * 0.05)
