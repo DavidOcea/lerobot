@@ -60,7 +60,15 @@ class SupreRobotFollower(Robot):
             raise ValueError(f"Failed to load joint_order from '{config.joint_config_path}': {e}")
 
         self.cameras = make_cameras_from_configs(config.cameras)
-      
+
+        # Build joint_direction_map for cross-robot model deployment.
+        # When model_joint_direction_override is None, all directions are 1 (identity).
+        override = self.config.model_joint_direction_override
+        self._joint_direction_map = {}
+        for i, joint_name in enumerate(self._joint_order):
+            direction = override[i] if override is not None and i < len(override) else 1
+            self._joint_direction_map[joint_name] = direction
+
         # 将 calibration 列表转换为一个字典以便快速查找
         # key: joint_name, value: MotorCalibration object
         self.calibration_limits = {cal.joint_name: cal for cal in self.config.calibration}
@@ -185,11 +193,12 @@ class SupreRobotFollower(Robot):
         obs_dict = {}
         for i in range(len(self.observation_joint_names)):
             joint_name = self.observation_joint_names[i]
+            direction = self._joint_direction_map.get(joint_name, 1)
             # 添加关节位置
-            obs_dict[f"{joint_name}.pos"] = positions[i]
+            obs_dict[f"{joint_name}.pos"] = positions[i] * direction
             # 添加关节力/力矩
             if i < len(forces):
-                obs_dict[f"{joint_name}.force"] = forces[i]
+                obs_dict[f"{joint_name}.force"] = forces[i] * direction
             else:
                 # If forces array is shorter, default to 0.0
                 obs_dict[f"{joint_name}.force"] = 0.0
@@ -214,12 +223,12 @@ class SupreRobotFollower(Robot):
         """获取机器人的当前位置。"""
         if not self.is_connected:
             raise RuntimeError("Robot is not connected.")
-        
+
         positions = self._hardware_manager.read()[0]
-        
-        pos_dict = {f"{self.observation_joint_names[i]}": positions[i] for i in range(len(self.observation_joint_names))}
+
+        pos_dict = {f"{self.observation_joint_names[i]}": positions[i] * self._joint_direction_map.get(self.observation_joint_names[i], 1) for i in range(len(self.observation_joint_names))}
         print("current_pos: ", pos_dict)
-        return {self.observation_joint_names[i]: positions[i] for i in range(len(self.observation_joint_names))}
+        return {self.observation_joint_names[i]: positions[i] * self._joint_direction_map.get(self.observation_joint_names[i], 1) for i in range(len(self.observation_joint_names))}
 
     def _prepare_and_clamp_action(self, action: dict[str, Any], skip_safety: bool = False) -> Tuple[List[float], Dict[str, Any]]:
         if action is None:
@@ -358,7 +367,9 @@ class SupreRobotFollower(Robot):
         
     def send_target_position(self, target_positions: list[float]) -> None:
         """将目标位置发送给机器人。"""
-        self._hardware_manager.write(target_positions)
+        hw_positions = [pos * self._joint_direction_map.get(name, 1)
+                        for name, pos in zip(self.observation_joint_names, target_positions)]
+        self._hardware_manager.write(hw_positions)
     def disconnect(self) -> None:
         """断开与机器人的连接。"""
         if not self.is_connected:
@@ -409,7 +420,7 @@ class SupreRobotFollower(Robot):
         try:
             positions, forces = self._hardware_manager.read()
             return {
-                joint_name: float(forces[i])
+                joint_name: float(forces[i]) * self._joint_direction_map.get(joint_name, 1)
                 for i, joint_name in enumerate(self.observation_joint_names)
             }
         except Exception as e:
