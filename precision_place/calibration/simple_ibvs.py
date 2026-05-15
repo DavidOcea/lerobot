@@ -447,6 +447,8 @@ class SimpleIBVSController:
                       f" (用于XY行插值)")
         except Exception as e:
             print(f"⚠ 3D/4D hybrid: 加载2D标定失败 ({e}), 像素灵敏度可能不准")
+
+    def save_calibration(self, filepath: str = None) -> bool:
         """保存标定数据 (含深度/旋转灵敏度)"""
         if filepath is None:
             default_file = self.CALIBRATION_FILES.get(self.dimension, "calibration_points.json")
