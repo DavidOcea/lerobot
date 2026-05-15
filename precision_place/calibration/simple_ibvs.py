@@ -336,6 +336,12 @@ class SimpleIBVSController:
         self.depth_weight = depth_weight
         self._depth_history = deque(maxlen=depth_filter_window)
 
+        # 旋转相关参数
+        self.target_rotation_deg = 0.0  # 目标旋转角度 (tag in-plane rotation)
+
+        # 3D/4D hybrid: 加载2D标定数据用于XY行插值 (更可靠)
+        self._fallback_calibration_points: List[CalibrationPoint] = []
+
         # 关节名称映射
         self.joint_names = {}
         for i in range(7):
@@ -387,12 +393,60 @@ class SimpleIBVSController:
             self._check_camera_flip()
             print(f"✓ 已加载 {len(self.calibration_points)} 个标定点 (arm={self.arm})")
             print(f"  pixel_to_mm_ratio = {self.pixel_to_mm_ratio:.3f}")
+
+            # 3D/4D hybrid: 如果当前标定缺少传统标定点, 自动加载2D标定数据作为XY行fallback
+            if self.dimension >= 3:
+                self._load_fallback_2d()
+
             return True
         except Exception as e:
             print(f"✗ 加载标定数据失败: {e}")
             return False
 
-    def save_calibration(self, filepath: str = None) -> bool:
+    def _load_fallback_2d(self):
+        """3D/4D hybrid: 加载2D标定数据作为XY灵敏度fallback
+
+        仅当当前主标定文件没有传统标定点 (low/medium/high) 时自动触发。
+        XY行使用2D数据 (已验证可靠), 旋转/深度行使用当前3D/4D数据。
+        """
+        pixel_points = [cp for cp in self.calibration_points
+                       if cp.height_level != 'apriltag_3d']
+        if pixel_points:
+            return  # 已有传统标定点, 不需要fallback
+
+        fallback_file = str(Path(__file__).parent.parent /
+                          self.CALIBRATION_FILES.get(2, "calibration_points.json"))
+        if not Path(fallback_file).exists():
+            print("⚠ 3D/4D hybrid: 2D标定文件缺失, 像素灵敏度可能不准")
+            return
+
+        try:
+            with open(fallback_file, 'r') as f:
+                data = json.load(f)
+
+            self._fallback_calibration_points = []
+            for cp_data in data.get('points', []):
+                if cp_data.get('arm', 'right') != self.arm:
+                    continue
+                sensitivities = [JointSensitivity(**{k: v for k, v in s.items()
+                    if k in {f.name for f in dc_fields(JointSensitivity)}})
+                    for s in cp_data.get('sensitivities', [])]
+                cp = CalibrationPoint(
+                    height_level=cp_data['height_level'],
+                    joint_states=cp_data['joint_states'],
+                    sensitivities=sensitivities,
+                    pixel_to_mm=cp_data.get('pixel_to_mm', 0.5),
+                    timestamp=cp_data.get('timestamp', ''),
+                    arm=cp_data.get('arm', 'right'),
+                    camera_name=cp_data.get('camera_name', '')
+                )
+                self._fallback_calibration_points.append(cp)
+
+            if self._fallback_calibration_points:
+                print(f"✓ 3D/4D hybrid: 已加载 {len(self._fallback_calibration_points)} 个2D标定点"
+                      f" (用于XY行插值)")
+        except Exception as e:
+            print(f"⚠ 3D/4D hybrid: 加载2D标定失败 ({e}), 像素灵敏度可能不准")
         """保存标定数据 (含深度/旋转灵敏度)"""
         if filepath is None:
             default_file = self.CALIBRATION_FILES.get(self.dimension, "calibration_points.json")
@@ -506,8 +560,8 @@ class SimpleIBVSController:
         mm_y = error_y * self.pixel_to_mm_ratio
         state.error_total_mm = np.sqrt(mm_x**2 + mm_y**2)
 
-        # 旋转误差
-        state.error_rotation = best_tag['rotation_deg']
+        # 旋转误差 (相对目标旋转角度)
+        state.error_rotation = best_tag['rotation_deg'] - self.target_rotation_deg
 
         # 深度估算 + 滑动窗口滤波
         raw_depth = self.tag_detector.estimate_depth_mm(best_tag, self.camera_fx)
@@ -548,10 +602,14 @@ class SimpleIBVSController:
         depth_points = [cp for cp in self.calibration_points
                        if cp.height_level == 'apriltag_3d']
 
-        # 像素标定点已空 → 回退到全部点
+        # 像素标定点已空 → hybrid fallback
         if not pixel_points:
-            print("⚠ 缺少传统标定点 (low/medium/high)，像素灵敏度可能不准")
-            pixel_points = self.calibration_points
+            if self._fallback_calibration_points:
+                # 3D/4D hybrid: 用2D标定数据做XY灵敏度插值
+                pixel_points = self._fallback_calibration_points
+            else:
+                print("⚠ 缺少传统标定点 (low/medium/high)，像素灵敏度可能不准")
+                pixel_points = self.calibration_points
 
         def _compute_weights(points):
             """计算反距离权重"""
@@ -787,14 +845,20 @@ class SimpleIBVSController:
         self.target_depth_mm = depth_mm
         print(f"✓ 目标深度: {depth_mm:.0f}mm")
 
+    def set_target_rotation(self, rot_deg: float):
+        """设置目标旋转角度 (tag in-plane rotation, deg)"""
+        self.target_rotation_deg = rot_deg
+        print(f"✓ 目标旋转角度: {rot_deg:.1f}°")
+
     def set_target_from_state(self, tag_state: TagAlignmentState):
-        """从当前tag状态设置目标位置和目标深度"""
+        """从当前tag状态设置目标位置、深度和旋转"""
         if tag_state.tag_visible:
             cx, cy = tag_state.tag_center
             self.set_target_pixel(cx, cy)
             if tag_state.depth_filtered > 0:
                 self.set_target_depth(tag_state.depth_filtered)
-            print(f"✓ 目标已捕获: 像素({cx:.1f}, {cy:.1f}), 深度{tag_state.depth_filtered:.0f}mm")
+            self.set_target_rotation(tag_state.tag_rotation_deg)
+            print(f"✓ 目标已捕获: 像素({cx:.1f}, {cy:.1f}), 深度{tag_state.depth_filtered:.0f}mm, 旋转{tag_state.tag_rotation_deg:.1f}°")
         else:
             print("⚠ 需要检测到tag才能设置目标")
 
@@ -1033,6 +1097,7 @@ class SimpleIBVSController:
         print(f"  tag物理尺寸: {self.tag_detector.tag_size_mm:.1f}mm")
         print(f"  目标像素位置: ({self.target_pixel_x:.1f}, {self.target_pixel_y:.1f})")
         print(f"  目标深度: {self.target_depth_mm:.0f}mm (容差: ±{self.depth_tolerance_mm:.0f}mm)")
+        print(f"  目标旋转: {self.target_rotation_deg:.1f}° (容差: ±{self.rotation_tolerance}°)")
         print(f"  深度权重: {self.depth_weight}")
         print(f"  旋转权重: {self.rotation_weight}, 旋转容差: {self.rotation_tolerance}°")
         print(f"  深度伺服: {'已禁用 (2D/3D仅用于判定)' if self.dimension < 4 else '4D模式 (权重=' + str(self.depth_weight) + ')'}")
@@ -1052,6 +1117,10 @@ class SimpleIBVSController:
                       f"(来自 pixel_to_mm×fx)")
         print(f"  相机翻转: X={self._camera_flip_x}, Y={self._camera_flip_y}")
         print(f"  标定点数量: {len(self.calibration_points)}")
+
+        if self._fallback_calibration_points:
+            print(f"  Hybrid模式: XY行用2D标定 ({len(self._fallback_calibration_points)}点), "
+                  f"旋转/深度行用{self.dimension}D标定")
 
         if self.calibration_points:
             for cp in self.calibration_points:

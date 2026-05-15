@@ -4335,14 +4335,16 @@ Z轴控制关节 (全部6个):
 
 按键说明:
   A - 对齐模式  F - 跟踪模式  S - 单步
-  T - 设置目标 (当前tag状态作为目标)
-  G - 设置目标像素为图像中心
+  T - 设置目标 (当前tag全部状态作为目标: 像素+深度+旋转)
+  G - 重置目标 (像素→图像中心, 旋转→0°)
   D - 设置目标深度 (当前深度作为目标)
+  E - 设置目标旋转 (当前旋转角作为目标)
   R - 切换深度要求 (XY居中即完成 ↔ 全维度达标)
   +/-- 跟踪速度  X - 停止  Q - 退出
 """)
         print(f"  当前目标: 像素({ibvs.target_pixel_x:.1f}, "
               f"{ibvs.target_pixel_y:.1f}), "
+              f"旋转{ibvs.target_rotation_deg:.1f}°, "
               f"深度{ibvs.target_depth_mm:.0f}mm")
         print(f"  像素容差: {ibvs.pixel_tolerance}px, "
               f"旋转容差: {ibvs.rotation_tolerance}°, "
@@ -4449,6 +4451,7 @@ Z轴控制关节 (全部6个):
                 if dimension >= 3:
                     rot_color = (0, 255, 0) if rotation_ok else (0, 200, 255)
                     cv2.putText(display, f"Rotation err: {tag_state.error_rotation:+.1f} deg "
+                               f"(target={ibvs.target_rotation_deg:.1f}°) "
                                f"{'[OK]' if rotation_ok else ''}",
                                (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.45, rot_color, 1)
                     y_pos += 22
@@ -4622,8 +4625,8 @@ Z轴控制关节 (全部6个):
             cv2.rectangle(display, (5, h-50), (w-5, h-5), (0, 0, 0), -1)
             depth_mode_str = "XYonly" if not require_depth_for_align else ("XY+Depth" if dimension == 2 else "All")
             dim_label = {2: "", 3: "-3D", 4: "-4D"}.get(dimension, "")
-            help_text = f"A:align F:track S:step T/G:set target D:depth R:depthReq X:stop Q:quit"
-            help_text2 = f"{dim_key}{dim_label} DepthReq:{depth_mode_str}  TrackDelay:{track_delay*1000:.0f}ms"
+            help_text = f"A:align F:track S:step T:set all G:center D:depth E:rot R:depthReq X:stop Q:quit"
+            help_text2 = f"{dim_key}{dim_label} DepthReq:{depth_mode_str}  TrackDelay:{track_delay*1000:.0f}ms  RotTarget:{ibvs.target_rotation_deg:.0f}°"
             cv2.putText(display, help_text, (10, h-30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
             cv2.putText(display, help_text2, (10, h-12),
@@ -4643,8 +4646,12 @@ Z轴控制关节 (全部6个):
                 best_error = float('inf')
                 stuck_counter = 0
                 adaptive_gain = 1.0
-                depth_msg = "XY居中后停止" if not require_depth_for_align else "居中+深度达标后停止"
-                print(f"\n▶ 对齐模式启动 ({depth_msg}, 需连续3帧确认)")
+                dim_align_start = {2: f"XY居中后停止" if not require_depth_for_align else "居中+深度达标后停止",
+                                   3: f"XY+旋转对准后停止" if not require_depth_for_align else "XY+旋转+深度达标后停止",
+                                   4: "XY+旋转+深度达标后停止"}
+                depth_msg = dim_align_start.get(dimension, dim_align_start[2])
+                rot_info = f" 旋转目标={ibvs.target_rotation_deg:.0f}°" if dimension >= 3 else ""
+                print(f"\n▶ 对齐模式启动 ({depth_msg}, 需连续3帧确认){rot_info}")
             elif key == ord('f') or key == ord('F'):
                 mode = MODE_TRACK
                 converged = False
@@ -4659,18 +4666,26 @@ Z轴控制关节 (全部6个):
                 mode = MODE_IDLE
                 print("▶ 已停止")
             elif key == ord('t') or key == ord('T'):
+                # 设置所有目标 (像素+深度+旋转) 从当前tag状态
                 if tag_state.tag_visible:
-                    cx, cy = tag_state.tag_center
-                    ibvs.set_target_pixel(cx, cy)
+                    ibvs.set_target_from_state(tag_state)
                 else:
                     print("⚠ 需要检测到tag才能设置目标位置")
             elif key == ord('g') or key == ord('G'):
                 ibvs.set_target_pixel(w/2, h/2)
+                ibvs.set_target_rotation(0.0)
+                print(f"▶ 目标像素重置为图像中心，旋转目标重置为0°")
             elif key == ord('d') or key == ord('D'):
                 if tag_state.tag_visible and tag_state.depth_filtered > 0:
                     ibvs.set_target_depth(tag_state.depth_filtered)
                 else:
                     print("⚠ 需要检测到tag才能设置目标深度")
+            elif key == ord('e') or key == ord('E'):
+                # 设置目标旋转角度
+                if tag_state.tag_visible:
+                    ibvs.set_target_rotation(tag_state.tag_rotation_deg)
+                else:
+                    print("⚠ 需要检测到tag才能设置目标旋转")
             elif key == ord('r') or key == ord('R'):
                 require_depth_for_align = not require_depth_for_align
                 mode_str = "XY居中即完成" if not require_depth_for_align else "居中+深度达标"
