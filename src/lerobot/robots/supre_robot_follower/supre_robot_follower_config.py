@@ -20,6 +20,12 @@ class SupreRobotFollowerConfig(RobotConfig):
     joint_config_file: str = _DEFAULT_JOINT_CONFIG_PATH
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     joint_direction: list= field(default_factory=lambda: [-1, -1, 1, 1, 1, -1, 1, -1, -1, 1, 1, 1, -1, 1, 1, 1])
+    # Override joint direction signs for cross-robot model deployment.
+    # When deploying a model trained on robot A to robot B, set this to the
+    # direction mapping that aligns robot B's hardware with robot A's convention.
+    # None (default) = no override, robot runs with its native sign convention.
+    # Example: [1, 1, -1, 1, 1, -1, ...] flips joint_3 and joint_6.
+    model_joint_direction_override: list | None = None
     max_relative_joint_move: float = 15.0 #30.0
     prometheus_port: int | None = 8000
     control_frequency: int = 30
