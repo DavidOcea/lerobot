@@ -4541,7 +4541,7 @@ Z轴控制关节 (全部6个):
                         else:
                             stuck_counter += 1
                             if stuck_counter >= 3:
-                                adaptive_gain = max(0.1, adaptive_gain * 0.6)
+                                adaptive_gain = max(0.3, adaptive_gain * 0.6)
                                 stuck_counter = 0
                                 print(f"  [Align] stuck detected, gain→{adaptive_gain:.2f}")
 
@@ -4582,10 +4582,26 @@ Z轴控制关节 (全部6个):
                             rot_adj = {k: v * 0.3 for k, v in rot_raw.items()} if rot_raw else {}
                         else:
                             rot_adj = {}
-                        if tag_state.error_total_px > 5.0 or abs(tag_state.depth_error_mm) > 5.0:
+
+                        # 跟踪模式也加卡死检测, 防止过冲后振荡发散
+                        current_error = tag_state.error_total_px
+                        if current_error < best_error * 0.9:
+                            best_error = current_error
+                            stuck_counter = 0
+                            adaptive_gain = min(1.0, adaptive_gain * 1.3)
+                        else:
+                            stuck_counter += 1
+                            if stuck_counter >= 3:
+                                adaptive_gain = max(0.3, adaptive_gain * 0.6)
+                                stuck_counter = 0
+                        if adaptive_gain < 0.99:
+                            xy_rot_depth_adj = {k: v * adaptive_gain for k, v in xy_rot_depth_adj.items()}
+
+                        if tag_state.error_total_px > 3.0 or abs(tag_state.depth_error_mm) > 5.0:
+                            gain_info = f" gain={adaptive_gain:.2f}" if adaptive_gain < 0.99 else ""
                             print(f"  [Track iter {iteration+1}] "
                                   f"pixel={tag_state.error_total_px:.1f}px "
-                                  f"depth={tag_state.depth_filtered:.0f}mm")
+                                  f"depth={tag_state.depth_filtered:.0f}mm{gain_info}")
                         if self.controller and not self.controller.passive_mode:
                             self.controller.apply_joint_adjustments(xy_rot_depth_adj, rot_adj)
                             time.sleep(track_delay)
@@ -4700,6 +4716,9 @@ Z轴控制关节 (全部6个):
                 converged = False
                 iteration = 0
                 error_history = []
+                best_error = float('inf')
+                stuck_counter = 0
+                adaptive_gain = 1.0
                 print("\n▶ 跟踪模式启动 (持续伺服，不会停止)")
             elif key == ord('s') or key == ord('S'):
                 mode = MODE_SINGLE
@@ -5031,7 +5050,7 @@ Z轴控制关节 (全部6个):
                         else:
                             stuck_counter += 1
                             if stuck_counter >= 3:
-                                adaptive_gain = max(0.1, adaptive_gain * 0.6)
+                                adaptive_gain = max(0.3, adaptive_gain * 0.6)
                                 stuck_counter = 0
                                 print(f"  [FK-IBVS] stuck, gain→{adaptive_gain:.2f}")
 
