@@ -4596,6 +4596,8 @@ Z轴控制关节 (全部6个):
                                 stuck_counter = 0
                         if adaptive_gain < 0.99:
                             xy_rot_depth_adj = {k: v * adaptive_gain for k, v in xy_rot_depth_adj.items()}
+                            if rot_adj:
+                                rot_adj = {k: v * adaptive_gain for k, v in rot_adj.items()}
 
                         if tag_state.error_total_px > 3.0 or abs(tag_state.depth_error_mm) > 5.0:
                             gain_info = f" gain={adaptive_gain:.2f}" if adaptive_gain < 0.99 else ""
