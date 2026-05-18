@@ -260,8 +260,8 @@ class SimpleIBVSController:
     }
 
     def __init__(self, arm: str = "right", gain: float = 0.6,
-                 pixel_tolerance: float = 3.0, max_iterations: int = 25,
-                 max_single_adjust: float = 2.0,
+                 pixel_tolerance: float = 3.0, max_iterations: int = 50,
+                 max_single_adjust: float = 0.8,
                  tag_family: str = "36h11",
                  target_tag_ids: List[int] = None,
                  tag_size_mm: float = 20.0,
