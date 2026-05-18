@@ -267,12 +267,12 @@ class SimpleIBVSController:
                  tag_size_mm: float = 20.0,
                  target_depth_mm: float = 150.0,
                  depth_tolerance_mm: float = 5.0,
-                 depth_weight: float = 0.1,
+                 depth_weight: float = 0.05,
                  depth_filter_window: int = 5,
                  camera_fx: float = 531.0,
                  dimension: int = 2,
                  rotation_tolerance: float = 2.0,
-                 rotation_weight: float = 1.5):
+                 rotation_weight: float = 0.6):
         """
         Args:
             arm: 'left' or 'right'
