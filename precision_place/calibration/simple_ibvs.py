@@ -267,7 +267,7 @@ class SimpleIBVSController:
                  tag_size_mm: float = 20.0,
                  target_depth_mm: float = 150.0,
                  depth_tolerance_mm: float = 5.0,
-                 depth_weight: float = 0.15,
+                 depth_weight: float = 0.05,
                  depth_filter_window: int = 5,
                  camera_fx: float = 531.0,
                  dimension: int = 2,
@@ -285,7 +285,7 @@ class SimpleIBVSController:
             tag_size_mm: tag物理尺寸 (mm)
             target_depth_mm: 目标深度距离 (相机到tag的期望距离, mm)
             depth_tolerance_mm: 深度收敛容差 (mm)
-            depth_weight: 深度误差在雅可比中的权重 (仅4D, 建议0.03-0.1)
+            depth_weight: 深度误差在雅可比中的权重 (仅4D, 建议0.03-0.05)
             depth_filter_window: 深度滤波窗口大小 (帧数)
             camera_fx: 相机焦距 (像素)
             dimension: 雅可比维度 2=XY, 3=XY+旋转, 4=XY+旋转+深度
