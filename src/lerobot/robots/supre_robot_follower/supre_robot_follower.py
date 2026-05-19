@@ -227,10 +227,6 @@ class SupreRobotFollower(Robot):
 
         action_pos = {key.removesuffix(".pos"): val for key, val in action.items()}
 
-        # DEBUG: 打印 action 中的关键关节值
-        if 'right_arm_joint_1' in action_pos:
-            # print(f"[DEBUG] _prepare_and_clamp_action: action_pos['right_arm_joint_1'] = {action_pos['right_arm_joint_1']:.4f}")
-
         ensure_safe = not skip_safety
         if ensure_safe:
             # 1. --- GET CURRENT STATE (Now much cleaner!) ---
@@ -246,11 +242,6 @@ class SupreRobotFollower(Robot):
                     goal_present_pos[obs_name] = (goal_pos, present_pos)
                 except KeyError as e:
                     raise ValueError(f"Could not find required joint '{e}' in action or current state.")
-
-            # DEBUG: 打印安全检查的关键值
-            if 'right_arm_joint_1' in goal_present_pos:
-                goal, present = goal_present_pos['right_arm_joint_1']
-                # print(f"[DEBUG] Safety check: goal={goal:.4f}, present={present:.4f}, diff={goal-present:.4f}, max_rel={self.config.max_relative_joint_move}")
 
             # 3. --- APPLY THE SAFETY FUNCTION ---
             # Call `ensure_safe_goal_position` to get the clamped goal positions.
