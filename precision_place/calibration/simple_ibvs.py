@@ -782,6 +782,19 @@ class SimpleIBVSController:
             if dim >= 4:
                 JW[3, i] = J[3, i] * self.depth_weights.get(jidx, 1.0)
 
+        # 深度自适应缩放: XY像素灵敏度 ∝ 1/depth, 旋转和深度灵敏度与depth无关
+        # 将depth_scale预补偿到JW的XY行 (除以depth_scale使XY行变大), 避免影响旋转/深度维度
+        # 2D模式: 数学等价于之前的 post-LS * depth_scale
+        depth_scale = 1.0
+        if current_depth_mm is not None and current_depth_mm > 0 and calibration_depth > 0:
+            depth_scale = current_depth_mm / calibration_depth
+            depth_scale = float(np.clip(depth_scale, 0.3, 3.0))
+            JW[0] = JW[0] / depth_scale
+            JW[1] = JW[1] / depth_scale
+            if abs(depth_scale - 1.0) > 0.15:
+                print(f"  [IBVS] depth_scale={depth_scale:.2f} "
+                      f"(calib_depth={calibration_depth:.0f}mm, cur_depth={current_depth_mm:.0f}mm)")
+
         # 阻尼最小二乘 (Tikhonov regularization)
         damping = max(1.0, float(np.linalg.norm(error)) * 0.05)
 
@@ -799,15 +812,6 @@ class SimpleIBVSController:
                                                        sensitivities)
 
         delta_angles = delta_angles * self.gain
-
-        # 深度自适应缩放
-        if current_depth_mm is not None and current_depth_mm > 0 and calibration_depth > 0:
-            depth_scale = current_depth_mm / calibration_depth
-            depth_scale = float(np.clip(depth_scale, 0.3, 3.0))
-            delta_angles = delta_angles * depth_scale
-            if abs(depth_scale - 1.0) > 0.15:
-                print(f"  [IBVS] depth_scale={depth_scale:.2f} "
-                      f"(calib_depth={calibration_depth:.0f}mm, cur_depth={current_depth_mm:.0f}mm)")
 
         delta_angles = np.clip(delta_angles, -self.max_single_adjust, self.max_single_adjust)
 
