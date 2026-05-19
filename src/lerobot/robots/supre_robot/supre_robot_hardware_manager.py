@@ -137,7 +137,7 @@ class SupreRobotHardwareManager:
         """
         # 1. 从每个硬件读取数据
         hw_results = {inst: inst.read() for inst in self._hardware_instances}
-        print(f"Results from hardware:{hw_results}")
+        # print(f"Results from hardware:{hw_results}")  # DEBUG: 每步打印严重影响性能
         # 2. 使用映射表填充全局状态向量
         for global_index in range(self.num_joints):
             mapping = self._joint_map[global_index]

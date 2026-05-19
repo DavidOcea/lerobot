@@ -787,7 +787,7 @@ class PrecisionPlaceController:
 
         # 运动平滑参数 (全局设置，所有动作都用这个参数)
         self.smooth_steps = 30     # 分30步实现更平滑的移动
-        self.smooth_delay = 0.05   # 每步50ms (加速, 之前0.1s)
+        self.smooth_delay = 0.01   # 每步10ms (加速对齐, 之前50ms)
 
         # 高度控制 (用于粗调)
         self.height_joint_idx = self.arm_config.primary_joints[1]  # 通常joint_2影响高度

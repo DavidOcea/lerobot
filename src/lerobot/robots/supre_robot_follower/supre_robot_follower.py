@@ -218,7 +218,7 @@ class SupreRobotFollower(Robot):
         positions = self._hardware_manager.read()[0]
         
         pos_dict = {f"{self.observation_joint_names[i]}": positions[i] for i in range(len(self.observation_joint_names))}
-        print("current_pos: ", pos_dict)
+        # print("current_pos: ", pos_dict)  # DEBUG: 每次定位打印严重影响性能
         return {self.observation_joint_names[i]: positions[i] for i in range(len(self.observation_joint_names))}
 
     def _prepare_and_clamp_action(self, action: dict[str, Any], skip_safety: bool = False) -> Tuple[List[float], Dict[str, Any]]:
@@ -229,7 +229,7 @@ class SupreRobotFollower(Robot):
 
         # DEBUG: 打印 action 中的关键关节值
         if 'right_arm_joint_1' in action_pos:
-            print(f"[DEBUG] _prepare_and_clamp_action: action_pos['right_arm_joint_1'] = {action_pos['right_arm_joint_1']:.4f}")
+            # print(f"[DEBUG] _prepare_and_clamp_action: action_pos['right_arm_joint_1'] = {action_pos['right_arm_joint_1']:.4f}")
 
         ensure_safe = not skip_safety
         if ensure_safe:
@@ -250,7 +250,7 @@ class SupreRobotFollower(Robot):
             # DEBUG: 打印安全检查的关键值
             if 'right_arm_joint_1' in goal_present_pos:
                 goal, present = goal_present_pos['right_arm_joint_1']
-                print(f"[DEBUG] Safety check: goal={goal:.4f}, present={present:.4f}, diff={goal-present:.4f}, max_rel={self.config.max_relative_joint_move}")
+                # print(f"[DEBUG] Safety check: goal={goal:.4f}, present={present:.4f}, diff={goal-present:.4f}, max_rel={self.config.max_relative_joint_move}")
 
             # 3. --- APPLY THE SAFETY FUNCTION ---
             # Call `ensure_safe_goal_position` to get the clamped goal positions.
@@ -355,7 +355,7 @@ class SupreRobotFollower(Robot):
         logger.debug(f"Sending action: {action}")
         # 1. 调用辅助方法来完成所有的计算和安全检查
         final_target_positions, final_action_dict = self._prepare_and_clamp_action(action)
-        print("final_target_positions: ",final_target_positions)
+        # print("final_target_positions: ",final_target_positions)
         # 2. 将计算结果发送到硬件
         # 2. 根据是否启用插值，选择不同的发送方式
 
