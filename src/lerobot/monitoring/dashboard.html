@@ -110,10 +110,11 @@ function card(title,val,cls,sub){
 }
 
 function renderStatusBar(d){
-  var r=d.robot||{},a=d.agv||{},t=d.task||{},p=a.position||{};
+  var r=d.robot||{},a=d.agv||{},t=d.task||{},h=d.host||{},p=a.position||{};
   var bar=document.getElementById('status-bar'); bar.textContent='';
   bar.appendChild(card('Robot FPS',(r.fps||0).toFixed(1),r.connected?'ok':'err',(r.joint_count||0)+' joints'));
   bar.appendChild(card('Battery',(a.battery_pct||0)+'%',a.battery_pct>20?'ok':(a.battery_pct>10?'warn':'err'),(a.battery_voltage||0).toFixed(1)+'V'+(a.charging?' CHG':'')));
+  if(h.pct!==undefined) bar.appendChild(card('System Power',h.pct+'%',h.pct>20?'ok':(h.pct>10?'warn':'err'),(h.status||'')+(h.voltage?', '+h.voltage.toFixed(1)+'V':'')));
   bar.appendChild(card('AGV',a.running_status_label||'N/A',a.connected?(a.emergency?'err':'ok'):'err',a.current_station||'-'));
   bar.appendChild(card('Emergency',a.emergency?'ACTIVE':'Clear',a.emergency?'err blink':'ok',''));
   bar.appendChild(card('Position','x='+p.x+' y='+p.y,'','θ='+p.theta_deg+'°'));
