@@ -354,7 +354,7 @@ class MonitorCollector:
 
 
 def _read_host_battery() -> dict:
-    """Read host system battery from /sys/class/power_supply (Linux only).
+    """Read host system battery. Tries sysfs first, then RS-485 serial.
 
     Returns {"pct": int, "status": str, "voltage": float} or {} if no battery.
     """
@@ -366,7 +366,7 @@ def _read_host_battery() -> dict:
         bats = sorted(glob.glob("/sys/class/power_supply/*"))
         bats = [b for b in bats if "AC" not in os.path.basename(b) and "usb" not in os.path.basename(b).lower()]
     if not bats:
-        return {}
+        return _read_rs485_battery()
     base = bats[0]
     try:
         with open(os.path.join(base, "capacity"), "r") as f:
@@ -389,6 +389,54 @@ def _read_host_battery() -> dict:
         except Exception:
             pass
     return {"pct": pct, "status": status, "voltage": round(voltage, 1)}
+
+
+def _read_rs485_battery() -> dict:
+    """Read battery via RS-485 serial port using Seer ASCII protocol (46 42)."""
+    try:
+        import serial
+    except ImportError:
+        return {}
+
+    PORT = "/dev/ttyTHS2"
+    VER, ADDR = 0x20, 0x01
+
+    try:
+        ser = serial.Serial(PORT, 9600, timeout=0.5)
+    except Exception:
+        return {}
+
+    try:
+        info = "FF00"  # query all packs
+        frame_body = f"{VER:02X}{ADDR:02X}{0x46:02X}{0x42:02X}{len(info)//2:04X}{info}"
+        chksum = sum(frame_body.encode("ascii")) & 0xFFFF
+        frame = f"~{frame_body}{chksum:04X}\r"
+        ser.write(frame.encode("ascii"))
+        ser.flush()
+        raw = ser.read(512)
+    except Exception:
+        return {}
+    finally:
+        ser.close()
+
+    if not raw or len(raw) < 40:
+        return {}
+
+    try:
+        ascii_body = raw[1:-1].decode("ascii")
+        data = bytes.fromhex(ascii_body)
+        if len(data) < 40:
+            return {}
+
+        # SOC percentage at byte 37 (skipping 10B header + 27B offset)
+        pct = data[37]
+
+        # Pack voltage at bytes 43-44 (uint16 BE, mV)
+        voltage = int.from_bytes(data[43:45], "big") / 1000.0
+
+        return {"pct": pct, "status": f"{voltage:.1f}V", "voltage": round(voltage, 1)}
+    except Exception:
+        return {}
 
 
 def _status_label(code: int) -> str:
