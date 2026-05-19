@@ -261,7 +261,7 @@ class SimpleIBVSController:
 
     def __init__(self, arm: str = "right", gain: float = 0.6,
                  pixel_tolerance: float = 3.0, max_iterations: int = 50,
-                 max_single_adjust: float = 0.8,
+                 max_single_adjust: float = 1.5,
                  tag_family: str = "36h11",
                  target_tag_ids: List[int] = None,
                  tag_size_mm: float = 20.0,
@@ -794,6 +794,12 @@ class SimpleIBVSController:
             if abs(depth_scale - 1.0) > 0.15:
                 print(f"  [IBVS] depth_scale={depth_scale:.2f} "
                       f"(calib_depth={calibration_depth:.0f}mm, cur_depth={current_depth_mm:.0f}mm)")
+
+        # 行归一化: 让每个维度(X, Y, 旋转, 深度)在LS中天然平衡
+        # 解决XY行幅值10倍于旋转行导致旋转被忽略的问题
+        row_norms = np.linalg.norm(JW, axis=1)
+        row_norms = np.where(row_norms < 1e-6, 1.0, row_norms)
+        JW = JW / row_norms[:, np.newaxis]
 
         # 阻尼最小二乘 (Tikhonov regularization)
         damping = max(1.0, float(np.linalg.norm(error)) * 0.05)
