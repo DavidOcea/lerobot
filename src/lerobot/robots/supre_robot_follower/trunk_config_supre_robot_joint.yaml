@@ -10,7 +10,7 @@ joint_order:
   - left_arm_joint_4
   - left_arm_joint_5
   - left_arm_joint_6
-  # - left_arm_joint_7   # Gripper joint - DISABLED (temporarily removed)
+  - left_arm_joint_7   # Gripper joint - DISABLED (temporarily removed)
   - right_arm_joint_1
   - right_arm_joint_2
   - right_arm_joint_3
@@ -51,18 +51,18 @@ hardware_interfaces:
   # Will restore these when gripper is reinstalled:
   #
   # 左臂夹爪控制器
-  # - name: left_gripper
-  #   type: JodellGripperHardware
-  #   interpolation:
-  #     interpolation_n: 1
-  #   config:
-  #     device: "/dev/ttyTHS1"
-  #     baud_rate": 115200
-  #     default_speed_percent: 100
-  #     default_torque_percent: 100
-  #   joints:
-  #     - name: left_arm_joint_7
-  #       parameters: { slave_id: 27 }
+  - name: left_gripper
+    type: JodellGripperHardware
+    interpolation:
+      interpolation_n: 1
+    config:
+      device: "/dev/ttyTHS1"
+      baud_rate: 115200
+      default_speed_percent: 100
+      default_torque_percent: 100
+      joints:
+        - name: left_arm_joint_7
+          parameters: { slave_id: 27 }
   
   # 右臂夹爪控制器
   # - name: right_gripper
