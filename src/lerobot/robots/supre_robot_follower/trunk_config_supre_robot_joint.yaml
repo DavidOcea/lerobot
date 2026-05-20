@@ -56,7 +56,7 @@ hardware_interfaces:
     interpolation:
       interpolation_n: 1
     config:
-      device: "/dev/ttyTHS1"
+      device: "/dev/ttyTHS2"
       baud_rate: 115200
       default_speed_percent: 100
       default_torque_percent: 100
