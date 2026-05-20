@@ -76,6 +76,21 @@ class TaskSnapshot:
     timestamp: float = 0.0
 
 
+@dataclass
+class CameraSnapshot:
+    """Latest camera health snapshot."""
+    name: str = ""
+    connected: bool = False
+    enabled: bool = True
+    fps: int = 0
+    width: int = 0
+    height: int = 0
+    last_frame_time: float = 0.0
+    error_count: int = 0
+    last_error: str = ""
+    timestamp: float = 0.0
+
+
 class MonitorCollector:
     """Thread-safe collector that aggregates robot + AGV state.
 
@@ -84,9 +99,10 @@ class MonitorCollector:
     AGV batch APIs independently.
     """
 
-    def __init__(self, agv_controller=None, robot=None):
+    def __init__(self, agv_controller=None, robot=None, cameras: dict[str, Any] | None = None):
         self._agv = agv_controller
         self._robot = robot
+        self._cameras = cameras or {}
         self._lock = threading.Lock()
         self._running = False
         self._thread: threading.Thread | None = None
@@ -94,6 +110,7 @@ class MonitorCollector:
         self._robot_snapshot = RobotSnapshot()
         self._agv_snapshot = AGVSnapshot()
         self._task_snapshot = TaskSnapshot()
+        self._camera_snapshots: dict[str, CameraSnapshot] = {}
 
         # FPS tracking
         self._frame_count = 0
@@ -103,6 +120,10 @@ class MonitorCollector:
         # AGV poll interval
         self._agv_poll_interval = 0.5  # 500ms
         self._last_agv_poll = 0.0
+
+        # Camera poll interval (slower — cameras don't change rapidly)
+        self._camera_poll_interval = 5.0  # 5s
+        self._last_camera_poll = 0.0
 
         # Error/warning ring buffer
         self._event_log: list[dict] = []  # [{ts, level, source, message}]
@@ -194,13 +215,16 @@ class MonitorCollector:
         logger.info("MonitorCollector stopped")
 
     def _poll_loop(self):
-        """Background thread: poll AGV state at fixed interval."""
+        """Background thread: poll AGV state and camera health at fixed intervals."""
         while self._running:
             try:
                 now = time.time()
                 if now - self._last_agv_poll >= self._agv_poll_interval:
                     self._poll_agv()
                     self._last_agv_poll = now
+                if now - self._last_camera_poll >= self._camera_poll_interval:
+                    self._poll_cameras()
+                    self._last_camera_poll = now
             except Exception as e:
                 logger.error(f"MonitorCollector poll error: {e}")
             time.sleep(0.1)  # 100ms tick
@@ -289,6 +313,68 @@ class MonitorCollector:
             with self._lock:
                 self._agv_snapshot = AGVSnapshot(connected=False)
 
+    # ── Camera health polling ──────────────────────────────────
+
+    def _poll_cameras(self):
+        """Check camera connection health and update snapshots.
+
+        Each camera is probed via is_connected. State transitions
+        (connected→disconnected or vice versa) are logged as events
+        so the operator can see when a camera drops offline.
+        """
+        if not self._cameras:
+            return
+
+        for cam_name, cam in self._cameras.items():
+            try:
+                connected = cam.is_connected
+
+                # Get camera config info
+                fps = getattr(cam, 'fps', 0) or 0
+                width = getattr(cam, 'width', 0) or 0
+                height = getattr(cam, 'height', 0) or 0
+                enabled = getattr(cam, 'is_enabled', True)
+
+                # Check previous state to detect transitions
+                prev = self._camera_snapshots.get(cam_name)
+                was_connected = prev.connected if prev else connected
+                prev_errors = prev.error_count if prev else 0
+
+                error_count = prev_errors
+                last_error = prev.last_error if prev else ""
+
+                if not connected and was_connected:
+                    error_count += 1
+                    last_error = f"Camera disconnected at {time.strftime('%H:%M:%S')}"
+                    self.add_event("WARN", f"cam:{cam_name}", last_error)
+                elif connected and not was_connected:
+                    self.add_event("INFO", f"cam:{cam_name}", f"Camera reconnected ({width}x{height} @ {fps}fps)")
+                    last_error = ""
+
+                with self._lock:
+                    self._camera_snapshots[cam_name] = CameraSnapshot(
+                        name=cam_name,
+                        connected=connected,
+                        enabled=enabled,
+                        fps=fps,
+                        width=width,
+                        height=height,
+                        error_count=error_count,
+                        last_error=last_error,
+                        timestamp=time.time(),
+                    )
+            except Exception as e:
+                logger.warning(f"Camera health check failed for {cam_name}: {e}")
+                with self._lock:
+                    prev = self._camera_snapshots.get(cam_name)
+                    self._camera_snapshots[cam_name] = CameraSnapshot(
+                        name=cam_name,
+                        connected=False,
+                        error_count=(prev.error_count + 1) if prev else 1,
+                        last_error=str(e)[:120],
+                        timestamp=time.time(),
+                    )
+
     # ── Thread-safe snapshot access ──────────────────────────────
 
     def get_full_status(self) -> dict:
@@ -297,6 +383,16 @@ class MonitorCollector:
             robot = self._robot_snapshot
             agv = self._agv_snapshot
             task = self._task_snapshot
+            cameras = {name: {
+                "name": c.name,
+                "connected": c.connected,
+                "enabled": c.enabled,
+                "fps": c.fps,
+                "width": c.width,
+                "height": c.height,
+                "error_count": c.error_count,
+                "last_error": c.last_error,
+            } for name, c in self._camera_snapshots.items()}
             events = list(self._event_log[-50:])
 
         return {
@@ -349,6 +445,7 @@ class MonitorCollector:
                 "last_update": task.timestamp,
             },
             "events": events,
+            "cameras": cameras,
             "host": _read_host_battery(),
         }
 
@@ -633,6 +730,16 @@ function buildUI(d){
       }
     }
     frag.appendChild(grid);
+  }
+  // Camera status
+  if(Object.keys(d.cameras||{}).length){
+    const camBar=document.createElement('div'); camBar.className='status-bar';
+    for(const[name,c]of Object.entries(d.cameras||{})){
+      const status=c.connected?'ONLINE':'OFFLINE';
+      const cls=c.connected?'ok':'err';
+      camBar.appendChild(card('Cam:'+name,status+' '+(c.width||'')+'x'+(c.height||''),cls));
+    }
+    frag.appendChild(camBar);
   }
   if((d.events||[]).length){
     const evDiv=document.createElement('div'); evDiv.className='event-log';

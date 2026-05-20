@@ -562,6 +562,7 @@ class TaskAgentOrchestrator:
             self.monitor_collector = MonitorCollector(
                 agv_controller=self.agv_controller,
                 robot=self.robot,
+                cameras=getattr(self.robot, 'cameras', {}),
             )
             self.monitor_collector.start()
 

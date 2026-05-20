@@ -69,6 +69,10 @@ h2{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;m
   </div>
 </div>
 <div class="panel" style="margin-bottom:12px">
+  <h2>Cameras</h2>
+  <div id="cameras"></div>
+</div>
+<div class="panel" style="margin-bottom:12px">
   <h2>Task Progress</h2>
   <div id="task-progress" style="font-size:12px"></div>
 </div>
@@ -95,7 +99,7 @@ function txt(text,parent){var t=document.createTextNode(String(text));if(parent)
 
 function renderAll(d){
   renderStatusBar(d); renderJoints(d); renderAGV(d);
-  renderTask(d); renderEvents(d);
+  renderCameras(d); renderTask(d); renderEvents(d);
   document.getElementById('clock').textContent=new Date().toLocaleTimeString();
   var cs=document.getElementById('conn-status');
   if(d.robot&&d.robot.connected){cs.textContent='connected';cs.className='subtitle ok';}
@@ -196,6 +200,36 @@ function renderAGV(d){
     var b=el('b','',detail);b.textContent=items[i][1];
     if(items[i][0]==='Errors'&&parseInt(items[i][1])>0)b.className='err';
     else if(items[i][0]==='Errors')b.className='ok';
+  }
+}
+
+function renderCameras(d){
+  var cams=d.cameras||{};
+  var panel=document.getElementById('cameras'); panel.textContent='';
+  var names=Object.keys(cams).sort();
+  if(!names.length){var sp=el('span','',panel);sp.style.color='var(--dim)';sp.textContent='no camera data';return;}
+  var grid=el('div','',panel); grid.style.display='flex';grid.style.gap='10px';grid.style.flexWrap='wrap';
+  for(var i=0;i<names.length;i++){
+    var c=cams[names[i]];
+    var cc=el('div','card',grid); cc.style.minWidth='140px';
+    el('h3','',cc).textContent=c.name||names[i];
+    var status=c.connected?'ONLINE':'OFFLINE';
+    var cls=c.connected?'ok':'err blink';
+    if(!c.enabled&&c.connected){status='IDLE';cls='warn';}
+    el('div','val '+cls,cc).textContent=status;
+    var sub=el('div','sub',cc);
+    var parts=[];
+    if(c.width&&c.height)parts.push(c.width+'x'+c.height);
+    if(c.fps)parts.push(c.fps+'fps');
+    sub.textContent=parts.join(' @ ');
+    if(!c.connected&&c.last_error){
+      var err=el('div','sub err',cc);
+      err.textContent=c.last_error.length>40?c.last_error.substring(0,40)+'...':c.last_error;
+    }
+    if(c.error_count>0){
+      var ec=el('div','sub warn',cc);
+      ec.textContent='errors: '+c.error_count;
+    }
   }
 }
 
