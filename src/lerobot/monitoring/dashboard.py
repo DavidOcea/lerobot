@@ -19,6 +19,7 @@ This is lock-protected and will never block the 50Hz control loop.
 import json
 import logging
 import os
+import select
 import threading
 import time
 from dataclasses import dataclass, field
@@ -129,6 +130,13 @@ class MonitorCollector:
         self._event_log: list[dict] = []  # [{ts, level, source, message}]
         self._max_events = 200
 
+        # Interactive command channel (self-pipe trick for select() multiplexing)
+        # Writers (frontend POST handler, any thread) write to _cmd_pipe_w.
+        # Readers (main thread) select() on _cmd_pipe_r alongside /dev/tty.
+        self._cmd_pipe_r, self._cmd_pipe_w = os.pipe()
+        self._pending_prompt: dict | None = None
+        self._pending_command: str | None = None
+
     # ── Public API (called from main loop, non-blocking) ──────────
 
     def update_robot_state(
@@ -195,6 +203,51 @@ class MonitorCollector:
             })
             if len(self._event_log) > self._max_events:
                 self._event_log = self._event_log[-self._max_events:]
+
+    # ── Interactive command channel (select() multiplexing) ──────
+
+    @property
+    def command_pipe_r(self) -> int:
+        """Read-end fd for select() multiplexing with /dev/tty."""
+        return self._cmd_pipe_r
+
+    def set_pending_prompt(self, prompt_data: dict):
+        """Publish a prompt to the dashboard frontend.
+
+        The frontend renders interactive buttons.  When the user clicks one,
+        a POST to /api/command writes the selection into _cmd_pipe_w, which
+        unblocks select() in the main thread.
+
+        prompt_data keys:
+            type: str        - "task_selection", "cycle_prompt", "model_selection", "recovery"
+            message: str     - header message shown on the dashboard
+            options: list    - [{"key": "1", "label": "Execute next task"}, ...]
+            timeout: float   - seconds until auto-default
+            timeout_default: str - key to auto-select on timeout
+        """
+        with self._lock:
+            self._pending_prompt = prompt_data
+
+    def clear_pending_prompt(self):
+        """Remove the pending prompt (called after user responds)."""
+        with self._lock:
+            self._pending_prompt = None
+
+    def get_last_command(self) -> str | None:
+        """Return and clear the last frontend command.  Thread-safe."""
+        with self._lock:
+            cmd = self._pending_command
+            self._pending_command = None
+            return cmd
+
+    def _write_command(self, command: str):
+        """Write a command to the pipe (unblocks select() in main thread)."""
+        with self._lock:
+            self._pending_command = command
+        try:
+            os.write(self._cmd_pipe_w, b"x")
+        except (OSError, BlockingIOError):
+            pass
 
     # ── Background thread ────────────────────────────────────────
 
@@ -447,6 +500,7 @@ class MonitorCollector:
             "events": events,
             "cameras": cameras,
             "host": _read_host_battery(),
+            "pending_prompt": self._pending_prompt,
         }
 
 
@@ -578,6 +632,23 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             self._serve_html()
         elif self.path == "/health":
             self._serve_json({"status": "ok"})
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        if self.path == "/api/command" and self.collector:
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            try:
+                data = json.loads(body.decode("utf-8"))
+                command = data.get("command", "")
+                if command:
+                    self.collector._write_command(command)
+                    self._serve_json({"status": "ok", "command": command})
+                else:
+                    self._serve_json({"status": "error", "message": "missing command"})
+            except Exception as e:
+                self._serve_json({"status": "error", "message": str(e)})
         else:
             self.send_error(404)
 

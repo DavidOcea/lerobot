@@ -52,6 +52,17 @@ h2{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;m
 .progress-bar{height:4px;background:#1a1a30;border-radius:2px;overflow:hidden;margin-top:6px}
 .progress-fill{height:100%;background:var(--ok);border-radius:2px;transition:width .5s}
 .progress-label{font-size:9px;color:var(--dim);margin-top:2px}
+/* Interactive prompt panel */
+#prompt-panel{display:none;background:var(--surface);border:2px solid var(--info);border-radius:8px;padding:16px;margin-bottom:12px;animation:fadeIn .3s}
+#prompt-panel.active{display:block}
+#prompt-panel h2{color:var(--info);margin-top:0;margin-bottom:8px}
+#prompt-panel .prompt-msg{color:var(--bright);font-size:13px;margin-bottom:12px}
+#prompt-panel .prompt-actions{display:flex;gap:8px;flex-wrap:wrap}
+#prompt-panel .prompt-btn{background:var(--border);color:var(--bright);border:1px solid var(--info);border-radius:4px;padding:8px 16px;font-size:13px;cursor:pointer;transition:all .15s;font-family:inherit}
+#prompt-panel .prompt-btn:hover{background:var(--info);color:#fff}
+#prompt-panel .prompt-btn.default{background:#1a3a5a;border-color:#66aaff}
+#prompt-panel .prompt-timer{font-size:10px;color:var(--dim);margin-top:10px}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
 </style>
 </head>
 <body>
@@ -60,6 +71,12 @@ h2{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;m
   <span class="subtitle" id="conn-status">connecting...</span>
 </h1>
 <div class="status-bar" id="status-bar"></div>
+<div class="panel" id="prompt-panel">
+  <h2>Operator Action Required</h2>
+  <div class="prompt-msg" id="prompt-msg"></div>
+  <div class="prompt-actions" id="prompt-actions"></div>
+  <div class="prompt-timer" id="prompt-timer"></div>
+</div>
 <div class="main-grid">
   <div class="panel"><h2>Joint Angles</h2><div id="joints"></div></div>
   <div class="panel">
@@ -99,7 +116,7 @@ function txt(text,parent){var t=document.createTextNode(String(text));if(parent)
 
 function renderAll(d){
   renderStatusBar(d); renderJoints(d); renderAGV(d);
-  renderCameras(d); renderTask(d); renderEvents(d);
+  renderCameras(d); renderTask(d); renderEvents(d); renderPrompt(d);
   document.getElementById('clock').textContent=new Date().toLocaleTimeString();
   var cs=document.getElementById('conn-status');
   if(d.robot&&d.robot.connected){cs.textContent='connected';cs.className='subtitle ok';}
@@ -259,6 +276,42 @@ function renderEvents(d){
     el('span','event-time',row).textContent=new Date(e.ts*1000).toLocaleTimeString();
     el('span','event-src',row).textContent='['+esc(e.source)+']';
     el('span','event-msg',row).textContent=esc(e.message);
+  }
+}
+function sendCommand(key){
+  fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:key})})
+    .then(function(r){return r.json()})
+    .then(function(d){console.log('command sent:',d);})
+    .catch(function(e){console.log('command error:',e)});
+}
+var _promptTimer=null;
+function renderPrompt(d){
+  var pp=d.pending_prompt;
+  var panel=document.getElementById('prompt-panel');
+  var msgEl=document.getElementById('prompt-msg');
+  var actions=document.getElementById('prompt-actions');
+  var timer=document.getElementById('prompt-timer');
+  if(!pp){panel.className='panel';clearInterval(_promptTimer);_promptTimer=null;return;}
+  panel.className='panel active';
+  msgEl.textContent=pp.message||'Select an action:';
+  actions.textContent='';
+  var opts=pp.options||[];
+  for(var i=0;i<opts.length;i++){
+    (function(opt){
+      var btn=el('button','prompt-btn',actions);
+      btn.textContent=opt.label||opt.key;
+      if(opt.key===pp.timeout_default)btn.classList.add('default');
+      btn.onclick=function(){sendCommand(opt.key);};
+    })(opts[i]);
+  }
+  if(pp.timeout){
+    var deadline=Date.now()+pp.timeout*1000;
+    clearInterval(_promptTimer);
+    _promptTimer=setInterval(function(){
+      var remain=Math.max(0,Math.ceil((deadline-Date.now())/1000));
+      timer.textContent='Auto-select "'+(pp.timeout_default||'')+'" in '+remain+'s';
+      if(remain<=0){clearInterval(_promptTimer);_promptTimer=null;}
+    },500);
   }
 }
 refresh();
