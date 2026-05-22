@@ -19,6 +19,7 @@ import logging
 import os
 import select
 import sys
+import time
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -61,6 +62,7 @@ class InteractiveTaskSelector:
         tasks: list[TaskConfig],
         exit_handler: Callable[[], bool] | None = None,
         monitor_collector=None,
+        robot=None,
     ):
         """Initialize the interactive task selector.
 
@@ -68,10 +70,12 @@ class InteractiveTaskSelector:
             tasks: List of configured tasks.
             exit_handler: Function to call when user requests exit.
             monitor_collector: Optional MonitorCollector for dashboard button integration.
+            robot: Optional Robot instance for Modbus keepalive during prompts.
         """
         self.config_tasks = tasks
         self._exit_handler = exit_handler
         self._monitor_collector = monitor_collector
+        self._robot = robot
         self._current_task_index: int = 0
         self._execution_mode: ExecutionMode = ExecutionMode.AUTOMATIC
         self._is_paused: bool = False
@@ -289,6 +293,7 @@ class InteractiveTaskSelector:
 
             pipe_fd = mc.command_pipe_r
             original_stdin = sys.stdin
+            last_keepalive = time.time()
             try:
                 sys.stdin = tty
                 if prompt:
@@ -296,7 +301,8 @@ class InteractiveTaskSelector:
                     sys.stdout.flush()
 
                 while True:
-                    readable, _, _ = select.select([tty, pipe_fd], [], [])
+                    # Use a 1.0s timeout so we can run keepalive between iterations
+                    readable, _, _ = select.select([tty, pipe_fd], [], [], 1.0)
                     for fd in readable:
                         if fd == tty.fileno():
                             line = tty.readline().strip()
@@ -308,6 +314,13 @@ class InteractiveTaskSelector:
                                 sys.stdout.write(f"\n[frontend] {cmd}\n")
                                 sys.stdout.flush()
                                 return cmd
+                    # Gripper Modbus keepalive: prevent connection timeout during long prompts
+                    if self._robot and time.time() - last_keepalive > 2.0:
+                        try:
+                            self._robot.get_observation()
+                        except Exception:
+                            pass
+                        last_keepalive = time.time()
             finally:
                 tty.close()
                 sys.stdin = original_stdin
