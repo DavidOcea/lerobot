@@ -17,6 +17,9 @@ New Features:
 """
 
 import logging
+import os
+import select
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
@@ -445,6 +448,7 @@ class TaskAgentOrchestrator:
         self.interactive_selector = InteractiveTaskSelector(
             tasks=self.config.tasks,
             exit_handler=self._handle_exit_request,
+            monitor_collector=self.monitor_collector,
         )
         logger.info("Interactive task selector initialized")
 
@@ -580,6 +584,87 @@ class TaskAgentOrchestrator:
             self.monitor_collector = None
             self.http_dashboard = None
 
+        # Backfill monitor_collector into interactive selector (init order: selector before monitoring)
+        if self.monitor_collector is not None and self.interactive_selector is not None:
+            self.interactive_selector._monitor_collector = self.monitor_collector
+            logger.info("Interactive selector connected to MonitorCollector")
+
+    def _wait_for_input(
+        self,
+        terminal_prompt: str,
+        prompt_data: dict,
+        timeout: float = 30.0,
+    ) -> str | None:
+        """Wait for input from terminal OR dashboard frontend via select() multiplexing.
+
+        Publishes prompt_data to MonitorCollector (renders buttons on dashboard),
+        then select()s on both /dev/tty and the command pipe.  Whichever fires first
+        wins — terminal readline or frontend button click.
+
+        Args:
+            terminal_prompt: Text prompt printed to terminal.
+            prompt_data: Structured prompt for dashboard frontend.
+                {"type": str, "message": str, "options": [...], "timeout_default": str}
+            timeout: Seconds until auto-select timeout_default (0 = no timeout).
+
+        Returns:
+            User input string, or None on error/exit.
+        """
+        mc = self.monitor_collector
+        if mc is None:
+            # No dashboard — fall back to plain input()
+            try:
+                return input(terminal_prompt).strip()
+            except (EOFError, KeyboardInterrupt):
+                return None
+
+        mc.set_pending_prompt({**prompt_data, "timeout": timeout})
+        try:
+            tty = open('/dev/tty', 'r')
+        except (OSError, IOError):
+            mc.clear_pending_prompt()
+            try:
+                return input(terminal_prompt).strip()
+            except (EOFError, KeyboardInterrupt):
+                return None
+
+        pipe_fd = mc.command_pipe_r
+        deadline = time.time() + timeout if timeout > 0 else None
+
+        try:
+            sys.stdout.write(terminal_prompt)
+            sys.stdout.flush()
+
+            while True:
+                wait = max(0.1, deadline - time.time()) if deadline else 1.0
+                if deadline and time.time() >= deadline:
+                    default = prompt_data.get("timeout_default", "")
+                    sys.stdout.write(f"\n[timeout] auto-selecting: {default}\n")
+                    sys.stdout.flush()
+                    return default
+
+                try:
+                    readable, _, _ = select.select([tty, pipe_fd], [], [], wait)
+                except (ValueError, OSError):
+                    break
+
+                for fd in readable:
+                    if fd == tty.fileno():
+                        line = tty.readline().strip()
+                        return line
+                    elif fd == pipe_fd:
+                        os.read(pipe_fd, 256)
+                        cmd = mc.get_last_command()
+                        if cmd:
+                            sys.stdout.write(f"\n[frontend] {cmd}\n")
+                            sys.stdout.flush()
+                            return cmd
+        finally:
+            tty.close()
+            mc.clear_pending_prompt()
+
+        return None
+
     def _handle_exit_request(self) -> bool:
         """Handle user request to exit.
 
@@ -626,8 +711,35 @@ class TaskAgentOrchestrator:
                 auto_rollback=False  # We'll handle rollback after user selection
             )
 
-            # Prompt user for recovery action
-            recovery_action = self.emergency_controller.prompt_recovery_action(task_name)
+            # Publish emergency prompt to dashboard if monitoring is active
+            mc = self.monitor_collector
+            pipe_fd = mc.command_pipe_r if mc else None
+            if mc:
+                mc.set_pending_prompt({
+                    "type": "recovery",
+                    "message": f"EMERGENCY STOP: {reason.value if reason else 'dangerous action'}",
+                    "options": [
+                        {"key": "1", "label": "Stop program completely"},
+                        {"key": "2", "label": "Rollback and continue"},
+                        {"key": "3", "label": "Rollback and retry with new model"},
+                    ],
+                    "timeout_default": "2",
+                })
+
+            # Prompt user for recovery action (terminal + dashboard)
+            recovery_action = self.emergency_controller.prompt_recovery_action(
+                task_name, pipe_fd=pipe_fd
+            )
+
+            # Check for frontend command override
+            if mc:
+                cmd = mc.get_last_command()
+                if cmd:
+                    action_map = {"1": RecoveryAction.STOP_PROGRAM,
+                                  "2": RecoveryAction.ROLLBACK_AND_CONTINUE,
+                                  "3": RecoveryAction.ROLLBACK_AND_RETRY_MODEL}
+                    recovery_action = action_map.get(cmd, recovery_action)
+                mc.clear_pending_prompt()
 
             # Handle the selected recovery action
             return self._handle_recovery_action(recovery_action, task_name)
@@ -701,6 +813,9 @@ class TaskAgentOrchestrator:
     def _prompt_alternative_model(self, task_name: str = None, timeout: float = 30.0) -> str | None:
         """Prompt user to select an alternative model for task retry.
 
+        Supports both terminal input and dashboard frontend buttons via
+        _wait_for_input / select() multiplexing.
+
         Args:
             task_name: Name of the task that failed.
             timeout: Maximum time to wait for user input.
@@ -708,9 +823,6 @@ class TaskAgentOrchestrator:
         Returns:
             Path to the selected model, or None if user cancelled.
         """
-        import select
-        import sys
-
         print("\n" + "=" * 60)
         print("SELECT ALTERNATIVE MODEL")
         print("=" * 60)
@@ -724,40 +836,27 @@ class TaskAgentOrchestrator:
         print("=" * 60)
         print(f"Auto-selecting default model in {timeout:.0f} seconds...", flush=True)
 
-        user_input = ""
-        start_time = time.time()
+        user_input = self._wait_for_input(
+            terminal_prompt=">>> ",
+            prompt_data={
+                "type": "model_selection",
+                "message": f"Select model for: {task_name or 'unknown task'}",
+                "options": [
+                    {"key": "1", "label": "Default model (from config)"},
+                    {"key": "2", "label": "Enter custom model path"},
+                    {"key": "0", "label": "Cancel (stop program)"},
+                ],
+                "timeout_default": "1",
+            },
+            timeout=timeout,
+        )
 
-        # Use non-blocking input with timeout
-        while time.time() - start_time < timeout:
-            try:
-                if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0.1)[0]:
-                    try:
-                        line = sys.stdin.readline()
-                        if line:
-                            cleaned = line.strip()
-                            # Only accept single digit commands
-                            if cleaned and len(cleaned) <= 2 and cleaned.isdigit():
-                                user_input = cleaned
-                                logger.info(f"Model selection input: {user_input}")
-                                break
-                            elif cleaned:
-                                logger.debug(f"Ignoring non-numeric input: {cleaned[:30]}...")
-                    except (EOFError, KeyboardInterrupt):
-                        logger.info("Input interrupted, using default model")
-                        user_input = "1"
-                        break
-            except (OSError, ValueError):
-                time.sleep(0.1)
-                continue
-
-        # Timeout - use default
+        # Timeout / None → use default
         if not user_input:
-            logger.info(f"Timeout, using default model")
             user_input = "1"
 
         try:
             if user_input == "1":
-                # Use default model from config
                 if task_name:
                     for task in self.config.tasks:
                         if task.name == task_name or task.name == f"{task_name}_retry":
@@ -765,21 +864,20 @@ class TaskAgentOrchestrator:
                             return task.policy_path
                 return None
             elif user_input == "2":
-                # Custom model path - need to get another input
                 print("Enter model path: ", flush=True)
-                custom_path = ""
-                custom_start = time.time()
-                while time.time() - custom_start < 30.0:
-                    try:
-                        if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0.1)[0]:
-                            line = sys.stdin.readline()
-                            if line:
-                                custom_path = line.strip()
-                                break
-                    except (OSError, ValueError):
-                        time.sleep(0.1)
-                        continue
-                if custom_path:
+                custom_path = self._wait_for_input(
+                    terminal_prompt="",
+                    prompt_data={
+                        "type": "model_selection",
+                        "message": "Enter custom model path",
+                        "options": [
+                            {"key": "__cancel__", "label": "Cancel"},
+                        ],
+                        "timeout_default": "__cancel__",
+                    },
+                    timeout=30.0,
+                )
+                if custom_path and custom_path != "__cancel__":
                     logger.info(f"Using custom model: {custom_path}")
                     return custom_path
                 return None
@@ -867,8 +965,22 @@ class TaskAgentOrchestrator:
                             if max_cycles != -1:
                                 prompt_msg += f" 还有 {max_cycles - cycle_count} 个循环待执行。"
                             prompt_msg += "\n按 Enter 继续下一循环，输入 'q' 退出: "
-                            user_input = input(prompt_msg)
-                            if user_input.lower() == 'q':
+
+                            remaining = max_cycles - cycle_count if max_cycles != -1 else "?"
+                            user_input = self._wait_for_input(
+                                terminal_prompt=prompt_msg,
+                                prompt_data={
+                                    "type": "cycle_prompt",
+                                    "message": f"循环 {cycle_count} 完成 ({remaining} 剩余)",
+                                    "options": [
+                                        {"key": "", "label": "继续下一循环"},
+                                        {"key": "q", "label": "退出"},
+                                    ],
+                                    "timeout_default": "",
+                                },
+                                timeout=0,  # no timeout for cycle prompt
+                            )
+                            if user_input and user_input.lower() == 'q':
                                 logger.info("User requested to stop cycles")
                                 break
                         except (EOFError, KeyboardInterrupt):

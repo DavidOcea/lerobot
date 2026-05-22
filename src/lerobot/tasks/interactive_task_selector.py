@@ -16,6 +16,9 @@ Usage:
 """
 
 import logging
+import os
+import select
+import sys
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -57,15 +60,18 @@ class InteractiveTaskSelector:
         self,
         tasks: list[TaskConfig],
         exit_handler: Callable[[], bool] | None = None,
+        monitor_collector=None,
     ):
         """Initialize the interactive task selector.
 
         Args:
             tasks: List of configured tasks.
             exit_handler: Function to call when user requests exit.
+            monitor_collector: Optional MonitorCollector for dashboard button integration.
         """
         self.config_tasks = tasks
         self._exit_handler = exit_handler
+        self._monitor_collector = monitor_collector
         self._current_task_index: int = 0
         self._execution_mode: ExecutionMode = ExecutionMode.AUTOMATIC
         self._is_paused: bool = False
@@ -149,13 +155,14 @@ class InteractiveTaskSelector:
 
         # Build prompt
         prompt_lines = self._build_task_prompt(current_task)
+        prompt_data = self._build_dashboard_prompt(current_task)
 
         # Display prompt and get user response
         logger.info("\n" + "\n".join(prompt_lines))
         print("\n" + "\n".join(prompt_lines))
 
-        # Get user selection
-        return self._get_user_selection()
+        # Get user selection (supports both terminal and dashboard frontend)
+        return self._get_user_selection(prompt_data=prompt_data)
 
     def _build_task_prompt(self, current_task: TaskConfig | None) -> list[str]:
         """Build the interactive prompt for user."""
@@ -204,14 +211,33 @@ class InteractiveTaskSelector:
 
         return lines
 
-    def _get_user_selection(self) -> TaskSelection:
+    def _build_dashboard_prompt(self, current_task: TaskConfig | None) -> dict:
+        """Build structured prompt data for the dashboard frontend buttons."""
+        options = [
+            {"key": "1", "label": "执行下一个任务"},
+            {"key": "2", "label": "选择或创建自定义任务"},
+            {"key": "3", "label": "切换自动/交互模式"},
+            {"key": "r", "label": "复位机器人关节到零位"},
+            {"key": "0", "label": "退出"},
+        ]
+        task_name = current_task.name if current_task else "(无)"
+        mode_str = "自动" if self._execution_mode.value == "automatic" else "交互"
+        return {
+            "type": "task_selection",
+            "message": f"下一个任务: {task_name} | 模式: {mode_str}",
+            "options": options,
+        }
+
+    def _get_user_selection(self, prompt_data: dict | None = None) -> TaskSelection:
         """Get user selection from input.
 
         For programmatic use, this can be overridden.
         """
         try:
-            # Use _get_input helper to avoid hardware device interference
-            user_input = self._get_input(">>> ").strip()
+            # Use _get_input helper to avoid hardware device interference.
+            # When monitor_collector is present, this also supports
+            # dashboard frontend buttons via select() multiplexing.
+            user_input = self._get_input(">>> ", prompt_data=prompt_data).strip()
 
             # Handle empty input (default = option 1)
             if not user_input:
@@ -234,52 +260,73 @@ class InteractiveTaskSelector:
                 exit_requested=True
             )
 
-    def _get_input(self, prompt: str = "") -> str:
-        """Get user input from terminal, avoiding hardware device interference.
+    def _get_input(self, prompt: str = "", prompt_data: dict | None = None) -> str:
+        """Get user input from terminal AND dashboard frontend via select().
 
-        This method explicitly uses /dev/tty to avoid reading from
-        redirected stdin that may contain hardware device data.
+        When monitor_collector is available, publishes prompt_data to the
+        dashboard (so it renders buttons) and uses select() to wait on both
+        /dev/tty and the command pipe simultaneously.  Terminal input and
+        frontend button clicks are both supported without mode switching.
 
         Args:
-            prompt: Prompt string to display
+            prompt: Prompt string for the terminal.
+            prompt_data: Structured prompt for the dashboard frontend.
+                {"type": str, "message": str, "options": [...], "timeout": float, "timeout_default": str}
 
         Returns:
-            User input string
+            User input string (from terminal or frontend).
         """
-        import sys
-        import os
+        mc = self._monitor_collector
 
-        original_stdin = sys.stdin
-
-        try:
-            # Always try to use /dev/tty for direct user input
-            # This avoids reading from redirected stdin that contains hardware data
+        # ── Dashboard-integrated path ──
+        if mc is not None and prompt_data is not None:
+            mc.set_pending_prompt(prompt_data)
             try:
-                # Open /dev/tty in read-only mode
                 tty = open('/dev/tty', 'r')
-                # Set tty as stdin
-                sys.stdin = tty
+            except (OSError, IOError):
+                mc.clear_pending_prompt()
+                return input(prompt).strip()
 
-                # Print prompt to stdout
+            pipe_fd = mc.command_pipe_r
+            original_stdin = sys.stdin
+            try:
+                sys.stdin = tty
                 if prompt:
                     sys.stdout.write(prompt)
                     sys.stdout.flush()
 
-                # Read user input from tty
-                user_input = tty.readline().strip()
-
-                # Close tty
+                while True:
+                    readable, _, _ = select.select([tty, pipe_fd], [], [])
+                    for fd in readable:
+                        if fd == tty.fileno():
+                            line = tty.readline().strip()
+                            return line
+                        elif fd == pipe_fd:
+                            os.read(pipe_fd, 256)  # drain pipe byte
+                            cmd = mc.get_last_command()
+                            if cmd:
+                                sys.stdout.write(f"\n[frontend] {cmd}\n")
+                                sys.stdout.flush()
+                                return cmd
+            finally:
                 tty.close()
+                sys.stdin = original_stdin
+                mc.clear_pending_prompt()
 
-                logger.debug(f"Got user input from /dev/tty: '{user_input}'")
+        # ── Terminal-only fallback (no MonitorCollector) ──
+        original_stdin = sys.stdin
+        try:
+            try:
+                tty = open('/dev/tty', 'r')
+                sys.stdin = tty
+                if prompt:
+                    sys.stdout.write(prompt)
+                    sys.stdout.flush()
+                user_input = tty.readline().strip()
+                tty.close()
                 return user_input
-
-            except (OSError, IOError) as e:
-                logger.warning(f"Failed to open /dev/tty: {e}, falling back to stdin")
-                # Fallback to stdin if /dev/tty is not available
-                user_input = input(prompt).strip()
-                logger.debug(f"Got user input from stdin: '{user_input}'")
-                return user_input
+            except (OSError, IOError):
+                return input(prompt).strip()
         finally:
             sys.stdin = original_stdin
 
@@ -595,12 +642,14 @@ class InteractiveTaskSelector:
 def create_interactive_selector(
     tasks: list[TaskConfig],
     exit_handler: Callable[[], bool] | None = None,
+    monitor_collector=None,
 ) -> InteractiveTaskSelector:
     """Create an interactive task selector instance.
 
     Args:
         tasks: List of configured tasks.
         exit_handler: Optional handler for exit events.
+        monitor_collector: Optional MonitorCollector for dashboard button integration.
 
     Returns:
         Configured InteractiveTaskSelector instance.
@@ -608,4 +657,5 @@ def create_interactive_selector(
     return InteractiveTaskSelector(
         tasks=tasks,
         exit_handler=exit_handler,
+        monitor_collector=monitor_collector,
     )

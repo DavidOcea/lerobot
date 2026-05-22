@@ -17,7 +17,10 @@ Usage:
 """
 
 import logging
+import os
+import select
 import signal
+import sys
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -515,18 +518,22 @@ class EmergencyStopController:
         logger.warning("Cannot pause - not in stopped state")
         return False
 
-    def prompt_recovery_action(self, task_name: str = None, timeout: float = 60.0) -> RecoveryAction:
+    def prompt_recovery_action(self, task_name: str = None, timeout: float = 60.0, pipe_fd: int | None = None) -> RecoveryAction:
         """Prompt user to select recovery action after emergency stop.
+
+        Supports both terminal input and dashboard frontend buttons via
+        select() multiplexing when pipe_fd is provided.
 
         Args:
             task_name: Name of the task that was interrupted (optional).
             timeout: Maximum time to wait for user input in seconds (default: 60s).
+            pipe_fd: Read-end fd of MonitorCollector command pipe for frontend multiplexing.
 
         Returns:
             RecoveryAction selected by user.
         """
         print("\n" + "=" * 60)
-        print("🚨 EMERGENCY STOP TRIGGERED")
+        print("EMERGENCY STOP TRIGGERED")
         print("=" * 60)
         if task_name:
             print(f"Interrupted task: {task_name}")
@@ -541,50 +548,77 @@ class EmergencyStopController:
         print(f"Auto-selecting option 2 (rollback and continue) in {timeout:.0f} seconds if no input...")
         print(">>> Waiting for user input (enter 1, 2, or 3)...", flush=True)
 
-        # Use a non-blocking approach with timeout
-        import select
-        import sys
-
         user_input = ""
+        deadline = time.time() + timeout
 
-        # If not running in a real terminal, use shorter timeout and auto-select default
-        if not sys.stdin.isatty():
-            logger.info("Not running in a terminal, auto-selecting option 2 (rollback and continue)")
-            # Short wait to allow any buffered output to flush
-            time.sleep(0.5)
-            return RecoveryAction.ROLLBACK_AND_CONTINUE
-
-        start_time = time.time()
-
-        while time.time() - start_time < timeout:
-            # Check if there's input available (non-blocking)
+        # ── Dashboard-integrated path (pipe_fd provided) ──
+        if pipe_fd is not None:
             try:
-                if select.select([sys.stdin], [], [], 0.1)[0]:
+                tty = open('/dev/tty', 'r')
+            except (OSError, IOError):
+                logger.info("Cannot open /dev/tty, auto-selecting option 2")
+                time.sleep(0.5)
+                return RecoveryAction.ROLLBACK_AND_CONTINUE
+
+            try:
+                while time.time() < deadline:
+                    wait = max(0.1, deadline - time.time())
                     try:
-                        line = sys.stdin.readline()
-                        if line:
-                            # Clean the input - only accept single digit commands
-                            cleaned = line.strip()
-                            # Filter out non-numeric input (like hardware data)
-                            if cleaned and len(cleaned) <= 2 and cleaned.isdigit():
-                                user_input = cleaned
-                                logger.info(f"User input received: {user_input}")
+                        readable, _, _ = select.select([tty, pipe_fd], [], [], wait)
+                    except (ValueError, OSError):
+                        break
+
+                    for fd in readable:
+                        if fd == tty.fileno():
+                            line = tty.readline().strip()
+                            if line and len(line) <= 2 and line.isdigit():
+                                user_input = line
                                 break
-                            elif cleaned:
-                                # Log but ignore non-numeric input
-                                logger.debug(f"Ignoring non-numeric input: {cleaned[:50]}...")
-                    except (EOFError, KeyboardInterrupt):
-                        logger.info("Input interrupted, defaulting to option 2 (rollback and continue)")
-                        return RecoveryAction.ROLLBACK_AND_CONTINUE
-            except (OSError, ValueError):
-                # stdin might not be available in some environments
-                time.sleep(0.1)
-                continue
+                        elif fd == pipe_fd:
+                            os.read(pipe_fd, 256)
+                            # The orchestrator reads get_last_command() separately
+                            user_input = "__frontend__"
+                            break
+                    if user_input:
+                        break
+            finally:
+                tty.close()
+
+            if user_input == "__frontend__":
+                # Return a sentinel — caller must resolve via monitor_collector
+                return RecoveryAction.ROLLBACK_AND_CONTINUE  # orchestrator overrides
+
+        # ── Terminal-only path ──
+        if not user_input:
+            if not sys.stdin.isatty():
+                logger.info("Not running in a terminal, auto-selecting option 2 (rollback and continue)")
+                time.sleep(0.5)
+                return RecoveryAction.ROLLBACK_AND_CONTINUE
+
+            while time.time() < deadline:
+                try:
+                    if select.select([sys.stdin], [], [], 0.1)[0]:
+                        try:
+                            line = sys.stdin.readline()
+                            if line:
+                                cleaned = line.strip()
+                                if cleaned and len(cleaned) <= 2 and cleaned.isdigit():
+                                    user_input = cleaned
+                                    logger.info(f"User input received: {user_input}")
+                                    break
+                                elif cleaned:
+                                    logger.debug(f"Ignoring non-numeric input: {cleaned[:50]}...")
+                        except (EOFError, KeyboardInterrupt):
+                            logger.info("Input interrupted, defaulting to option 2 (rollback and continue)")
+                            return RecoveryAction.ROLLBACK_AND_CONTINUE
+                except (OSError, ValueError):
+                    time.sleep(0.1)
+                    continue
 
         # Timeout or input received
-        if not user_input or time.time() - start_time >= timeout:
+        if not user_input or time.time() >= deadline:
             logger.info(f"Timeout after {timeout:.0f}s, defaulting to option 2 (rollback and continue)")
-            user_input = "2"  # Default: rollback and continue
+            user_input = "2"
 
         if user_input == "1":
             logger.info("User selected: Stop program")
