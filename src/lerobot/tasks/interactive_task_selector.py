@@ -362,7 +362,18 @@ class InteractiveTaskSelector:
             print("=" * 60)
 
             try:
-                choice = self._get_input("请选择 (1/2/0): ").strip()
+                choice = self._get_input(
+                    "请选择 (1/2/0): ",
+                    prompt_data={
+                        "type": "task_selection",
+                        "message": "任务选择",
+                        "options": [
+                            {"key": "1", "label": "从已有任务中选择"},
+                            {"key": "2", "label": "创建新的自定义任务"},
+                            {"key": "0", "label": "取消"},
+                        ],
+                    },
+                ).strip()
 
                 if choice == "1":
                     # Select from existing tasks
@@ -378,7 +389,17 @@ class InteractiveTaskSelector:
                         current = " ← 下一个" if i == self._current_task_index else ""
                         print(f"  {i+1}. {task.name}{status_info}{current}")
 
-                    task_input = self._get_input("输入任务编号或名称: ").strip()
+                    task_input = self._get_input(
+                        "输入任务编号或名称: ",
+                        prompt_data={
+                            "type": "task_selection",
+                            "message": "选择要执行的任务",
+                            "options": [
+                                {"key": str(i + 1), "label": task.name}
+                                for i, task in enumerate(self.config_tasks)
+                            ],
+                        },
+                    ).strip()
 
                     # Try to parse as number first
                     try:
@@ -414,7 +435,16 @@ class InteractiveTaskSelector:
 
                 elif choice == "2":
                     # Create new custom task
-                    custom_name = self._get_input("输入新任务名称: ").strip()
+                    custom_name = self._get_input(
+                        "输入新任务名称: ",
+                        prompt_data={
+                            "type": "task_selection",
+                            "message": "输入新任务名称 (请在终端输入)",
+                            "options": [
+                                {"key": "", "label": "取消 (空输入)"},
+                            ],
+                        },
+                    ).strip()
                     if custom_name:
                         logger.info(f"User creating custom task: {custom_name}")
                         return TaskSelection(
