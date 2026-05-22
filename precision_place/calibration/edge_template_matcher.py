@@ -292,6 +292,69 @@ def draw_detection(image: np.ndarray, detections: list,
     return vis
 
 
+def _select_roi(image: np.ndarray) -> tuple:
+    """弹出窗口让用户用鼠标框选 ROI 区域
+
+    Returns:
+        (x, y, w, h) 或 None (用户取消)
+    """
+    roi_result = {}
+
+    def on_mouse(event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            roi_result['start'] = (x, y)
+            roi_result['drawing'] = True
+        elif event == cv2.EVENT_MOUSEMOVE and roi_result.get('drawing'):
+            pass  # 预览在循环中绘制
+        elif event == cv2.EVENT_LBUTTONUP:
+            roi_result['end'] = (x, y)
+            roi_result['drawing'] = False
+            roi_result['done'] = True
+
+    window_name = "Select ROI - drag mouse, ENTER=confirm, ESC=cancel"
+    cv2.namedWindow(window_name)
+    cv2.setMouseCallback(window_name, on_mouse)
+
+    clone = image.copy()
+    roi_result['drawing'] = False
+    roi_result['done'] = False
+
+    print("  请用鼠标框选工件区域 → ENTER 确认, ESC 取消")
+
+    while True:
+        display = clone.copy()
+        if roi_result.get('drawing') and 'start' in roi_result:
+            # 获取当前鼠标位置需要从窗口读取，这里用临时存储
+            pass
+
+        if 'start' in roi_result and 'end' in roi_result:
+            x1, y1 = roi_result['start']
+            x2, y2 = roi_result['end']
+            cv2.rectangle(display, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+        cv2.imshow(window_name, display)
+        key = cv2.waitKey(50) & 0xFF
+
+        if key == 13:  # ENTER
+            if 'start' in roi_result and 'end' in roi_result:
+                x1, y1 = roi_result['start']
+                x2, y2 = roi_result['end']
+                x = min(x1, x2)
+                y = min(y1, y2)
+                w = abs(x2 - x1)
+                h = abs(y2 - y1)
+                if w > 10 and h > 10:
+                    cv2.destroyWindow(window_name)
+                    return (max(0, x), max(0, y), w, h)
+            print("  请先框选区域再按 ENTER")
+        elif key == 27:  # ESC
+            cv2.destroyWindow(window_name)
+            return None
+
+    cv2.destroyWindow(window_name)
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════
 # 命令行入口
 # ═══════════════════════════════════════════════════════════════
@@ -417,10 +480,16 @@ def main():
         template_frame = None
         test_frame = None
         result_text = ""
+        roi = None  # (x, y, w, h) ROI 框选
+
+        # 临时缩小搜索范围以提速 (交互模式默认值)
+        matcher.angle_range = min(args.angle_range, 45)
+        matcher.angle_step = max(args.angle_step, 2.0)
 
         print("\n交互模式:")
-        print("  T = 拍模板照片")
+        print("  T = 拍模板 → 鼠标框选工件区域 → ENTER确认")
         print("  空格 = 拍测试照片 (自动匹配)")
+        print("  R = 重新框选 ROI")
         print("  Q = 退出")
         print(f"\n请放置工件 → 按 T 拍模板")
 
@@ -435,10 +504,16 @@ def main():
                 cv2.putText(display, "Press T to capture TEMPLATE", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
             else:
-                cv2.putText(display, "Template saved. Press SPACE to capture TEST", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                cv2.putText(display, "Press T to re-capture template", (10, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                status = "Press SPACE to match | R=re-ROI | T=re-template"
+                cv2.putText(display, status, (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+            # 绘制 ROI 框
+            if roi is not None:
+                rx, ry, rw, rh = roi
+                cv2.rectangle(display, (rx, ry), (rx+rw, ry+rh), (255, 255, 0), 2)
+                cv2.putText(display, f"ROI: {rw}x{rh}px", (rx, ry-5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
             if result_text:
                 for i, line in enumerate(result_text.split('\n')):
@@ -454,11 +529,30 @@ def main():
                 template_frame = frame.copy()
                 test_frame = None
                 result_text = ""
-                print(f"\n✓ 模板已拍摄 ({frame.shape[1]}x{frame.shape[0]})")
-                print("  移动工件 → 按空格拍测试照片")
+                # 弹出窗口让用户框选 ROI
+                roi = _select_roi(template_frame)
+                if roi is not None:
+                    rx, ry, rw, rh = roi
+                    cropped = template_frame[ry:ry+rh, rx:rx+rw]
+                    matcher.set_template_from_frame(cropped)
+                    print(f"\n✓ 模板已设置 (ROI: {rw}x{rh}px)")
+                    print("  移动工件 → 按空格拍测试照片")
+                else:
+                    # 用户取消 ROI → 使用全图
+                    matcher.set_template_from_frame(template_frame)
+                    roi = (0, 0, template_frame.shape[1], template_frame.shape[0])
+                    print(f"\n✓ 模板已设置 (全图: {template_frame.shape[1]}x{template_frame.shape[0]})")
+                    print("  移动工件 → 按空格拍测试照片")
+            elif key == ord('r') and template_frame is not None:
+                roi = _select_roi(template_frame)
+                if roi is not None:
+                    rx, ry, rw, rh = roi
+                    cropped = template_frame[ry:ry+rh, rx:rx+rw]
+                    matcher.set_template_from_frame(cropped)
+                    print(f"✓ ROI 已更新: {rw}x{rh}px")
+                result_text = ""
             elif key == ord(' ') and template_frame is not None:
                 test_frame = frame.copy()
-                matcher.set_template_from_frame(template_frame)
 
                 t0 = time.perf_counter()
                 detections = matcher.detect(test_frame, method=args.method)
@@ -466,7 +560,6 @@ def main():
 
                 if detections:
                     d = detections[0]
-                    # XY偏移(相对图像中心)
                     h, w = test_frame.shape[:2]
                     dx = d['center'][0] - w / 2
                     dy = d['center'][1] - h / 2
@@ -486,8 +579,8 @@ def main():
                     print(f"  像素尺寸: {d['size_px']:.0f}px")
                     print(f"  匹配得分: {d['score']:.4f}")
                     print(f"{'='*50}")
-                    display = draw_detection(test_frame, detections)
-                    cv2.imshow("Edge Template Match - Result", display)
+                    result_display = draw_detection(test_frame, detections)
+                    cv2.imshow("Edge Template Match - Result", result_display)
                     print("\n  关闭结果窗口继续, 或按 T 重新拍模板")
                 else:
                     result_text = "NO MATCH - try adjusting threshold or lighting"
