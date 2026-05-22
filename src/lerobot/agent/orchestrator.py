@@ -638,7 +638,7 @@ class TaskAgentOrchestrator:
             sys.stdout.flush()
 
             while True:
-                wait = max(0.1, deadline - time.time()) if deadline else None
+                wait = max(0.1, deadline - time.time()) if deadline else 0.5
                 if deadline and time.time() >= deadline:
                     default = prompt_data.get("timeout_default", "")
                     sys.stdout.write(f"\n[timeout] auto-selecting: {default}\n")

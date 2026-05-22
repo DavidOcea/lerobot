@@ -291,17 +291,13 @@ class InteractiveTaskSelector:
                 return input(prompt).strip()
 
             pipe_fd = mc.command_pipe_r
-            original_stdin = sys.stdin
             try:
-                sys.stdin = tty
                 if prompt:
                     sys.stdout.write(prompt)
                     sys.stdout.flush()
 
                 while True:
-                    # Block until terminal input OR frontend button click.
-                    # No timeout needed: the self-pipe trick handles dashboard wakeup.
-                    readable, _, _ = select.select([tty, pipe_fd], [], [])
+                    readable, _, _ = select.select([tty, pipe_fd], [], [], 0.5)
                     for fd in readable:
                         if fd == tty.fileno():
                             line = tty.readline().strip()
@@ -315,15 +311,12 @@ class InteractiveTaskSelector:
                                 return cmd
             finally:
                 tty.close()
-                sys.stdin = original_stdin
                 mc.clear_pending_prompt()
 
         # ── Terminal-only fallback (no MonitorCollector) ──
-        original_stdin = sys.stdin
         try:
             try:
                 tty = open('/dev/tty', 'r')
-                sys.stdin = tty
                 if prompt:
                     sys.stdout.write(prompt)
                     sys.stdout.flush()
@@ -332,8 +325,8 @@ class InteractiveTaskSelector:
                 return user_input
             except (OSError, IOError):
                 return input(prompt).strip()
-        finally:
-            sys.stdin = original_stdin
+        except Exception:
+            return input(prompt).strip()
 
     def _parse_user_input(self, user_input: str) -> TaskSelection:
         """Parse user input and return selection."""
