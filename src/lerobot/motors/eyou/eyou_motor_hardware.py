@@ -3,7 +3,7 @@ import math
 from typing import List, Dict, Any, Tuple, Optional
 import datetime
 # 导入更新后的 eu_motor_py 绑定
-import eu_motor_py 
+import eu_motor_py
 from .hardware_interface import HardwareInterface
 from lerobot.utils.monitor_utils import monitor_performance
 
