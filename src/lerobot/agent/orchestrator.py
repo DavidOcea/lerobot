@@ -632,29 +632,18 @@ class TaskAgentOrchestrator:
 
         pipe_fd = mc.command_pipe_r
         deadline = time.time() + timeout if timeout > 0 else None
-        last_keepalive = time.time()
 
         try:
             sys.stdout.write(terminal_prompt)
             sys.stdout.flush()
 
             while True:
-                wait = max(0.1, deadline - time.time()) if deadline else 1.0
+                wait = max(0.1, deadline - time.time()) if deadline else None
                 if deadline and time.time() >= deadline:
                     default = prompt_data.get("timeout_default", "")
                     sys.stdout.write(f"\n[timeout] auto-selecting: {default}\n")
                     sys.stdout.flush()
                     return default
-
-                # Gripper Modbus keepalive: prevent connection timeout during long prompts.
-                # The JodellGripper's C++ Modbus library times out if no commands are sent
-                # for several seconds.  A get_observation() pings all hardware interfaces.
-                if self.robot and time.time() - last_keepalive > 2.0:
-                    try:
-                        self.robot.get_observation()
-                    except Exception:
-                        pass
-                    last_keepalive = time.time()
 
                 try:
                     readable, _, _ = select.select([tty, pipe_fd], [], [], wait)
