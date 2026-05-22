@@ -600,8 +600,8 @@ class TaskAgentOrchestrator:
         """Wait for input from terminal OR dashboard frontend via select() multiplexing.
 
         Publishes prompt_data to MonitorCollector (renders buttons on dashboard),
-        then select()s on both /dev/tty and the command pipe.  Whichever fires first
-        wins — terminal readline or frontend button click.
+        then select()s on both sys.stdin and the command pipe.  Whichever fires
+        first wins — terminal readline or frontend button click.
 
         Args:
             terminal_prompt: Text prompt printed to terminal.
@@ -621,50 +621,42 @@ class TaskAgentOrchestrator:
                 return None
 
         mc.set_pending_prompt({**prompt_data, "timeout": timeout})
-        try:
-            tty = open('/dev/tty', 'r')
-        except (OSError, IOError):
-            mc.clear_pending_prompt()
-            try:
-                return input(terminal_prompt).strip()
-            except (EOFError, KeyboardInterrupt):
-                return None
-
         pipe_fd = mc.command_pipe_r
+        stdin_fd = sys.stdin.fileno()
         deadline = time.time() + timeout if timeout > 0 else None
 
-        try:
-            sys.stdout.write(terminal_prompt)
-            sys.stdout.flush()
+        sys.stdout.write(terminal_prompt)
+        sys.stdout.flush()
 
-            while True:
-                wait = max(0.1, deadline - time.time()) if deadline else 0.5
-                if deadline and time.time() >= deadline:
-                    default = prompt_data.get("timeout_default", "")
-                    sys.stdout.write(f"\n[timeout] auto-selecting: {default}\n")
-                    sys.stdout.flush()
-                    return default
+        while True:
+            wait = max(0.1, deadline - time.time()) if deadline else 0.5
+            if deadline and time.time() >= deadline:
+                default = prompt_data.get("timeout_default", "")
+                sys.stdout.write(f"\n[timeout] auto-selecting: {default}\n")
+                sys.stdout.flush()
+                mc.clear_pending_prompt()
+                return default
 
-                try:
-                    readable, _, _ = select.select([tty, pipe_fd], [], [], wait)
-                except (ValueError, OSError):
-                    break
+            try:
+                readable, _, _ = select.select([stdin_fd, pipe_fd], [], [], wait)
+            except (ValueError, OSError):
+                break
 
-                for fd in readable:
-                    if fd == tty.fileno():
-                        line = tty.readline().strip()
-                        return line
-                    elif fd == pipe_fd:
-                        os.read(pipe_fd, 256)
-                        cmd = mc.get_last_command()
-                        if cmd:
-                            sys.stdout.write(f"\n[frontend] {cmd}\n")
-                            sys.stdout.flush()
-                            return cmd
-        finally:
-            tty.close()
-            mc.clear_pending_prompt()
+            for fd in readable:
+                if fd == stdin_fd:
+                    line = sys.stdin.readline()
+                    mc.clear_pending_prompt()
+                    return line.strip() if line else None
+                elif fd == pipe_fd:
+                    os.read(pipe_fd, 256)
+                    cmd = mc.get_last_command()
+                    if cmd:
+                        sys.stdout.write(f"\n[frontend] {cmd}\n")
+                        sys.stdout.flush()
+                        mc.clear_pending_prompt()
+                        return cmd
 
+        mc.clear_pending_prompt()
         return None
 
     def _handle_exit_request(self) -> bool:

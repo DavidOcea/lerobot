@@ -268,7 +268,7 @@ class InteractiveTaskSelector:
 
         When monitor_collector is available, publishes prompt_data to the
         dashboard (so it renders buttons) and uses select() to wait on both
-        /dev/tty and the command pipe simultaneously.  Terminal input and
+        sys.stdin and the command pipe simultaneously.  Terminal input and
         frontend button clicks are both supported without mode switching.
 
         Args:
@@ -284,47 +284,45 @@ class InteractiveTaskSelector:
         # ── Dashboard-integrated path ──
         if mc is not None and prompt_data is not None:
             mc.set_pending_prompt(prompt_data)
-            try:
-                tty = open('/dev/tty', 'r')
-            except (OSError, IOError):
-                mc.clear_pending_prompt()
-                return input(prompt).strip()
-
             pipe_fd = mc.command_pipe_r
-            try:
-                if prompt:
-                    sys.stdout.write(prompt)
-                    sys.stdout.flush()
+            stdin_fd = sys.stdin.fileno()
 
-                while True:
-                    readable, _, _ = select.select([tty, pipe_fd], [], [], 0.5)
-                    for fd in readable:
-                        if fd == tty.fileno():
-                            line = tty.readline().strip()
-                            return line
-                        elif fd == pipe_fd:
-                            os.read(pipe_fd, 256)  # drain pipe byte
-                            cmd = mc.get_last_command()
-                            if cmd:
-                                sys.stdout.write(f"\n[frontend] {cmd}\n")
-                                sys.stdout.flush()
-                                return cmd
-            finally:
-                tty.close()
-                mc.clear_pending_prompt()
+            if prompt:
+                sys.stdout.write(prompt)
+                sys.stdout.flush()
+
+            while True:
+                try:
+                    readable, _, _ = select.select([stdin_fd, pipe_fd], [], [], 0.5)
+                except (ValueError, OSError):
+                    mc.clear_pending_prompt()
+                    return input(prompt).strip()
+
+                for fd in readable:
+                    if fd == stdin_fd:
+                        line = sys.stdin.readline()
+                        if line:
+                            mc.clear_pending_prompt()
+                            return line.strip()
+                        # EOF — stdin closed
+                        mc.clear_pending_prompt()
+                        return ""
+                    elif fd == pipe_fd:
+                        os.read(pipe_fd, 256)  # drain pipe byte
+                        cmd = mc.get_last_command()
+                        if cmd:
+                            sys.stdout.write(f"\n[frontend] {cmd}\n")
+                            sys.stdout.flush()
+                            mc.clear_pending_prompt()
+                            return cmd
 
         # ── Terminal-only fallback (no MonitorCollector) ──
         try:
-            try:
-                tty = open('/dev/tty', 'r')
-                if prompt:
-                    sys.stdout.write(prompt)
-                    sys.stdout.flush()
-                user_input = tty.readline().strip()
-                tty.close()
-                return user_input
-            except (OSError, IOError):
-                return input(prompt).strip()
+            if prompt:
+                sys.stdout.write(prompt)
+                sys.stdout.flush()
+            line = sys.stdin.readline()
+            return line.strip() if line else ""
         except Exception:
             return input(prompt).strip()
 
