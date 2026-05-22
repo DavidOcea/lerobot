@@ -364,11 +364,15 @@ def main():
         print(f"✓ 模板已保存: {args.save_template}")
         return 0
 
-    # ── 加载模板 ──
-    if not args.template:
-        print("✗ 需要 --template 参数")
-        return 1
-    matcher.load_template(args.template)
+    # ── 交互模式 (无需预置模板) ──
+    if args.interactive:
+        pass  # 模板在交互循环中通过按键采集
+    else:
+        # ── 加载模板 ──
+        if not args.template:
+            print("✗ 需要 --template 或 --interactive 参数")
+            return 1
+        matcher.load_template(args.template)
 
     # ── 模式: 单张图片搜索 ──
     if args.search:
