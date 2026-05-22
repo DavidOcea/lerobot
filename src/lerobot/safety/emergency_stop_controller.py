@@ -528,7 +528,7 @@ class EmergencyStopController:
             task_name: Name of the task that was interrupted (optional).
             timeout: Maximum time to wait for user input in seconds (default: 60s).
             pipe_fd: Read-end fd of MonitorCollector command pipe for frontend multiplexing.
-            robot: Optional Robot instance for Modbus keepalive during prompt.
+            robot: Optional Robot instance (reserved for future use).
 
         Returns:
             RecoveryAction selected by user.
@@ -562,7 +562,6 @@ class EmergencyStopController:
                 return RecoveryAction.ROLLBACK_AND_CONTINUE
 
             try:
-                last_keepalive = time.time()
                 while time.time() < deadline:
                     wait = max(0.1, deadline - time.time())
                     try:
@@ -583,13 +582,6 @@ class EmergencyStopController:
                             break
                     if user_input:
                         break
-                    # Gripper Modbus keepalive during long recovery prompts
-                    if robot and time.time() - last_keepalive > 2.0:
-                        try:
-                            robot.get_observation()
-                        except Exception:
-                            pass
-                        last_keepalive = time.time()
             finally:
                 tty.close()
 
