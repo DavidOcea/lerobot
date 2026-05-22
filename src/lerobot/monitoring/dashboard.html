@@ -101,10 +101,11 @@ h2{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;m
 <script>
 var lastData = null;
 var agvTrail = [];
+var currentPromptId = "";
 function refresh(){
   fetch('/api/status')
     .then(function(r){return r.json()})
-    .then(function(d){lastData=d;renderAll(d);})
+    .then(function(d){lastData=d; currentPromptId=d.prompt_id||""; renderAll(d);})
     .catch(function(e){console.log('fetch error:',e)});
   setTimeout(refresh,1000);
 }
@@ -279,9 +280,9 @@ function renderEvents(d){
   }
 }
 function sendCommand(key){
-  fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:key})})
+  fetch('/api/command',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({command:key, prompt_id:currentPromptId})})
     .then(function(r){return r.json()})
-    .then(function(d){console.log('command sent:',d);})
+    .then(function(d){if(d.status==='stale')console.log('stale command ignored:',d.message);else console.log('command sent:',d);})
     .catch(function(e){console.log('command error:',e)});
 }
 var _promptTimer=null;

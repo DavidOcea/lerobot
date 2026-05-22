@@ -135,6 +135,7 @@ class MonitorCollector:
         # Readers (main thread) select() on _cmd_pipe_r alongside /dev/tty.
         self._cmd_pipe_r, self._cmd_pipe_w = os.pipe()
         self._pending_prompt: dict | None = None
+        self._prompt_id: str = ""
         self._pending_command: str | None = None
 
     # ── Public API (called from main loop, non-blocking) ──────────
@@ -218,6 +219,9 @@ class MonitorCollector:
         a POST to /api/command writes the selection into _cmd_pipe_w, which
         unblocks select() in the main thread.
 
+        A unique prompt_id is generated each time so stale frontend commands
+        (from a previous prompt still rendering due to 1Hz polling) are rejected.
+
         prompt_data keys:
             type: str        - "task_selection", "cycle_prompt", "model_selection", "recovery"
             message: str     - header message shown on the dashboard
@@ -227,6 +231,7 @@ class MonitorCollector:
         """
         with self._lock:
             self._pending_prompt = prompt_data
+            self._prompt_id = str(time.time())
 
     def clear_pending_prompt(self):
         """Remove the pending prompt (called after user responds)."""
@@ -501,6 +506,7 @@ class MonitorCollector:
             "cameras": cameras,
             "host": _read_host_battery(),
             "pending_prompt": self._pending_prompt,
+            "prompt_id": self._prompt_id,
         }
 
 
@@ -642,11 +648,18 @@ class _DashboardHandler(BaseHTTPRequestHandler):
             try:
                 data = json.loads(body.decode("utf-8"))
                 command = data.get("command", "")
-                if command:
-                    self.collector._write_command(command)
-                    self._serve_json({"status": "ok", "command": command})
-                else:
+                if not command:
                     self._serve_json({"status": "error", "message": "missing command"})
+                    return
+                # Reject stale commands from a previous prompt (1Hz poll race)
+                sent_prompt_id = data.get("prompt_id", "")
+                current_prompt_id = self.collector._prompt_id
+                if sent_prompt_id and current_prompt_id and sent_prompt_id != current_prompt_id:
+                    logger.debug(f"Rejected stale command '{command}': prompt_id {sent_prompt_id} != {current_prompt_id}")
+                    self._serve_json({"status": "stale", "message": "prompt expired, retry"})
+                    return
+                self.collector._write_command(command)
+                self._serve_json({"status": "ok", "command": command})
             except Exception as e:
                 self._serve_json({"status": "error", "message": str(e)})
         else:

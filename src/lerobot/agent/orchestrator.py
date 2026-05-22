@@ -449,6 +449,7 @@ class TaskAgentOrchestrator:
             tasks=self.config.tasks,
             exit_handler=self._handle_exit_request,
             monitor_collector=self.monitor_collector,
+            robot=self.robot,
         )
         logger.info("Interactive task selector initialized")
 
@@ -587,6 +588,7 @@ class TaskAgentOrchestrator:
         # Backfill monitor_collector into interactive selector (init order: selector before monitoring)
         if self.monitor_collector is not None and self.interactive_selector is not None:
             self.interactive_selector._monitor_collector = self.monitor_collector
+            self.interactive_selector._robot = self.robot
             logger.info("Interactive selector connected to MonitorCollector")
 
     def _wait_for_input(
@@ -630,6 +632,7 @@ class TaskAgentOrchestrator:
 
         pipe_fd = mc.command_pipe_r
         deadline = time.time() + timeout if timeout > 0 else None
+        last_keepalive = time.time()
 
         try:
             sys.stdout.write(terminal_prompt)
@@ -642,6 +645,16 @@ class TaskAgentOrchestrator:
                     sys.stdout.write(f"\n[timeout] auto-selecting: {default}\n")
                     sys.stdout.flush()
                     return default
+
+                # Gripper Modbus keepalive: prevent connection timeout during long prompts.
+                # The JodellGripper's C++ Modbus library times out if no commands are sent
+                # for several seconds.  A get_observation() pings all hardware interfaces.
+                if self.robot and time.time() - last_keepalive > 2.0:
+                    try:
+                        self.robot.get_observation()
+                    except Exception:
+                        pass
+                    last_keepalive = time.time()
 
                 try:
                     readable, _, _ = select.select([tty, pipe_fd], [], [], wait)
@@ -728,7 +741,7 @@ class TaskAgentOrchestrator:
 
             # Prompt user for recovery action (terminal + dashboard)
             recovery_action = self.emergency_controller.prompt_recovery_action(
-                task_name, pipe_fd=pipe_fd
+                task_name, pipe_fd=pipe_fd, robot=self.robot
             )
 
             # Check for frontend command override
