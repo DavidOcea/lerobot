@@ -659,7 +659,10 @@ class _DashboardHandler(BaseHTTPRequestHandler):
                     self._serve_json({"status": "stale", "message": "prompt expired, retry"})
                     return
                 self.collector._write_command(command)
-                self._serve_json({"status": "ok", "command": command})
+                state = self.collector.get_full_status()
+                state["status"] = "ok"
+                state["command"] = command
+                self._serve_json(state)
             except Exception as e:
                 self._serve_json({"status": "error", "message": str(e)})
         else:
