@@ -4360,7 +4360,8 @@ Z轴控制关节 (全部6个):
               f"旋转容差: {ibvs.rotation_tolerance}°, "
               f"深度容差: ±{ibvs.depth_tolerance_mm:.0f}mm")
         print(f"  pixel_to_mm_ratio: {ibvs.pixel_to_mm_ratio:.3f}")
-        print(f"  AprilTag家族: {ibvs.tag_detector.tag_family}")
+        print(f"  检测器类型: {getattr(ibvs.tag_detector, 'detector_type', 'apriltag')}")
+        print(f"  AprilTag家族: {getattr(ibvs.tag_detector, 'tag_family', 'N/A')}")
 
         cv2.namedWindow("SimpleIBVS Alignment", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("SimpleIBVS Alignment", 800, 600)
