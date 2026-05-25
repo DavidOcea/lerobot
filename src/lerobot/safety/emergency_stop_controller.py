@@ -554,36 +554,31 @@ class EmergencyStopController:
 
         # ── Dashboard-integrated path (pipe_fd provided) ──
         if pipe_fd is not None:
-            try:
-                tty = open('/dev/tty', 'r')
-            except (OSError, IOError):
-                logger.info("Cannot open /dev/tty, auto-selecting option 2")
-                time.sleep(0.5)
-                return RecoveryAction.ROLLBACK_AND_CONTINUE
-
+            stdin_fd = sys.stdin.fileno()
             try:
                 while time.time() < deadline:
                     wait = max(0.1, deadline - time.time())
                     try:
-                        readable, _, _ = select.select([tty, pipe_fd], [], [], wait)
+                        readable, _, _ = select.select([stdin_fd, pipe_fd], [], [], wait)
                     except (ValueError, OSError):
                         break
 
                     for fd in readable:
-                        if fd == tty.fileno():
-                            line = tty.readline().strip()
-                            if line and len(line) <= 2 and line.isdigit():
-                                user_input = line
-                                break
+                        if fd == stdin_fd:
+                            line = sys.stdin.readline()
+                            if line:
+                                cleaned = line.strip()
+                                if cleaned and len(cleaned) <= 2 and cleaned.isdigit():
+                                    user_input = cleaned
+                                    break
                         elif fd == pipe_fd:
                             os.read(pipe_fd, 256)
-                            # The orchestrator reads get_last_command() separately
                             user_input = "__frontend__"
                             break
                     if user_input:
                         break
-            finally:
-                tty.close()
+            except Exception:
+                pass
 
             if user_input == "__frontend__":
                 # Return a sentinel — caller must resolve via monitor_collector
