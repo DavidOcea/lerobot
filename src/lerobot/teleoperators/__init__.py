@@ -18,8 +18,13 @@ from .config import TeleoperatorConfig
 from .teleoperator import Teleoperator
 from .utils import make_teleoperator_from_config
 
-# Import supre_robot modules to trigger registration
-from . import supre_robot_leader
+# Import supre_robot modules to trigger registration.
+# Hardware (eu_motor_py, jodell_gripper_py) only available on the robot —
+# skip on training machines where these C++ modules are not installed.
+try:
+    from . import supre_robot_leader
+except ImportError:
+    pass
 
 # ROS2 leader is optional - only import if ROS2 is available
 try:
