@@ -155,7 +155,9 @@ class SupreRobotHardwareManager:
         print(f"Results from hardware:{hw_results}")
         # 2. 使用映射表填充全局状态向量
         for global_index in range(self.num_joints):
-            mapping = self._joint_map[global_index]
+            mapping = self._joint_map.get(global_index)
+            if mapping is None:
+                continue  # 关节被 disabled 跳过
             instance = mapping['instance']
             hw_index = mapping['hw_index']
             
@@ -204,7 +206,9 @@ class SupreRobotHardwareManager:
 
         # 2. 遍历全局指令，使用映射表分发
         for global_index, command_value in enumerate(self.commands):
-            mapping = self._joint_map[global_index]
+            mapping = self._joint_map.get(global_index)
+            if mapping is None:
+                continue  # 关节被 disabled 跳过
             instance = mapping['instance']
             hw_index = mapping['hw_index']
             
