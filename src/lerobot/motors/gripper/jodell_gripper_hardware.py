@@ -152,6 +152,47 @@ class JodellGripperHardware(HardwareInterface):
             print("Bus disconnected.")
             
         return True    
+    def _ensure_bus_connection(self) -> bool:
+        """Check if the Modbus bus is connected; attempt reconnection if dropped.
+
+        The bus connection can drop due to idle timeout during prompt periods
+        when no Modbus commands are sent.  This method transparently recovers
+        by reconnecting the bus and re-enabling all gripper clients.
+
+        Returns:
+            True if the bus is connected (was already, or reconnected successfully).
+            False if reconnection failed.
+        """
+        if not self.gripper_bus:
+            return False
+
+        if self.gripper_bus.is_connected():
+            return True
+
+        print("JodellGripperHardware: Bus disconnected, attempting reconnect...")
+        try:
+            if not self.gripper_bus.connect():
+                print("JodellGripperHardware: Bus reconnect failed.")
+                return False
+        except Exception as e:
+            print(f"JodellGripperHardware: Exception during bus reconnect: {e}")
+            return False
+
+        print("JodellGripperHardware: Bus reconnected. Re-enabling grippers...")
+        for i, client in enumerate(self.gripper_clients):
+            try:
+                if not client.enable():
+                    print(f"JodellGripperHardware: Failed to re-enable gripper {self.slave_ids[i]}")
+                    return False
+            except Exception as e:
+                print(f"JodellGripperHardware: Exception re-enabling gripper {self.slave_ids[i]}: {e}")
+                return False
+
+        # Clear the read cache so the next read() fetches real data from hardware
+        self._last_read_time = 0.0
+        print("JodellGripperHardware: All grippers re-enabled successfully.")
+        return True
+
     def read(self) -> List[Tuple[Optional[float], Optional[float]]]:
         """
         从所有夹爪读取当前位置。
@@ -165,7 +206,11 @@ class JodellGripperHardware(HardwareInterface):
             # 缓存命中，直接返回缓存值
             return self._cached_values
 
-        # 2. 缓存失效，执行硬件读取
+        # 2. 确保总线连接 (可能在 prompt 空闲期间超时断开)
+        if not self._ensure_bus_connection():
+            return [(None, None)] * len(self.slave_ids)
+
+        # 3. 缓存失效，执行硬件读取
         if not self.gripper_clients:
             return [None] * len(self.slave_ids)
 
@@ -204,6 +249,10 @@ class JodellGripperHardware(HardwareInterface):
                 f"Number of commands ({len(commands)}) does not match "
                 f"number of grippers ({len(self.gripper_clients)})."
             )
+
+        # 确保总线连接 (可能在 prompt 空闲期间超时断开)
+        if not self._ensure_bus_connection():
+            return False
 
         # 1. 更新内部命令向量，使其反映刚刚传入的命令
         self.hw_commands_position = commands

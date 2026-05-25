@@ -59,6 +59,11 @@ class SupreRobotHardwareManager:
         print("\n--- Initializing all hardware interfaces ---")
         # 1. 创建硬件实例
         for hw_info in self._config["hardware_interfaces"]:
+            # 支持 enabled: false 来禁用某个硬件 (如 gripper)
+            if not hw_info.get("enabled", True):
+                print(f"Skipping disabled hardware: {hw_info.get('name', hw_info.get('type', 'unknown'))}")
+                continue
+
             hw_type_str = hw_info["type"]
             if hw_type_str not in self.HARDWARE_TYPE_MAP:
                 print(f"Error: Unknown hardware type '{hw_type_str}'")
@@ -101,12 +106,22 @@ class SupreRobotHardwareManager:
                     'hw_index': hw_index
                 }
         
-        # 3. 验证所有关节是否都被映射
-        if len(self._joint_map) != self.num_joints:
-            print("Error: Mismatch between joints in joint_order and joints defined in hardware_interfaces.")
+        # 3. 收集被 disabled 跳过的关节名
+        disabled_joints = set()
+        for hw_info in self._config["hardware_interfaces"]:
+            if not hw_info.get("enabled", True):
+                for j in hw_info.get("config", {}).get("joints", []):
+                    disabled_joints.add(j["name"])
+
+        # 4. 验证未被禁用的关节是否都已映射
+        expected_mapped = self.num_joints - len(disabled_joints)
+        if len(self._joint_map) != expected_mapped:
+            print("Error: Mismatch between joints in joint_order and enabled hardware_interfaces.")
             mapped_joints = {self.joint_order[i] for i in self._joint_map.keys()}
-            unmapped_joints = set(self.joint_order) - mapped_joints
+            unmapped_joints = set(self.joint_order) - mapped_joints - disabled_joints
             print(f"Unmapped joints: {unmapped_joints}")
+            if disabled_joints:
+                print(f"Disabled joints (intentionally skipped): {disabled_joints}")
             return False
 
         print("\n--- Joint mapping completed successfully ---")
