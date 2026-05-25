@@ -272,7 +272,8 @@ class SimpleIBVSController:
                  camera_fx: float = 531.0,
                  dimension: int = 2,
                  rotation_tolerance: float = 2.0,
-                 rotation_weight: float = 0.6):
+                 rotation_weight: float = 0.6,
+                 detector=None):
         """
         Args:
             arm: 'left' or 'right'
@@ -291,6 +292,8 @@ class SimpleIBVSController:
             dimension: 雅可比维度 2=XY, 3=XY+旋转, 4=XY+旋转+深度
             rotation_tolerance: 旋转收敛容差 (deg)
             rotation_weight: 旋转误差在雅可比中的权重 (平衡度vs像素)
+            detector: 自定义检测器 (默认 AprilTagDetector).
+                      需实现 detect(image)→List[Dict] 和 estimate_depth_mm(tag, fx)→float
         """
         self.arm = arm
         self.arm_config = ARM_CONFIGS[arm]
@@ -303,12 +306,17 @@ class SimpleIBVSController:
         self.rotation_tolerance = rotation_tolerance
         self.rotation_weight = rotation_weight
 
-        # AprilTag 检测器
-        self.tag_detector = AprilTagDetector(
-            tag_family=tag_family,
-            target_tag_ids=target_tag_ids,
-            tag_size_mm=tag_size_mm,
-        )
+        # 检测器: 可传入自定义检测器替代AprilTag (如EdgeTemplateMatcher)
+        if detector is not None:
+            self.tag_detector = detector
+            self._detector_type = getattr(detector, 'detector_type', 'custom')
+        else:
+            self.tag_detector = AprilTagDetector(
+                tag_family=tag_family,
+                target_tag_ids=target_tag_ids,
+                tag_size_mm=tag_size_mm,
+            )
+            self._detector_type = 'apriltag'
 
         # 标定数据
         self.calibration_points: List[CalibrationPoint] = []
@@ -1117,9 +1125,9 @@ class SimpleIBVSController:
         print(f"SimpleIBVS 配置摘要 (arm={self.arm}, dimension={self.dimension})")
         print(f"{'='*50}")
         print(f"  控制维度: {dim_names.get(self.dimension, f'{self.dimension}D')}")
-        print(f"  AprilTag家族: {self.tag_detector.tag_family}")
-        print(f"  目标tag ID: {self.tag_detector.target_tag_ids or '全部'}")
-        print(f"  tag物理尺寸: {self.tag_detector.tag_size_mm:.1f}mm")
+        print(f"  AprilTag家族: {getattr(self.tag_detector, 'tag_family', 'N/A')}")
+        print(f"  目标tag ID: {getattr(self.tag_detector, 'target_tag_ids', None) or '全部'}")
+        print(f"  物体物理尺寸: {getattr(self.tag_detector, 'tag_size_mm', getattr(self.tag_detector, 'physical_size_mm', 0)):.1f}mm")
         print(f"  目标像素位置: ({self.target_pixel_x:.1f}, {self.target_pixel_y:.1f})")
         print(f"  目标深度: {self.target_depth_mm:.0f}mm (容差: ±{self.depth_tolerance_mm:.0f}mm)")
         print(f"  目标旋转: {self.target_rotation_deg:.1f}° (容差: ±{self.rotation_tolerance}°)")

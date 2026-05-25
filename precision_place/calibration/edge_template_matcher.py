@@ -49,6 +49,8 @@ class EdgeTemplateMatcher:
             match_threshold: 匹配阈值 (0~1), 低于此值认为未检测到
         """
         self.physical_size_mm = physical_size_mm
+        self.tag_size_mm = physical_size_mm  # 兼容 SimpleIBVS 接口
+        self.detector_type = 'edgetemplate'  # 标识检测器类型
         self.canny_low = canny_low
         self.canny_high = canny_high
         self.angle_range = angle_range
@@ -254,6 +256,11 @@ class EdgeTemplateMatcher:
             y = cy + dx * sin_a + dy * cos_a
             corners.append((float(x), float(y)))
         return corners
+
+    def draw_tags(self, image: np.ndarray, detections: list,
+                  show_ids: bool = True) -> np.ndarray:
+        """绘制检测结果 (兼容 AprilTagDetector 接口)"""
+        return draw_detection(image, detections, show_score=True)
 
 
 # ═══════════════════════════════════════════════════════════════

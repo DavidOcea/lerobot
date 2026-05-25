@@ -143,6 +143,7 @@ class PrecisionPlaceSystem:
         self.simple_ibvs = None  # SimpleIBVS控制器 (2D)
         self.simple_ibvs_3d = None  # SimpleIBVS控制器 (3D: XY+旋转)
         self.simple_ibvs_4d = None  # SimpleIBVS控制器 (4D: XY+旋转+深度)
+        self.edge_detector = None  # EdgeTemplateMatcher (可选替代AprilTag)
         self.fk_ibvs = None      # FK-IBVS控制器 (基于正运动学)
         self.urdf_path = None  # URDF文件路径
         # 目标偏移量（用于标记点有固定偏移的情况）
@@ -4291,8 +4292,17 @@ Z轴控制关节 (全部6个):
         # 初始化或复用 SimpleIBVS 控制器 (按dimension独立实例)
         ibvs_attrs = {2: 'simple_ibvs', 3: 'simple_ibvs_3d', 4: 'simple_ibvs_4d'}
         attr_name = ibvs_attrs.get(dimension, 'simple_ibvs')
+
+        # 如果切换了边缘模板检测器, 需要重建控制器
+        if self.edge_detector and getattr(self, attr_name) is not None:
+            old = getattr(self, attr_name)
+            if getattr(old, '_detector_type', 'apriltag') != 'edgetemplate':
+                setattr(self, attr_name, None)  # 强制重建
+
         if getattr(self, attr_name) is None:
-            ctrl = SimpleIBVSController(arm=self.current_arm, dimension=dimension)
+            ctrl = SimpleIBVSController(
+                arm=self.current_arm, dimension=dimension,
+                detector=self.edge_detector)
             setattr(self, attr_name, ctrl)
         ibvs = getattr(self, attr_name)
 
@@ -5382,6 +5392,8 @@ def main():
             print("B2. FK-IBVS对齐 (FK解析雅可比，需URDF+手眼标定) [对比测试]")
             print("B3. SimpleIBVS-3D (XY+旋转联合求解) [需标定J3]")
             print("B4. SimpleIBVS-4D (XY+旋转+深度联合求解) [需标定J4]")
+            print("T. 切换物体检测模式 (当前: {})".format(
+                '边缘模板' if system.edge_detector else 'AprilTag'))
             print("M. IBVS记忆 (采集定妆照，需FK+外参)")
             print("I. IBVS对齐 (盲插控制，需FK+外参)")
             print("---")
@@ -5635,6 +5647,39 @@ def main():
                 if not system.controller:
                     system.connect()
                 system.simple_ibvs_alignment()
+
+            elif choice.upper() == "T":
+                # 切换物体检测模式: AprilTag ↔ 边缘模板
+                if system.edge_detector is not None:
+                    system.edge_detector = None
+                    print("\n✓ 已切换为 AprilTag 检测模式")
+                else:
+                    # 切到边缘模板: 用当前相机拍一帧 → ROI框选 → 设置模板
+                    from precision_place.calibration.edge_template_matcher import (
+                        EdgeTemplateMatcher, _select_roi)
+                    arm_config = ARM_CONFIGS.get(system.current_arm)
+                    camera = system.cameras.get(arm_config.camera_name)
+                    if camera is None:
+                        print("✗ 相机未连接, 请先连接设备")
+                    else:
+                        frame = camera.read()
+                        if frame is None:
+                            print("✗ 无法读取相机帧")
+                        else:
+                            print("\n请框选工件 ROI 区域...")
+                            roi = _select_roi(frame)
+                            if roi is not None:
+                                rx, ry, rw, rh = roi
+                                cropped = frame[ry:ry+rh, rx:rx+rw]
+                                system.edge_detector = EdgeTemplateMatcher(
+                                    physical_size_mm=20.0,
+                                    angle_range=45, angle_step=2.0,
+                                    scale_range=0.15,
+                                    match_threshold=0.4)
+                                system.edge_detector.set_template_from_frame(cropped)
+                                print(f"✓ 已切换为边缘模板模式 (ROI: {rw}x{rh}px)")
+                            else:
+                                print("  已取消")
 
             elif choice.upper() == "B2":
                 # FK-IBVS对齐 (基于FK解析雅可比)
