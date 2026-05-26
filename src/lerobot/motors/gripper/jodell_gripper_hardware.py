@@ -155,18 +155,27 @@ class JodellGripperHardware(HardwareInterface):
     def keepalive(self) -> None:
         """Lightweight Modbus keepalive — prevents idle timeout during prompts.
 
-        Unlike a full read(), this only pings the bus status on each gripper
-        client.  Call this periodically during long select() idle periods
-        (terminal prompts, dashboard prompts) to prevent the JodellGripper
-        C++ Modbus connection from timing out.
+        Pings each gripper client via get_status().  If the ping times out
+        (serial port is open but the device isn't responding), the bus is
+        forcibly disconnected and reconnected to recover cleanly.
+
+        Call this periodically during long select() idle periods (terminal
+        prompts, dashboard prompts).
         """
-        if not self.gripper_bus or not self.gripper_bus.is_connected():
+        if not self.gripper_bus:
             return
         for client in self.gripper_clients:
             try:
                 client.get_status()
             except Exception:
-                pass
+                # Bus is stale — serial port is open but device doesn't answer.
+                # Force a full disconnect+reconnect cycle.
+                try:
+                    self.gripper_bus.disconnect()
+                except Exception:
+                    pass
+                self._ensure_bus_connection()
+                break
 
     def _ensure_bus_connection(self) -> bool:
         """Check if the Modbus bus is connected; attempt reconnection if dropped.

@@ -451,7 +451,7 @@ class TaskAgentOrchestrator:
         # Load and prepend builtin generic skills (AGV moves, robot home, etc.)
         # We do this here — not in load_config_from_yaml — because only the
         # orchestrator knows whether interactive mode is truly enabled.
-        builtin_path = Path(__file__).resolve().parent.parent.parent / "configs" / "builtin_skills.yaml"
+        builtin_path = Path(__file__).resolve().parent.parent.parent.parent / "configs" / "builtin_skills.yaml"
         if builtin_path.exists():
             try:
                 builtin = yaml.safe_load(builtin_path.read_text())
