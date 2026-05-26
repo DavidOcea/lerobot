@@ -292,6 +292,15 @@ class InteractiveTaskSelector:
                 sys.stdout.write(prompt)
                 sys.stdout.flush()
 
+            # Proactive Modbus refresh before select loop: the gap between
+            # the last send_action() and the first keepalive can exceed the
+            # C++ Modbus idle timeout.
+            if self._robot:
+                try:
+                    self._robot.get_observation()
+                except Exception:
+                    pass
+
             last_keepalive = time.time()
             while True:
                 try:
