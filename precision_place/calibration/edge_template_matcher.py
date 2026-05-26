@@ -62,9 +62,16 @@ class EdgeTemplateMatcher:
         self._template_gray = None
         self._template_edges = None
         self._template_mask = None
+        self._tracking = False  # 跟踪模式: 缩小搜索范围加速
 
         if template_path:
             self.load_template(template_path)
+
+    # ── 跟踪模式 ──────────────────────────────────────────────
+
+    def set_tracking(self, enabled: bool):
+        """设置跟踪模式: 帧间位移小, 自动缩小角度/尺度搜索范围"""
+        self._tracking = enabled
 
     # ── 模板管理 ──────────────────────────────────────────────
 
@@ -156,8 +163,9 @@ class EdgeTemplateMatcher:
 
     # ── 快速边缘匹配 (默认方案, 速度优先) ─────────────────────
 
-    def _match_edges_fast(self, search_gray: np.ndarray) -> list:
-        """边缘模板匹配 — 旋转/尺度搜索, 速度优化版
+    def _match_edges_fast(self, search_gray: np.ndarray,
+                          tracking: bool = False) -> list:
+        """边缘模板匹配 — 金字塔 + 粗→精旋转搜索
 
         返回: [(score, cx, cy, angle_deg, scale, template_w, template_h), ...]
         """
@@ -169,33 +177,146 @@ class EdgeTemplateMatcher:
         if t_h > s_h or t_w > s_w:
             return []
 
+        # 跟踪模式: 帧间位移小, 缩小搜索范围
+        angle_range = 15.0 if tracking else self.angle_range
+        scale_range = 0.10 if tracking else self.scale_range
+
+        # ── 第1级: 金字塔粗搜索 (1/2分辨率, 粗步长) ──
+        if min(s_h, s_w) > 200 and min(t_h, t_w) > 40:
+            coarse_angle_step = min(self.angle_step * 3, 5.0)
+            coarse_scale_step = self.scale_step * 2
+
+            s_small = cv2.resize(search_gray, None, fx=0.5, fy=0.5)
+            s_edges_small = self._extract_edges(s_small)
+            t_edges_small = cv2.resize(self._template_edges, None, fx=0.5, fy=0.5)
+
+            coarse = self._search_loop(
+                s_edges_small, t_edges_small,
+                t_h // 2, t_w // 2, s_small.shape[0], s_small.shape[1],
+                angle_range, coarse_angle_step,
+                scale_range, coarse_scale_step,
+                self.match_threshold * 0.8)
+
+            if not coarse:
+                return []
+
+            # 取 top-3 候选, 合并重叠
+            top_candidates = self._merge_candidates(coarse[:10], 0.4)
+
+            # ── 第2级: 原图精修 ──
+            s_edges = self._extract_edges(search_gray)
+            results = []
+            for _, cx_s, cy_s, angle_s, scale_s, _, _ in top_candidates[:3]:
+                fine_angle_step = self.angle_step
+                fine_scale_step = self.scale_step
+                local_angle_range = coarse_angle_step * 1.5
+                local_scale_range = coarse_scale_step * 1.5
+
+                local = self._search_loop(
+                    s_edges, self._template_edges,
+                    t_h, t_w, s_h, s_w,
+                    local_angle_range, fine_angle_step,
+                    local_scale_range, fine_scale_step,
+                    self.match_threshold,
+                    center_angle=angle_s, center_scale=scale_s,
+                    # 空间约束: 粗位置附近搜索
+                    search_roi=(int((cx_s - t_w/2) * 2 - t_w),
+                                int((cy_s - t_h/2) * 2 - t_h),
+                                t_w * 3, t_h * 3))
+                results.extend(local)
+
+            results.sort(key=lambda x: x[0], reverse=True)
+            return results
+
+        # ── 小模板/小图像: 直接搜索 ──
         s_edges = self._extract_edges(search_gray)
+        results = self._search_loop(
+            s_edges, self._template_edges,
+            t_h, t_w, s_h, s_w,
+            angle_range, self.angle_step,
+            scale_range, self.scale_step,
+            self.match_threshold)
+        results.sort(key=lambda x: x[0], reverse=True)
+        return results
+
+    def _search_loop(self, s_edges, t_edges, t_h, t_w, s_h, s_w,
+                     angle_range, angle_step, scale_range, scale_step,
+                     threshold, center_angle=0.0, center_scale=1.0,
+                     search_roi=None):
+        """角度×尺度搜索循环 (被金字塔各级调用)
+
+        Args:
+            center_angle, center_scale: 搜索中心 (用于局部精修)
+            search_roi: (x, y, w, h) 在搜索图中的裁剪区域, None=全图
+        """
         results = []
-        angles = np.arange(-self.angle_range, self.angle_range + 0.1, self.angle_step)
-        scales = np.arange(1.0 - self.scale_range, 1.0 + self.scale_range + 0.01, self.scale_step)
+        angles = np.arange(center_angle - angle_range,
+                           center_angle + angle_range + 0.01, angle_step)
+        scales = np.arange(center_scale - scale_range,
+                           center_scale + scale_range + 0.001, scale_step)
 
         for scale in scales:
             new_w = max(20, int(t_w * scale))
             new_h = max(20, int(t_h * scale))
+            if new_h > s_h or new_w > s_w:
+                continue
 
             for angle in angles:
                 M = cv2.getRotationMatrix2D((t_w/2, t_h/2), angle, scale)
-                t_rot = cv2.warpAffine(self._template_edges, M, (new_w, new_h),
+                t_rot = cv2.warpAffine(t_edges, M, (new_w, new_h),
                                        flags=cv2.INTER_NEAREST)
 
-                if new_h > s_h or new_w > s_w:
-                    continue
+                if search_roi is not None:
+                    rx, ry, rw, rh = search_roi
+                    rx = max(0, rx)
+                    ry = max(0, ry)
+                    rw = min(rw, s_w - rx)
+                    rh = min(rh, s_h - ry)
+                    if new_w > rw or new_h > rh:
+                        continue
+                    roi = s_edges[ry:ry+rh, rx:rx+rw]
+                    result = cv2.matchTemplate(roi, t_rot, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                    if max_val > threshold:
+                        cx = rx + max_loc[0] + new_w / 2
+                        cy = ry + max_loc[1] + new_h / 2
+                        results.append((max_val, cx, cy, angle, scale, new_w, new_h))
+                else:
+                    result = cv2.matchTemplate(s_edges, t_rot, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+                    if max_val > threshold:
+                        cx = max_loc[0] + new_w / 2
+                        cy = max_loc[1] + new_h / 2
+                        results.append((max_val, cx, cy, angle, scale, new_w, new_h))
 
-                result = cv2.matchTemplate(s_edges, t_rot, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, max_loc = cv2.minMaxLoc(result)
-
-                if max_val > self.match_threshold:
-                    cx = max_loc[0] + new_w / 2
-                    cy = max_loc[1] + new_h / 2
-                    results.append((max_val, cx, cy, angle, scale, new_w, new_h))
-
-        results.sort(key=lambda x: x[0], reverse=True)
         return results
+
+    @staticmethod
+    def _merge_candidates(candidates, angle_tol_deg=5.0):
+        """合并重叠的候选 (相近角度+位置 → 保留最高分)"""
+        if len(candidates) <= 1:
+            return candidates
+        kept = []
+        used = [False] * len(candidates)
+        for i, (s_i, cx_i, cy_i, a_i, sc_i, w_i, h_i) in enumerate(candidates):
+            if used[i]:
+                continue
+            best = candidates[i]
+            for j in range(i + 1, len(candidates)):
+                if used[j]:
+                    continue
+                _, cx_j, cy_j, a_j, _, _, _ = candidates[j]
+                dist = np.hypot(cx_i - cx_j, cy_i - cy_j)
+                angle_diff = abs(a_i - a_j) % 180
+                angle_diff = min(angle_diff, 180 - angle_diff)
+                if dist < max(w_i, h_i) * 0.5 and angle_diff < angle_tol_deg:
+                    used[j] = True
+                    if candidates[j][0] > best[0]:
+                        best = candidates[j]
+            kept.append(best)
+            used[i] = True
+        kept.sort(key=lambda x: x[0], reverse=True)
+        return kept
 
     # ── 深度估算 (与 SimpleIBVS 兼容) ─────────────────────────
 
@@ -226,7 +347,7 @@ class EdgeTemplateMatcher:
         if method == "gradient":
             raw = self._match_gradient(gray)
         else:
-            raw = self._match_edges_fast(gray)
+            raw = self._match_edges_fast(gray, tracking=self._tracking)
 
         if not raw:
             return []

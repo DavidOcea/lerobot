@@ -4511,6 +4511,8 @@ Z轴控制关节 (全部6个):
                     if aligned_frames >= align_confirm_frames:
                         converged = True
                         mode = MODE_IDLE
+                        if hasattr(ibvs.tag_detector, 'set_tracking'):
+                            ibvs.tag_detector.set_tracking(False)
                         dim_align_names = {2: "XY居中" if not require_depth_for_align else "Tag居中+深度达标",
                                           3: "XY+旋转对准" if not require_depth_for_align else "XY+旋转+深度达标",
                                           4: "XY+旋转+深度达标"}
@@ -4573,6 +4575,8 @@ Z轴控制关节 (全部6个):
                         if iteration >= ibvs.max_iterations:
                             print(f"\n⚠ 达到最大迭代数 {ibvs.max_iterations}")
                             mode = MODE_IDLE
+                            if hasattr(ibvs.tag_detector, 'set_tracking'):
+                                ibvs.tag_detector.set_tracking(False)
                 else:
                     aligned_frames = 0
 
@@ -4724,6 +4728,8 @@ Z轴控制关节 (全部6个):
                 depth_msg = dim_align_start.get(dimension, dim_align_start[2])
                 rot_info = f" 旋转目标={ibvs.target_rotation_deg:.0f}°" if dimension >= 3 else ""
                 print(f"\n▶ 对齐模式启动 ({depth_msg}, 需连续3帧确认){rot_info}")
+                if hasattr(ibvs.tag_detector, 'set_tracking'):
+                    ibvs.tag_detector.set_tracking(True)
             elif key == ord('f') or key == ord('F'):
                 mode = MODE_TRACK
                 converged = False
@@ -4733,6 +4739,8 @@ Z轴控制关节 (全部6个):
                 stuck_counter = 0
                 adaptive_gain = 1.0
                 print("\n▶ 跟踪模式启动 (持续伺服，不会停止)")
+                if hasattr(ibvs.tag_detector, 'set_tracking'):
+                    ibvs.tag_detector.set_tracking(True)
             elif key == ord('s') or key == ord('S'):
                 mode = MODE_SINGLE
                 converged = False
@@ -4740,6 +4748,8 @@ Z轴控制关节 (全部6个):
             elif key == ord('x') or key == ord('X'):
                 mode = MODE_IDLE
                 print("▶ 已停止")
+                if hasattr(ibvs.tag_detector, 'set_tracking'):
+                    ibvs.tag_detector.set_tracking(False)
             elif key == ord('t') or key == ord('T'):
                 # 设置所有目标 (像素+深度+旋转) 从当前tag状态
                 if tag_state.tag_visible:
