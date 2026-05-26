@@ -133,6 +133,9 @@ class TaskAgentOrchestrator:
         # Execution mode
         self.use_local_execution = getattr(config, "use_local_execution", True)
 
+        # Track builtin skill names so we can skip them during auto-advance
+        self._builtin_task_names: set[str] = set()
+
         # Configure logging
         self._setup_logging()
 
@@ -469,6 +472,7 @@ class TaskAgentOrchestrator:
                                 f"Skipping builtin skill '{td.get('name', td)}': {e}"
                             )
                     tasks = builtin_configs + tasks
+                    self._builtin_task_names = {tc.name for tc in builtin_configs}
                     logger.info(
                         f"Merged {len(builtin_configs)} builtin skill(s) from {builtin_path}"
                     )
@@ -657,6 +661,13 @@ class TaskAgentOrchestrator:
 
         sys.stdout.write(terminal_prompt)
         sys.stdout.flush()
+
+        # Proactive Modbus refresh before select loop.
+        if self.robot:
+            try:
+                self.robot.get_observation()
+            except Exception:
+                pass
 
         last_keepalive = time.time()
         while True:
@@ -1072,15 +1083,18 @@ class TaskAgentOrchestrator:
                 if self.interactive_selector.check_pause_request():
                     continue  # re-evaluate with new mode
 
-                # Get the current task index from the selector
+                # Use the selector's task list (includes builtin skills) for
+                # index lookups — current_idx is relative to the selector's
+                # combined list, NOT self.config.tasks (YAML-only).
+                selector_tasks = self.interactive_selector.config_tasks
                 current_idx = self.interactive_selector.current_task_index
 
                 # Check if we've reached the end of the task list
-                if current_idx >= len(self.config.tasks):
+                if current_idx >= len(selector_tasks):
                     logger.info("All tasks completed or end of task list reached")
                     break
 
-                task = self.config.tasks[current_idx]
+                task = selector_tasks[current_idx]
 
                 # Prompt user for task selection
                 selection = self.interactive_selector.prompt_next_task()
@@ -1114,11 +1128,12 @@ class TaskAgentOrchestrator:
 
                 # Handle specific task selection
                 if selection.selected_task:
-                    # Find and execute selected task
-                    for t in self.config.tasks:
+                    # Find and execute selected task (search selector_tasks
+                    # which includes both builtin skills and YAML tasks)
+                    for t in selector_tasks:
                         if t.name.lower() == selection.selected_task.lower():
                             task = t
-                            current_idx = self.config.tasks.index(t)
+                            current_idx = selector_tasks.index(t)
                             # Update the selector's index to match
                             self.interactive_selector.current_task_index = current_idx
                             break
@@ -1202,6 +1217,22 @@ class TaskAgentOrchestrator:
             # so user can retry the same task or choose a different action
             if result.status == TaskStatus.COMPLETED:
                 self.interactive_selector.current_task_index += 1
+                # Skip builtin skills in AUTOMATIC mode — they are manually
+                # selectable skills, not part of the automatic task sequence.
+                if (
+                    self._builtin_task_names
+                    and self.interactive_selector._execution_mode == ExecutionMode.AUTOMATIC
+                ):
+                    selector_tasks = self.interactive_selector.config_tasks
+                    while self.interactive_selector.current_task_index < len(selector_tasks):
+                        t = selector_tasks[self.interactive_selector.current_task_index]
+                        if t.name in self._builtin_task_names:
+                            logger.info(
+                                f"Skipping builtin skill '{t.name}' in AUTOMATIC mode"
+                            )
+                            self.interactive_selector.current_task_index += 1
+                        else:
+                            break
                 logger.info(f"Task {task.name} completed, moving to next task")
             elif result.status == TaskStatus.FAILED:
                 # Task failed but not fatal - keep index to allow retry
