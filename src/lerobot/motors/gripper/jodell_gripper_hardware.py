@@ -50,6 +50,10 @@ class JodellGripperHardware(HardwareInterface):
         self._last_read_time = 0.0           # 上次真实读取的时间戳
         self._cached_values = []          # 缓存的位置数据
 
+        # --- 新增：keepalive 重连冷却 ---
+        self._last_reconnect_attempt = 0.0   # 上次重连尝试的时间戳
+        self._reconnect_cooldown = 5.0       # 重连冷却时间 (秒)
+
     def init(self, config: dict) -> bool:
         # ... 此方法保持不变 ...
         print("JodellGripperHardware: Running init...")
@@ -159,6 +163,10 @@ class JodellGripperHardware(HardwareInterface):
         (serial port is open but the device isn't responding), the bus is
         forcibly disconnected and reconnected to recover cleanly.
 
+        A cooldown prevents infinite reconnect loops: if a reconnect was
+        already attempted within the last _reconnect_cooldown seconds,
+        subsequent failures are silently ignored.
+
         Call this periodically during long select() idle periods (terminal
         prompts, dashboard prompts).
         """
@@ -168,8 +176,10 @@ class JodellGripperHardware(HardwareInterface):
             try:
                 client.get_status()
             except Exception:
-                # Bus is stale — serial port is open but device doesn't answer.
-                # Force a full disconnect+reconnect cycle.
+                now = time.monotonic()
+                if now - self._last_reconnect_attempt < self._reconnect_cooldown:
+                    return
+                self._last_reconnect_attempt = now
                 try:
                     self.gripper_bus.disconnect()
                 except Exception:

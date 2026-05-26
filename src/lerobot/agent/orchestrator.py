@@ -461,8 +461,13 @@ class TaskAgentOrchestrator:
                     default_arm_safe = self.config.agv_config.default_arm_safe_positions if self.config.agv_config else {}
                     builtin_configs = []
                     for td in builtin_tasks:
-                        tc = parse_task_dict(td, named_positions, default_arm_safe)
-                        builtin_configs.append(tc)
+                        try:
+                            tc = parse_task_dict(td, named_positions, default_arm_safe)
+                            builtin_configs.append(tc)
+                        except Exception as e:
+                            logger.warning(
+                                f"Skipping builtin skill '{td.get('name', td)}': {e}"
+                            )
                     tasks = builtin_configs + tasks
                     logger.info(
                         f"Merged {len(builtin_configs)} builtin skill(s) from {builtin_path}"
