@@ -232,9 +232,14 @@ def replay_record_loop(
     rng = np.random.default_rng(cfg.noise_seed)
 
     # 创建 ActionCorrector 实例（使用独立模块）
+    # If no teleop device is connected, disable leader correction so
+    # LeaderCorrector is never instantiated (avoids errors from missing hardware).
+    leader_cfg = cfg.leader_adjust
+    if teleop is None:
+        leader_cfg = LeaderAdjustConfig(enable=False)
     corrector_config = ActionCorrectorConfig(
         enable=True,
-        leader=cfg.leader_adjust,
+        leader=leader_cfg,
         keyboard=cfg.key_adjust,
     )
     corrector = ActionCorrector(corrector_config, teleop=teleop)
@@ -521,7 +526,7 @@ def replay(cfg: ReplayConfig):
     # === 连接设备 ===
     robot.connect()
 
-    # 连接 Teleoperator（用于 Leader 介入）
+    # 连接 Teleoperator（用于 Leader 介入，可选）
     teleop = None
     if cfg.dataset.replay_record.enable and cfg.teleop is not None:
         teleop = make_teleoperator_from_config(cfg.teleop)
