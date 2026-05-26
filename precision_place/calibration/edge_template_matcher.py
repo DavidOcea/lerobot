@@ -63,6 +63,7 @@ class EdgeTemplateMatcher:
         self._template_edges = None
         self._template_mask = None
         self._tracking = False  # 跟踪模式: 缩小搜索范围加速
+        self._last_center = None  # (cx, cy) 上一帧检测位置, 用于ROI追踪
 
         if template_path:
             self.load_template(template_path)
@@ -72,6 +73,8 @@ class EdgeTemplateMatcher:
     def set_tracking(self, enabled: bool):
         """设置跟踪模式: 帧间位移小, 自动缩小角度/尺度搜索范围"""
         self._tracking = enabled
+        if not enabled:
+            self._last_center = None  # 停止时清除位置记忆
 
     # ── 模板管理 ──────────────────────────────────────────────
 
@@ -165,7 +168,7 @@ class EdgeTemplateMatcher:
 
     def _match_edges_fast(self, search_gray: np.ndarray,
                           tracking: bool = False) -> list:
-        """边缘模板匹配 — 金字塔 + 粗→精旋转搜索
+        """边缘模板匹配 — 金字塔 + 粗→精旋转搜索 + ROI追踪
 
         返回: [(score, cx, cy, angle_deg, scale, template_w, template_h), ...]
         """
@@ -177,9 +180,43 @@ class EdgeTemplateMatcher:
         if t_h > s_h or t_w > s_w:
             return []
 
-        # 跟踪模式: 帧间位移小, 缩小搜索范围
-        angle_range = 15.0 if tracking else self.angle_range
+        # 跟踪模式: 帧间位移小, 缩小搜索范围; 放宽阈值容忍视角变化
+        angle_range = 25.0 if tracking else self.angle_range
         scale_range = 0.10 if tracking else self.scale_range
+        threshold = self.match_threshold * 0.75 if tracking else self.match_threshold
+
+        # ── 跟踪模式: ROI优先搜索 ──
+        if tracking and self._last_center is not None:
+            prev_cx, prev_cy = self._last_center
+            # ROI: 上一帧位置周围 200×200px 窗口
+            margin = 100
+            roi = (int(prev_cx - margin), int(prev_cy - margin),
+                   margin * 2, margin * 2)
+            # clamp ROI to image bounds
+            rx, ry, rw, rh = roi
+            rx = max(0, rx)
+            ry = max(0, ry)
+            rw = min(rw, s_w - rx)
+            rh = min(rh, s_h - ry)
+
+            s_edges = self._extract_edges(search_gray)
+            # ROI 内直接精搜索 (跳过金字塔 — ROI本身够小)
+            fine_angle_step = self.angle_step
+            fine_scale_step = self.scale_step
+            results = self._search_loop(
+                s_edges, self._template_edges,
+                t_h, t_w, s_h, s_w,
+                angle_range, fine_angle_step,
+                scale_range, fine_scale_step,
+                threshold,
+                search_roi=(rx, ry, rw, rh))
+            if results:
+                results.sort(key=lambda x: x[0], reverse=True)
+                return results
+            # ROI 内未找到 → 回退到全图金字塔搜索
+            angle_range = self.angle_range
+            scale_range = self.scale_range
+            threshold = self.match_threshold
 
         # ── 第1级: 金字塔粗搜索 (1/2分辨率, 粗步长) ──
         if min(s_h, s_w) > 200 and min(t_h, t_w) > 40:
@@ -195,7 +232,7 @@ class EdgeTemplateMatcher:
                 t_h // 2, t_w // 2, s_small.shape[0], s_small.shape[1],
                 angle_range, coarse_angle_step,
                 scale_range, coarse_scale_step,
-                self.match_threshold * 0.8)
+                threshold * 0.8)
 
             if not coarse:
                 return []
@@ -217,9 +254,8 @@ class EdgeTemplateMatcher:
                     t_h, t_w, s_h, s_w,
                     local_angle_range, fine_angle_step,
                     local_scale_range, fine_scale_step,
-                    self.match_threshold,
+                    threshold,
                     center_angle=angle_s, center_scale=scale_s,
-                    # 空间约束: 粗位置附近搜索
                     search_roi=(int((cx_s - t_w/2) * 2 - t_w),
                                 int((cy_s - t_h/2) * 2 - t_h),
                                 t_w * 3, t_h * 3))
@@ -235,7 +271,7 @@ class EdgeTemplateMatcher:
             t_h, t_w, s_h, s_w,
             angle_range, self.angle_step,
             scale_range, self.scale_step,
-            self.match_threshold)
+            threshold)
         results.sort(key=lambda x: x[0], reverse=True)
         return results
 
@@ -354,6 +390,10 @@ class EdgeTemplateMatcher:
 
         best = raw[0]
         score, cx, cy, angle, scale, t_w, t_h = best
+
+        # 跟踪模式: 记录位置供下一帧ROI追踪
+        if self._tracking:
+            self._last_center = (cx, cy)
 
         detections = [{
             'id': 0,
