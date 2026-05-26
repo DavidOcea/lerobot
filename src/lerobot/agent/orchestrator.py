@@ -479,13 +479,15 @@ class TaskAgentOrchestrator:
             except Exception as e:
                 logger.warning(f"Failed to load builtin skills: {e}")
 
+        initial_mode = ExecutionMode.INTERACTIVE if self.config.enable_interactive_mode else ExecutionMode.AUTOMATIC
         self.interactive_selector = InteractiveTaskSelector(
             tasks=tasks,
             exit_handler=self._handle_exit_request,
             monitor_collector=self.monitor_collector,
             robot=self.robot,
+            initial_mode=initial_mode,
         )
-        logger.info("Interactive task selector initialized")
+        logger.info(f"Interactive task selector initialized (mode: {initial_mode.value})")
 
     def _init_emergency_controller(self):
         """Initialize the emergency stop controller."""

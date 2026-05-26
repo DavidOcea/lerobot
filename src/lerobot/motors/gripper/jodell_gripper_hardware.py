@@ -159,13 +159,9 @@ class JodellGripperHardware(HardwareInterface):
     def keepalive(self) -> None:
         """Lightweight Modbus keepalive — prevents idle timeout during prompts.
 
-        Pings each gripper client via get_status().  If the ping times out
-        (serial port is open but the device isn't responding), the bus is
-        forcibly disconnected and reconnected to recover cleanly.
-
-        A cooldown prevents infinite reconnect loops: if a reconnect was
-        already attempted within the last _reconnect_cooldown seconds,
-        subsequent failures are silently ignored.
+        Pings each gripper client via get_status().  If the ping times out,
+        forces a bus reconnect via _force_reconnect() (which has its own
+        cooldown to prevent thrashing).
 
         Call this periodically during long select() idle periods (terminal
         prompts, dashboard prompts).
@@ -176,16 +172,32 @@ class JodellGripperHardware(HardwareInterface):
             try:
                 client.get_status()
             except Exception:
-                now = time.monotonic()
-                if now - self._last_reconnect_attempt < self._reconnect_cooldown:
-                    return
-                self._last_reconnect_attempt = now
-                try:
-                    self.gripper_bus.disconnect()
-                except Exception:
-                    pass
-                self._ensure_bus_connection()
+                self._force_reconnect()
                 break
+
+    def _force_reconnect(self) -> bool:
+        """Force a bus disconnect+reconnect cycle, with cooldown to prevent thrashing.
+
+        Unlike _ensure_bus_connection(), this does NOT trust is_connected() —
+        it forcibly disconnects first, then reconnects.  This is necessary
+        because the C++ Modbus library can report is_connected()==True even
+        after a transient serial timeout has left the bus in a broken state.
+
+        Returns:
+            True if reconnection succeeded, False otherwise.
+        """
+        now = time.monotonic()
+        if now - self._last_reconnect_attempt < self._reconnect_cooldown:
+            return False
+        self._last_reconnect_attempt = now
+
+        print("JodellGripperHardware: Forcing bus reconnect after Modbus failure...")
+        try:
+            self.gripper_bus.disconnect()
+        except Exception:
+            pass
+
+        return self._ensure_bus_connection()
 
     def _ensure_bus_connection(self) -> bool:
         """Check if the Modbus bus is connected; attempt reconnection if dropped.
@@ -258,6 +270,7 @@ class JodellGripperHardware(HardwareInterface):
                 print(f"Warning: Failed to read status from slave_id {self.slave_ids[i]}: {e}")
                 self.hw_states_position[i] = None
                 self.hw_states_force[i] = None
+                self._force_reconnect()
         
         # 3. 更新缓存和时间戳
         self._cached_values = list(zip(self.hw_states_position, self.hw_states_force)) # 使用 .copy() 是个好习惯
@@ -308,9 +321,11 @@ class JodellGripperHardware(HardwareInterface):
                 if not client.move(position_8bit, speed_8bit, force_8bit):
                     print(f"Warning: Failed to send move command to slave_id {self.slave_ids[i]}.")
                     all_success = False
+                    self._force_reconnect()
             except RuntimeError as e:
                 print(f"Warning: Exception while sending move command to slave_id {self.slave_ids[i]}: {e}")
                 all_success = False
+                self._force_reconnect()
         
         # 3. 重置内部命令向量，以防下次循环时重复发送
         # 这精确地模仿了 C++ 版本中将 command 设置为 NaN 的行为
