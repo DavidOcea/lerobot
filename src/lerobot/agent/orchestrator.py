@@ -1024,6 +1024,13 @@ class TaskAgentOrchestrator:
         while True:
             # Get current task from interactive selector
             if self.interactive_selector is not None:
+                # Non-blocking poll for dashboard pause/resume commands.
+                # When paused (INTERACTIVE mode), prompt_next_task() below
+                # will block and let the operator choose.  When resumed
+                # (AUTOMATIC mode), it returns immediately.
+                if self.interactive_selector.check_pause_request():
+                    continue  # re-evaluate with new mode
+
                 # Get the current task index from the selector
                 current_idx = self.interactive_selector.current_task_index
 
