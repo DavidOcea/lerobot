@@ -125,11 +125,13 @@ class InteractiveTaskSelector:
         self._current_task_index += 1
         self._total_executed += 1
 
-    def prompt_next_task(self, force_mode: ExecutionMode = ExecutionMode.INTERACTIVE) -> TaskSelection:
+    def prompt_next_task(self, force_mode: ExecutionMode = ExecutionMode.AUTOMATIC) -> TaskSelection:
         """Prompt user for next task selection.
 
         Args:
-            force_mode: Force interactive prompting even if in automatic mode.
+            force_mode: Override to force a prompt even in automatic mode.
+                Defaults to AUTOMATIC (no prompt in auto mode).
+                Set to INTERACTIVE to force a prompt regardless of mode.
 
         Returns:
             TaskSelection with user's choice.
@@ -143,7 +145,8 @@ class InteractiveTaskSelector:
                 exit_requested=False
             )
 
-        # In automatic mode, just return next task
+        # In automatic mode, skip the prompt and auto-execute the next task.
+        # force_mode=INTERACTIVE can override this to force a prompt.
         if self._execution_mode == ExecutionMode.AUTOMATIC and force_mode != ExecutionMode.INTERACTIVE:
             return TaskSelection(
                 execution_mode=ExecutionMode.AUTOMATIC,
@@ -241,7 +244,7 @@ class InteractiveTaskSelector:
             # Use _get_input helper to avoid hardware device interference.
             # When monitor_collector is present, this also supports
             # dashboard frontend buttons via select() multiplexing.
-            user_input = self._get_input(">>> ", prompt_data=prompt_data).strip()
+            user_input = self._get_input(">>> ", prompt_data=prompt_data, debounce_seconds=2.0).strip()
 
             # Handle empty input (default = option 1)
             if not user_input:
@@ -264,7 +267,8 @@ class InteractiveTaskSelector:
                 exit_requested=True
             )
 
-    def _get_input(self, prompt: str = "", prompt_data: dict | None = None) -> str:
+    def _get_input(self, prompt: str = "", prompt_data: dict | None = None,
+                   debounce_seconds: float = 0.0) -> str:
         """Get user input from terminal AND dashboard frontend via select().
 
         When monitor_collector is available, publishes prompt_data to the
@@ -276,11 +280,15 @@ class InteractiveTaskSelector:
             prompt: Prompt string for the terminal.
             prompt_data: Structured prompt for the dashboard frontend.
                 {"type": str, "message": str, "options": [...], "timeout": float, "timeout_default": str}
+            debounce_seconds: Ignore empty stdin input for this many seconds
+                after the prompt appears. Prevents spurious auto-advance from
+                terminal noise while still allowing fast explicit input.
 
         Returns:
             User input string (from terminal or frontend).
         """
         mc = self._monitor_collector
+        _prompt_start = time.time()
 
         # ── Dashboard-integrated path ──
         if mc is not None and prompt_data is not None:
@@ -315,6 +323,10 @@ class InteractiveTaskSelector:
                         if line:
                             mc.clear_pending_prompt()
                             return line.strip()
+                        # Empty read (EOF-like) — only honor after debounce
+                        # window to avoid spurious auto-advance.
+                        if debounce_seconds > 0 and time.time() - _prompt_start < debounce_seconds:
+                            continue
                         mc.clear_pending_prompt()
                         return ""
                     elif fd == pipe_fd:
