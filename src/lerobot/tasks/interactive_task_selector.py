@@ -317,12 +317,12 @@ class InteractiveTaskSelector:
                             mc.clear_pending_prompt()
                             return cmd
 
-                # Modbus keepalive: prevent gripper disconnect during long prompts
+                # Gripper Modbus keepalive: prevent connection timeout during long prompts.
+                # The JodellGripper's C++ Modbus library times out if no commands are sent
+                # for several seconds.  A get_observation() pings all hardware interfaces.
                 if self._robot and time.time() - last_keepalive > 2.0:
                     try:
-                        keepalive_fn = getattr(self._robot, "keepalive", None)
-                        if keepalive_fn is not None:
-                            keepalive_fn()
+                        self._robot.get_observation()
                     except Exception:
                         pass
                     last_keepalive = time.time()
