@@ -63,6 +63,7 @@ class InteractiveTaskSelector:
         exit_handler: Callable[[], bool] | None = None,
         monitor_collector=None,
         robot=None,
+        initial_mode: ExecutionMode = ExecutionMode.AUTOMATIC,
     ):
         """Initialize the interactive task selector.
 
@@ -71,14 +72,15 @@ class InteractiveTaskSelector:
             exit_handler: Function to call when user requests exit.
             monitor_collector: Optional MonitorCollector for dashboard button integration.
             robot: Optional Robot instance (reserved for future use).
+            initial_mode: Initial execution mode. Use INTERACTIVE to start with prompts.
         """
         self.config_tasks = tasks
         self._exit_handler = exit_handler
         self._monitor_collector = monitor_collector
         self._robot = robot
         self._current_task_index: int = 0
-        self._execution_mode: ExecutionMode = ExecutionMode.AUTOMATIC
-        self._is_paused: bool = False
+        self._execution_mode: ExecutionMode = initial_mode
+        self._is_paused: bool = (initial_mode == ExecutionMode.INTERACTIVE)
 
         # Task queue for dynamic task management
         self.task_queue: deque[TaskConfig] = deque(tasks)
@@ -87,7 +89,8 @@ class InteractiveTaskSelector:
         self._total_executed: int = 0
         self._task_execution_counts: dict[str, int] = {}
 
-        logger.info("InteractiveTaskSelector initialized")
+        mode_str = "交互" if initial_mode == ExecutionMode.INTERACTIVE else "自动"
+        logger.info(f"InteractiveTaskSelector initialized (mode: {mode_str})")
 
     @property
     def current_task_index(self) -> int:
@@ -684,7 +687,8 @@ class InteractiveTaskSelector:
             mode: AUTOMATIC or INTERACTIVE.
         """
         self._execution_mode = mode
-        logger.info(f"Execution mode set to: {mode}")
+        self._is_paused = (mode == ExecutionMode.INTERACTIVE)
+        logger.info(f"Execution mode set to: {mode.value}")
 
     def check_pause_request(self) -> bool:
         """Non-blocking poll for dashboard pause/resume commands.
