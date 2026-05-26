@@ -408,6 +408,11 @@ class SupreRobotFollower(Robot):
         except Exception as e:
             logger.error(f"Error during emergency stop: {e}")
 
+    def keepalive(self) -> None:
+        """Lightweight Modbus keepalive — call during idle select() periods."""
+        if self._hardware_manager:
+            self._hardware_manager.keepalive()
+
     def get_raw_torques(self) -> dict[str, float]:
         """Get raw torque/force data from all joints.
 

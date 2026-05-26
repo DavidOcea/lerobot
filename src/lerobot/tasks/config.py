@@ -300,47 +300,144 @@ class OrchestratorConfig:
     reset_positions: dict[str, float] = field(default_factory=dict)  # Manual reset positions per joint (e.g., {"left_arm_joint_1": 0.0, ...}). If empty, use 0.0 for all joints.
 
 
-def _merge_builtin_skills(config_dict: dict) -> None:
-    """Prepend generic skills from builtin_skills.yaml to the task list.
+def parse_task_dict(
+    task_dict: dict[str, Any],
+    named_positions: dict[str, dict[str, float]] | None = None,
+    default_arm_safe_positions: dict[str, Any] | None = None,
+) -> TaskConfig:
+    """Parse a single task dict into a fully-formed TaskConfig.
 
-    Only active when enable_interactive_mode is True — in non-interactive
-    (automatic-only) mode, builtin skills would execute undesired AGV moves
-    and robot position changes before the main tasks.
+    Extracted from load_config_from_yaml so builtin skills can reuse the same
+    parsing pipeline (AGV config, completion criteria, position_sequence steps,
+    named position resolution).
 
-    The merge is silently skipped if the builtin file is missing or
-    unreadable — the main config's tasks still load normally.
+    Args:
+        task_dict: Raw task entry from YAML.
+        named_positions: Optional mapping of position name → joint dict, used to
+            resolve ``position: home`` shorthand references.
+        default_arm_safe_positions: Optional default arm-safe positions inherited
+            by AGV tasks that don't specify their own.
+
+    Returns:
+        A fully-populated TaskConfig ready for execution.
     """
-    if not config_dict.get("enable_interactive_mode"):
-        return
-    import os as _os
+    named_positions = named_positions or {}
+    default_arm_safe_positions = default_arm_safe_positions or {}
 
-    # Resolve builtin_skills.yaml relative to this source file's project root
-    _this_dir = Path(__file__).resolve().parent  # .../src/lerobot/tasks
-    _project_root = _this_dir.parent.parent.parent  # .../
-    _builtin_path = _project_root / "configs" / "builtin_skills.yaml"
+    task_type = task_dict.get("task_type", "policy")
 
-    if not _builtin_path.exists():
-        return
+    # Parse completion criteria if present
+    criteria_dict = task_dict.get("completion_criteria", {})
+    if criteria_dict:
+        if "conditions" in criteria_dict:
+            conditions = []
+            for cond in criteria_dict["conditions"]:
+                conditions.append(cond)
+            criteria_dict["conditions"] = conditions
 
-    try:
-        with open(_builtin_path, "r") as _f:
-            _builtin = yaml.safe_load(_f)
-    except Exception:
-        return
+        # Resolve position: home shorthand
+        if "position" in criteria_dict and isinstance(criteria_dict["position"], str):
+            pos_name = criteria_dict["position"]
+            if named_positions and pos_name in named_positions:
+                criteria_dict["target_joint_positions"] = named_positions[pos_name].copy()
+            else:
+                raise ValueError(f"Unknown named position: '{pos_name}'")
+            del criteria_dict["position"]
+        elif "position" in criteria_dict and isinstance(criteria_dict["position"], dict):
+            criteria_dict["target_joint_positions"] = criteria_dict["position"]
+            del criteria_dict["position"]
 
-    _builtin_tasks = _builtin.get("tasks", [])
-    if not _builtin_tasks:
-        return
+        completion_criteria = CompletionCriteria(**criteria_dict)
+    else:
+        completion_criteria = CompletionCriteria()
 
-    # Prepend builtin tasks before the main config's tasks
-    _main_tasks = config_dict.get("tasks", [])
-    config_dict["tasks"] = _builtin_tasks + _main_tasks
+    # Resolve string position references in completion_criteria
+    if named_positions:
+        if isinstance(completion_criteria.target_joint_positions, str):
+            pos_name = completion_criteria.target_joint_positions
+            if pos_name in named_positions:
+                completion_criteria.target_joint_positions = named_positions[pos_name].copy()
+            else:
+                raise ValueError(f"Unknown named position: '{pos_name}'")
 
-    import logging as _logging
-    _logging.getLogger(__name__).info(
-        f"Merged {len(_builtin_tasks)} builtin skill(s) from {_builtin_path} "
-        f"({len(_main_tasks)} task(s) from main config)"
-    )
+    # Parse cameras
+    cameras_list = task_dict.get("cameras", [])
+    cameras = [CameraConfig(**cam_dict) for cam_dict in cameras_list]
+
+    # Parse AGV config
+    agv_config_dict = task_dict.get("agv_config", {})
+    agv_config = None
+    if agv_config_dict:
+        if default_arm_safe_positions and "arm_safe_positions" not in agv_config_dict:
+            agv_config_dict["arm_safe_positions"] = default_arm_safe_positions
+
+        # Convert target_position list → tuple
+        if "target_position" in agv_config_dict:
+            pos = agv_config_dict["target_position"]
+            if isinstance(pos, list) and len(pos) >= 2:
+                theta = pos[2] if len(pos) >= 3 else 0.0
+                agv_config_dict["target_position"] = (float(pos[0]), float(pos[1]), float(theta))
+
+        agv_config = AGVTaskConfig(**agv_config_dict)
+
+    # Base kwargs shared by all task types
+    task_kwargs: dict[str, Any] = {
+        "name": task_dict["name"],
+        "task_type": task_type,
+        "completion_criteria": completion_criteria,
+        "cameras": cameras,
+        "agv_config": agv_config,
+    }
+
+    # Task-type-specific fields
+    if task_type == "policy":
+        task_kwargs["policy_path"] = task_dict.get("policy_path")
+        task_kwargs["policy_type"] = task_dict.get("policy_type", "act")
+        task_kwargs["max_duration"] = task_dict.get("max_duration", 30.0)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 3)
+        task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+    elif task_type == "agv":
+        task_kwargs["max_duration"] = task_dict.get("max_duration", 60.0)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
+        task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+    elif task_type == "position":
+        task_kwargs["max_duration"] = task_dict.get("max_duration", 10.0)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
+        task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+    elif task_type == "position_sequence":
+        steps = []
+        for step_dict in task_dict.get("steps", []):
+            pos = step_dict.get("position", {})
+            if isinstance(pos, str):
+                if pos in named_positions:
+                    pos = named_positions[pos].copy()
+                else:
+                    raise ValueError(f"Unknown named position: '{pos}'")
+            steps.append(PositionSequenceStep(
+                name=step_dict.get("name", ""),
+                position=pos,
+                max_duration=step_dict.get("max_duration", 10.0),
+                position_tolerance=step_dict.get("position_tolerance", 3.0),
+            ))
+        task_kwargs["steps"] = steps
+        total_steps_duration = sum(s.max_duration for s in steps)
+        task_kwargs["max_duration"] = task_dict.get("max_duration", total_steps_duration)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
+        task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+    elif task_type == "visual_align":
+        va_config_dict = task_dict.get("visual_align_config", {})
+        if default_arm_safe_positions and "arm_safe_positions" not in va_config_dict:
+            va_config_dict["arm_safe_positions"] = default_arm_safe_positions
+        task_kwargs["visual_align_config"] = VisualAlignConfig(**va_config_dict)
+        task_kwargs["max_duration"] = task_dict.get("max_duration", 30.0)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
+        task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+    return TaskConfig(**task_kwargs)
 
 
 def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
@@ -386,10 +483,6 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     with open(config_path, "r") as f:
         config_dict = yaml.safe_load(f)
 
-    # Auto-merge builtin generic skills (AGV moves, robot home, etc.)
-    # These appear before the main config's tasks in the interactive selector.
-    _merge_builtin_skills(config_dict)
-
     # Parse named_positions first (needed for position reference resolution)
     named_positions = config_dict.get("named_positions", {})
 
@@ -400,134 +493,8 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     # Parse tasks
     tasks = []
     for task_dict in config_dict.get("tasks", []):
-        # Get task type (default to "policy")
-        task_type = task_dict.get("task_type", "policy")
-
-        # Parse completion criteria if present (for policy tasks)
-        criteria_dict = task_dict.get("completion_criteria", {})
-        if criteria_dict:
-            # Convert conditions list to CompletionCriteria objects
-            if "conditions" in criteria_dict:
-                conditions = []
-                for cond in criteria_dict["conditions"]:
-                    conditions.append(cond)
-                criteria_dict["conditions"] = conditions
-
-            # Resolve position reference (YAML shorthand: position: home)
-            if "position" in criteria_dict and isinstance(criteria_dict["position"], str):
-                pos_name = criteria_dict["position"]
-                if named_positions and pos_name in named_positions:
-                    criteria_dict["target_joint_positions"] = named_positions[pos_name].copy()
-                else:
-                    raise ValueError(f"Unknown named position: '{pos_name}'")
-                del criteria_dict["position"]  # Remove shorthand before passing to CompletionCriteria
-            elif "position" in criteria_dict and isinstance(criteria_dict["position"], dict):
-                criteria_dict["target_joint_positions"] = criteria_dict["position"]
-                del criteria_dict["position"]
-
-            completion_criteria = CompletionCriteria(**criteria_dict)
-        else:
-            completion_criteria = CompletionCriteria()
-
-        # Resolve position references in completion_criteria
-        if named_positions:
-            # Resolve target_joint_positions if it's a string reference
-            if isinstance(completion_criteria.target_joint_positions, str):
-                pos_name = completion_criteria.target_joint_positions
-                if pos_name in named_positions:
-                    completion_criteria.target_joint_positions = named_positions[pos_name].copy()
-                else:
-                    raise ValueError(f"Unknown named position: '{pos_name}'")
-
-        # Parse cameras if present
-        cameras_list = task_dict.get("cameras", [])
-        cameras = []
-        for cam_dict in cameras_list:
-            cameras.append(CameraConfig(**cam_dict))
-
-        # Parse AGV config if present (for AGV tasks)
-        agv_config_dict = task_dict.get("agv_config", {})
-        agv_config = None
-        if agv_config_dict:
-            # Inherit default arm_safe_positions if not specified in task
-            if default_arm_safe_positions and "arm_safe_positions" not in agv_config_dict:
-                agv_config_dict["arm_safe_positions"] = default_arm_safe_positions
-
-            # Parse target_position if it's a list
-            if "target_position" in agv_config_dict:
-                pos = agv_config_dict["target_position"]
-                if isinstance(pos, list) and len(pos) >= 2:
-                    # Convert list to tuple
-                    theta = pos[2] if len(pos) >= 3 else 0.0
-                    agv_config_dict["target_position"] = (float(pos[0]), float(pos[1]), float(theta))
-
-            agv_config = AGVTaskConfig(**agv_config_dict)
-
-        # Build TaskConfig with proper fields based on task_type
-        # Remove fields that don't belong to TaskConfig direct attributes
-        task_kwargs = {
-            "name": task_dict["name"],
-            "task_type": task_type,
-            "completion_criteria": completion_criteria,
-            "cameras": cameras,
-            "agv_config": agv_config,
-        }
-
-        # Add policy-specific fields
-        if task_type == "policy":
-            task_kwargs["policy_path"] = task_dict.get("policy_path")
-            task_kwargs["policy_type"] = task_dict.get("policy_type", "act")
-            task_kwargs["max_duration"] = task_dict.get("max_duration", 30.0)
-            task_kwargs["max_retries"] = task_dict.get("max_retries", 3)
-            task_kwargs["enabled"] = task_dict.get("enabled", True)
-
-        # Add AGV-specific fields (some overlap with policy)
-        elif task_type == "agv":
-            task_kwargs["max_duration"] = task_dict.get("max_duration", 60.0)
-            task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
-            task_kwargs["enabled"] = task_dict.get("enabled", True)
-
-        # Add position-specific fields (for direct joint position movement)
-        elif task_type == "position":
-            task_kwargs["max_duration"] = task_dict.get("max_duration", 10.0)
-            task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
-            task_kwargs["enabled"] = task_dict.get("enabled", True)
-
-        # Add position_sequence-specific fields (for multi-step position movement)
-        elif task_type == "position_sequence":
-            steps = []
-            for step_dict in task_dict.get("steps", []):
-                pos = step_dict.get("position", {})
-                # Resolve position reference from named_positions
-                if isinstance(pos, str):
-                    if pos in named_positions:
-                        pos = named_positions[pos].copy()
-                    else:
-                        raise ValueError(f"Unknown named position: '{pos}'")
-                steps.append(PositionSequenceStep(
-                    name=step_dict.get("name", ""),
-                    position=pos,
-                    max_duration=step_dict.get("max_duration", 10.0),
-                    position_tolerance=step_dict.get("position_tolerance", 3.0),
-                ))
-            task_kwargs["steps"] = steps
-            total_steps_duration = sum(s.max_duration for s in steps)
-            task_kwargs["max_duration"] = task_dict.get("max_duration", total_steps_duration)
-            task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
-            task_kwargs["enabled"] = task_dict.get("enabled", True)
-
-        # Add visual_align-specific fields
-        elif task_type == "visual_align":
-            va_config_dict = task_dict.get("visual_align_config", {})
-            # Inherit default arm_safe_positions if not specified
-            if default_arm_safe_positions and "arm_safe_positions" not in va_config_dict:
-                va_config_dict["arm_safe_positions"] = default_arm_safe_positions
-            task_kwargs["visual_align_config"] = VisualAlignConfig(**va_config_dict)
-            task_kwargs["max_duration"] = task_dict.get("max_duration", 30.0)
-            task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
-            task_kwargs["enabled"] = task_dict.get("enabled", True)
-
-        tasks.append(TaskConfig(**task_kwargs))
+        tc = parse_task_dict(task_dict, named_positions, default_arm_safe_positions)
+        tasks.append(tc)
 
     # Parse robot config using draccus to handle polymorphic types
     robot_config_dict = config_dict.get("robot_config", {})

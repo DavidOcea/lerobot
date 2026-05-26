@@ -1,0 +1,125 @@
+# Built-in Generic Skills — auto-merged before the task list
+#
+# These are always available in the interactive task selector, regardless
+# of which main config YAML is loaded.  Position references (e.g. "home")
+# are resolved against named_positions from the main config file.
+#
+# Task types supported:
+#   agv              — relative move / turn (no station dependency)
+#   position         — go to a named joint position
+#   position_sequence — multi-step joint motion
+
+tasks:
+  # ── AGV Linear Moves (relative, no station dependency) ──
+
+  - name: "AGV前进0.5米"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.5
+      translate_vx: 0.3
+      translate_mode: 0
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  - name: "AGV后退0.5米"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.5
+      translate_vx: -0.3
+      translate_mode: 0
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  # ── AGV Turns ──
+
+  - name: "AGV左转90度"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      turn_angle: 90.0
+      turn_vw: 30.0
+      turn_mode: 0
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  - name: "AGV右转90度"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      turn_angle: -90.0
+      turn_vw: 30.0
+      turn_mode: 0
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  # ── Robot Joint Positions ──
+
+  - name: "机器人回home位"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  - name: "机器人回pickup_C位"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home_pickup_C
+      position_tolerance: 3.0
+
+  - name: "机器人复位到零位"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position_tolerance: 5.0
+      target_joint_positions:
+        left_arm_joint_1: 0.0
+        left_arm_joint_2: 0.0
+        left_arm_joint_3: 0.0
+        left_arm_joint_4: 0.0
+        left_arm_joint_5: 0.0
+        left_arm_joint_6: 0.0
+        right_arm_joint_1: 0.0
+        right_arm_joint_2: 0.0
+        right_arm_joint_3: 0.0
+        right_arm_joint_4: 0.0
+        right_arm_joint_5: 0.0
+        right_arm_joint_6: 0.0
+        trunk_joint_1: 0.0
+        trunk_joint_2: 0.0

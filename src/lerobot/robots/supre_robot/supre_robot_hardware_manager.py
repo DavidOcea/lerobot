@@ -146,6 +146,13 @@ class SupreRobotHardwareManager:
         for instance in self._hardware_instances:
             instance.deactivate()
         print("All hardware deactivated.")
+
+    def keepalive(self):
+        """Lightweight Modbus keepalive — call during idle select() periods."""
+        for instance in self._hardware_instances:
+            keepalive_fn = getattr(instance, "keepalive", None)
+            if keepalive_fn is not None:
+                keepalive_fn()
     def read(self) ->  Tuple[List[float],List[float]]:
         """
         从所有硬件读取数据，并聚合成全局状态向量。

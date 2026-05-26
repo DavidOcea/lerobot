@@ -19,6 +19,7 @@ import logging
 import os
 import select
 import sys
+import time
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -291,6 +292,7 @@ class InteractiveTaskSelector:
                 sys.stdout.write(prompt)
                 sys.stdout.flush()
 
+            last_keepalive = time.time()
             while True:
                 try:
                     readable, _, _ = select.select([stdin_fd, pipe_fd], [], [], 0.5)
@@ -304,17 +306,26 @@ class InteractiveTaskSelector:
                         if line:
                             mc.clear_pending_prompt()
                             return line.strip()
-                        # EOF — stdin closed
                         mc.clear_pending_prompt()
                         return ""
                     elif fd == pipe_fd:
-                        os.read(pipe_fd, 256)  # drain pipe byte
+                        os.read(pipe_fd, 256)
                         cmd = mc.get_last_command()
                         if cmd:
                             sys.stdout.write(f"\n[frontend] {cmd}\n")
                             sys.stdout.flush()
                             mc.clear_pending_prompt()
                             return cmd
+
+                # Modbus keepalive: prevent gripper disconnect during long prompts
+                if self._robot and time.time() - last_keepalive > 2.0:
+                    try:
+                        keepalive_fn = getattr(self._robot, "keepalive", None)
+                        if keepalive_fn is not None:
+                            keepalive_fn()
+                    except Exception:
+                        pass
+                    last_keepalive = time.time()
 
         # ── Terminal-only fallback (no MonitorCollector) ──
         try:

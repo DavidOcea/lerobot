@@ -33,7 +33,7 @@ from lerobot.safety import (
 )
 from lerobot.safety.collision_detector import CollisionConfig
 from lerobot.tasks.completion_detector import TaskCompletionDetector
-from lerobot.tasks.config import TaskConfig
+from lerobot.tasks.config import TaskConfig, parse_task_dict
 from lerobot.tasks.local_policy_executor import LocalPolicyExecutor
 from lerobot.tasks.task_scheduler import ExecutionSummary, TaskResult, TaskScheduler, TaskStatus
 
@@ -57,6 +57,7 @@ from lerobot.tasks.agv_executor import AGVTaskExecutor, AGVExecutionResult, crea
 
 # Monitoring imports (NEW)
 from lerobot.monitoring.dashboard import MonitorCollector, HTTPDashboard
+import yaml
 
 from .config import OrchestratorConfig, AGVGlobalConfig
 
@@ -445,8 +446,32 @@ class TaskAgentOrchestrator:
             logger.info("Interactive selector already initialized")
             return
 
+        tasks = list(self.config.tasks)  # copy before possibly prepending
+
+        # Load and prepend builtin generic skills (AGV moves, robot home, etc.)
+        # We do this here — not in load_config_from_yaml — because only the
+        # orchestrator knows whether interactive mode is truly enabled.
+        builtin_path = Path(__file__).resolve().parent.parent.parent / "configs" / "builtin_skills.yaml"
+        if builtin_path.exists():
+            try:
+                builtin = yaml.safe_load(builtin_path.read_text())
+                builtin_tasks = builtin.get("tasks", [])
+                if builtin_tasks:
+                    named_positions = self.config.named_positions
+                    default_arm_safe = self.config.agv_config.default_arm_safe_positions if self.config.agv_config else {}
+                    builtin_configs = []
+                    for td in builtin_tasks:
+                        tc = parse_task_dict(td, named_positions, default_arm_safe)
+                        builtin_configs.append(tc)
+                    tasks = builtin_configs + tasks
+                    logger.info(
+                        f"Merged {len(builtin_configs)} builtin skill(s) from {builtin_path}"
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to load builtin skills: {e}")
+
         self.interactive_selector = InteractiveTaskSelector(
-            tasks=self.config.tasks,
+            tasks=tasks,
             exit_handler=self._handle_exit_request,
             monitor_collector=self.monitor_collector,
             robot=self.robot,
@@ -628,6 +653,7 @@ class TaskAgentOrchestrator:
         sys.stdout.write(terminal_prompt)
         sys.stdout.flush()
 
+        last_keepalive = time.time()
         while True:
             wait = max(0.1, deadline - time.time()) if deadline else 0.5
             if deadline and time.time() >= deadline:
@@ -655,6 +681,16 @@ class TaskAgentOrchestrator:
                         sys.stdout.flush()
                         mc.clear_pending_prompt()
                         return cmd
+
+            # Modbus keepalive: prevent gripper disconnect during long prompts
+            if self.robot and time.time() - last_keepalive > 2.0:
+                try:
+                    keepalive_fn = getattr(self.robot, "keepalive", None)
+                    if keepalive_fn is not None:
+                        keepalive_fn()
+                except Exception:
+                    pass
+                last_keepalive = time.time()
 
         mc.clear_pending_prompt()
         return None
