@@ -527,11 +527,22 @@ def replay(cfg: ReplayConfig):
     robot.connect()
 
     # 连接 Teleoperator（用于 Leader 介入，可选）
+    # Leader connection is best-effort: if the hardware isn't present (no --teleop.type
+    # specified, or specified but not physically connected), we silently continue
+    # without leader correction.  This is the common field-deployment case where the
+    # leader arm stays in the lab.
     teleop = None
     if cfg.dataset.replay_record.enable and cfg.teleop is not None:
-        teleop = make_teleoperator_from_config(cfg.teleop)
-        teleop.connect()
-        logging.info("Teleoperator connected for Leader intervention")
+        try:
+            teleop = make_teleoperator_from_config(cfg.teleop)
+            teleop.connect()
+            logging.info("Teleoperator connected for Leader intervention")
+        except Exception as e:
+            logging.warning(
+                f"Failed to connect teleoperator: {e}. "
+                "Continuing without leader intervention."
+            )
+            teleop = None
 
     # === 判断模式 ===
     if cfg.dataset.replay_record.enable:
