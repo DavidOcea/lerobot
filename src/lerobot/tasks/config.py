@@ -300,6 +300,49 @@ class OrchestratorConfig:
     reset_positions: dict[str, float] = field(default_factory=dict)  # Manual reset positions per joint (e.g., {"left_arm_joint_1": 0.0, ...}). If empty, use 0.0 for all joints.
 
 
+def _merge_builtin_skills(config_dict: dict) -> None:
+    """Prepend generic skills from builtin_skills.yaml to the task list.
+
+    Only active when enable_interactive_mode is True — in non-interactive
+    (automatic-only) mode, builtin skills would execute undesired AGV moves
+    and robot position changes before the main tasks.
+
+    The merge is silently skipped if the builtin file is missing or
+    unreadable — the main config's tasks still load normally.
+    """
+    if not config_dict.get("enable_interactive_mode"):
+        return
+    import os as _os
+
+    # Resolve builtin_skills.yaml relative to this source file's project root
+    _this_dir = Path(__file__).resolve().parent  # .../src/lerobot/tasks
+    _project_root = _this_dir.parent.parent.parent  # .../
+    _builtin_path = _project_root / "configs" / "builtin_skills.yaml"
+
+    if not _builtin_path.exists():
+        return
+
+    try:
+        with open(_builtin_path, "r") as _f:
+            _builtin = yaml.safe_load(_f)
+    except Exception:
+        return
+
+    _builtin_tasks = _builtin.get("tasks", [])
+    if not _builtin_tasks:
+        return
+
+    # Prepend builtin tasks before the main config's tasks
+    _main_tasks = config_dict.get("tasks", [])
+    config_dict["tasks"] = _builtin_tasks + _main_tasks
+
+    import logging as _logging
+    _logging.getLogger(__name__).info(
+        f"Merged {len(_builtin_tasks)} builtin skill(s) from {_builtin_path} "
+        f"({len(_main_tasks)} task(s) from main config)"
+    )
+
+
 def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     """Load orchestrator configuration from a YAML file.
 
@@ -342,6 +385,10 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
 
     with open(config_path, "r") as f:
         config_dict = yaml.safe_load(f)
+
+    # Auto-merge builtin generic skills (AGV moves, robot home, etc.)
+    # These appear before the main config's tasks in the interactive selector.
+    _merge_builtin_skills(config_dict)
 
     # Parse named_positions first (needed for position reference resolution)
     named_positions = config_dict.get("named_positions", {})

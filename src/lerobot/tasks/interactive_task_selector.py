@@ -345,6 +345,28 @@ class InteractiveTaskSelector:
                 execution_mode=ExecutionMode.INTERACTIVE,
                 selected_task=None,  # Next task
             )
+        elif input_lower == "resume":
+            # Dashboard "Resume" button clicked during interactive prompt
+            self._execution_mode = ExecutionMode.AUTOMATIC
+            self._is_paused = False
+            if self._monitor_collector:
+                self._monitor_collector.set_execution_mode("automatic")
+            logger.info("Resume requested — switching to AUTOMATIC mode")
+            return TaskSelection(
+                execution_mode=ExecutionMode.AUTOMATIC,
+                selected_task=None,
+            )
+        elif input_lower == "pause":
+            # Dashboard "Pause" button clicked during interactive prompt
+            self._execution_mode = ExecutionMode.INTERACTIVE
+            self._is_paused = True
+            if self._monitor_collector:
+                self._monitor_collector.set_execution_mode("interactive")
+            logger.info("Pause requested — staying in INTERACTIVE mode")
+            return TaskSelection(
+                execution_mode=ExecutionMode.INTERACTIVE,
+                selected_task=None,
+            )
         elif input_lower == "2":
             # Create custom task or select existing task
             # Show sub-menu for task selection
@@ -631,6 +653,46 @@ class InteractiveTaskSelector:
         """
         self._execution_mode = mode
         logger.info(f"Execution mode set to: {mode}")
+
+    def check_pause_request(self) -> bool:
+        """Non-blocking poll for dashboard pause/resume commands.
+
+        Called from the orchestrator's main loop at task boundaries during
+        AUTOMATIC mode.  When the operator clicks Pause/Resume on the
+        dashboard frontend, this picks up the command without blocking.
+
+        Returns:
+            True if the execution mode changed (caller should re-evaluate).
+        """
+        mc = self._monitor_collector
+        if mc is None:
+            return False
+        if not mc.has_pending_command():
+            return False
+
+        # Drain the pipe byte and read the command
+        try:
+            os.read(mc.command_pipe_r, 256)
+        except (OSError, BlockingIOError):
+            pass
+        cmd = mc.get_last_command()
+
+        if cmd == "pause":
+            if self._execution_mode == ExecutionMode.AUTOMATIC:
+                self._execution_mode = ExecutionMode.INTERACTIVE
+                self._is_paused = True
+                mc.set_execution_mode("interactive")
+                logger.info("Pause requested via dashboard — switching to INTERACTIVE mode")
+            return True
+        elif cmd == "resume":
+            if self._is_paused or self._execution_mode == ExecutionMode.INTERACTIVE:
+                self._execution_mode = ExecutionMode.AUTOMATIC
+                self._is_paused = False
+                mc.set_execution_mode("automatic")
+                logger.info("Resume requested via dashboard — switching to AUTOMATIC mode")
+            return True
+
+        return False
 
     def get_queue_status(self) -> dict[str, Any]:
         """Get current queue and execution status.

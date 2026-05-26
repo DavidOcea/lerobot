@@ -138,6 +138,9 @@ class MonitorCollector:
         self._prompt_id: str = ""
         self._pending_command: str | None = None
 
+        # Execution mode state (set by InteractiveTaskSelector)
+        self._execution_mode: str = "automatic"  # "automatic" | "interactive" (paused)
+
     # ── Public API (called from main loop, non-blocking) ──────────
 
     def update_robot_state(
@@ -244,6 +247,27 @@ class MonitorCollector:
             cmd = self._pending_command
             self._pending_command = None
             return cmd
+
+    def set_execution_mode(self, mode: str):
+        """Update execution mode (called by InteractiveTaskSelector on change).
+
+        Args:
+            mode: "automatic" or "interactive" (paused).
+        """
+        with self._lock:
+            self._execution_mode = mode
+
+    def has_pending_command(self) -> bool:
+        """Non-blocking check: is a dashboard command waiting on the pipe?
+
+        Uses select() with timeout=0 so it never blocks the control loop.
+        Returns True if there's data to read (a frontend button was clicked).
+        """
+        try:
+            readable, _, _ = select.select([self._cmd_pipe_r], [], [], 0)
+            return bool(readable)
+        except Exception:
+            return False
 
     def _write_command(self, command: str):
         """Write a command to the pipe (unblocks select() in main thread)."""
@@ -507,6 +531,7 @@ class MonitorCollector:
             "host": _read_host_battery(),
             "pending_prompt": self._pending_prompt,
             "prompt_id": self._prompt_id,
+            "execution_mode": self._execution_mode,
         }
 
 
@@ -769,13 +794,52 @@ h1{color:#00ff88;margin-bottom:16px}
 .event-table tr.ev-warn{background:#332200}
 .event-table tr.ev-error{background:#330000}
 pre{font-size:11px;color:#666;max-height:200px;overflow-y:auto;margin-top:16px}
+.ctrl-bar{display:flex;gap:12px;margin-bottom:16px;align-items:center}
+.ctrl-btn{padding:8px 24px;border:none;border-radius:6px;font-size:14px;font-weight:bold;cursor:pointer;font-family:monospace;transition:background .2s}
+.ctrl-btn.pause{background:#552200;color:#ffaa00}
+.ctrl-btn.pause:hover{background:#774400}
+.ctrl-btn.resume{background:#004422;color:#00ff88}
+.ctrl-btn.resume:hover{background:#006633}
+.ctrl-btn:disabled{opacity:.4;cursor:not-allowed}
+.ctrl-label{font-size:12px;color:#888;margin-left:8px}
 </style>
 </head>
 <body>
 <h1>Robot Monitoring</h1>
 <div id="status"></div>
+<div class="ctrl-bar" id="ctrlBar">
+  <button class="ctrl-btn pause" id="btnPause" onclick="sendCmd('pause')">⏸ Pause</button>
+  <button class="ctrl-btn resume" id="btnResume" onclick="sendCmd('resume')">▶ Resume</button>
+  <span class="ctrl-label" id="modeLabel">Mode: --</span>
+</div>
 <pre id="raw"></pre>
 <script>
+let gPromptId='';
+async function sendCmd(cmd){
+  try{
+    const r=await fetch('/api/command',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({command:cmd,prompt_id:gPromptId})
+    });
+    const d=await r.json();
+    if(d.status==='ok'){console.log('cmd sent:',cmd);}
+  }catch(e){console.error(e);}
+}
+function updateMode(d){
+  gPromptId=d.prompt_id||'';
+  const mode=d.execution_mode||'automatic';
+  const btnP=document.getElementById('btnPause');
+  const btnR=document.getElementById('btnResume');
+  const lbl=document.getElementById('modeLabel');
+  if(mode==='interactive'){
+    btnP.disabled=true;btnR.disabled=false;
+    lbl.textContent='Mode: PAUSED (interactive)';
+  }else{
+    btnP.disabled=false;btnR.disabled=true;
+    lbl.textContent='Mode: AUTO';
+  }
+}
 async function refresh(){
   try{
     const r=await fetch('/api/status');
@@ -783,6 +847,7 @@ async function refresh(){
     document.getElementById('raw').textContent=JSON.stringify(d,null,2);
     document.getElementById('status').textContent='';
     document.getElementById('status').appendChild(buildUI(d));
+    updateMode(d);
   }catch(e){}
   setTimeout(refresh,1000);
 }
