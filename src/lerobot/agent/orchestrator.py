@@ -694,7 +694,7 @@ class TaskAgentOrchestrator:
                 elif fd == pipe_fd:
                     os.read(pipe_fd, 256)
                     cmd = mc.get_last_command()
-                    if cmd:
+                    if cmd is not None:
                         sys.stdout.write(f"\n[frontend] {cmd}\n")
                         sys.stdout.flush()
                         mc.clear_pending_prompt()
