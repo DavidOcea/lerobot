@@ -1834,9 +1834,10 @@ class TaskAgentOrchestrator:
                     position_tolerance=step.position_tolerance,
                 ),
             )
-            # Propagate speed_multiplier — _execute_position_task handles actual scaling
-            if multiplier != 1.0:
-                step_task.speed_multiplier = multiplier
+            # Propagate speed_multiplier from parent task to step task
+            step_multiplier = getattr(task, 'speed_multiplier', 1.0)
+            if step_multiplier != 1.0:
+                step_task.speed_multiplier = step_multiplier
 
             result = self._execute_position_task(step_task)
             total_duration += result.duration or 0.0
