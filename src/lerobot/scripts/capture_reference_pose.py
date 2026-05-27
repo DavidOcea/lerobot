@@ -32,7 +32,7 @@ faulthandler.enable()
 
 import cv2
 import numpy as np
-from draccus import CLI
+from draccus import parse as draccus_parse
 
 from lerobot.agent.visual_align import (
     detect_marker,
@@ -44,7 +44,6 @@ from lerobot.robots.config import RobotConfig
 from lerobot.robots import make_robot_from_config
 
 
-@CLI
 class CaptureReferenceConfig:
     robot: RobotConfig
     marker_id: int = 0
@@ -58,7 +57,8 @@ class CaptureReferenceConfig:
     camera_offset_y: float = 0.0
 
 
-def main(cfg: CaptureReferenceConfig):
+def main():
+    cfg = draccus_parse(CaptureReferenceConfig)
     visual_config = VisualAlignConfig(
         marker_id=cfg.marker_id,
         marker_size=cfg.marker_size,
