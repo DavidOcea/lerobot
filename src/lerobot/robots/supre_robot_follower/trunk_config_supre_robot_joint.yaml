@@ -52,7 +52,7 @@ hardware_interfaces:
   #
   # 左臂夹爪控制器
   - name: left_gripper
-    enabled: false
+    # enabled: false
     type: JodellGripperHardware
     interpolation:
       interpolation_n: 1
