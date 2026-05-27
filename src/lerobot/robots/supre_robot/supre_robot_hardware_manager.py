@@ -1,6 +1,6 @@
-import yaml
-
+import logging
 import os
+import yaml
 from typing import List, Dict, Any, Tuple
 
 # 导入你提供的两个硬件类
@@ -8,6 +8,8 @@ from typing import List, Dict, Any, Tuple
 from lerobot.motors.eyou import EyouMotorHardware,AsyncInterpolator
 from lerobot.motors.gripper import JodellGripperHardware
 from lerobot.utils.monitor_utils import monitor_performance
+
+logger = logging.getLogger(__name__)
 
 class SupreRobotHardwareManager:
     """
@@ -159,7 +161,7 @@ class SupreRobotHardwareManager:
         """
         # 1. 从每个硬件读取数据
         hw_results = {inst: inst.read() for inst in self._hardware_instances}
-        print(f"Results from hardware:{hw_results}")
+        logger.debug(f"Results from hardware:{hw_results}")
         # 2. 使用映射表填充全局状态向量
         for global_index in range(self.num_joints):
             mapping = self._joint_map.get(global_index)

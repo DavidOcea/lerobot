@@ -1,5 +1,9 @@
+import logging
 import time
 from functools import wraps
+
+logger = logging.getLogger(__name__)
+
 
 def monitor_performance(func):
     """
@@ -40,7 +44,7 @@ def monitor_performance(func):
         avg_duration = wrapper.total_duration / wrapper.call_count
 
         # --- 6. 打印报告 ---
-        print(f"--- Function '{func.__qualname__} ' Monitor --- Call #{wrapper.call_count} Duration: {duration:.6f} s Interval: {interval:.6f} s Frequency: {frequency:.2f} Hz Average Duration: {avg_duration:.6f} s")
+        logger.debug(f"--- Function '{func.__qualname__} ' Monitor --- Call #{wrapper.call_count} Duration: {duration:.6f} s Interval: {interval:.6f} s Frequency: {frequency:.2f} Hz Average Duration: {avg_duration:.6f} s")
 
         return result
     
