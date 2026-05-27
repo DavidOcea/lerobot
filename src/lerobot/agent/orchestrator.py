@@ -1271,6 +1271,21 @@ class TaskAgentOrchestrator:
         Returns:
             TaskResult with execution outcome.
         """
+        # Override settings if specified
+        original_max_retries = task.max_retries
+        original_max_duration = task.max_duration
+
+        if self.config.override_max_retries is not None:
+            task.max_retries = self.config.override_max_retries
+        if self.config.override_max_duration is not None:
+            task.max_duration = self.config.override_max_duration
+
+        # Apply global speed_multiplier (clamped to safe range)
+        multiplier = max(0.25, min(4.0, self.config.speed_multiplier))
+        if multiplier != 1.0:
+            task.max_duration = max(1.0, task.max_duration / multiplier)
+            task.speed_multiplier = multiplier
+
         # Handle AGV tasks separately
         if task.task_type == "agv":
             self._add_monitor_event("info", task.name, "AGV navigation started")
@@ -1279,6 +1294,11 @@ class TaskAgentOrchestrator:
                 "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
                 f"{result.status.value} ({result.duration:.1f}s)"
                 + (f" — {result.error_message}" if result.error_message else ""))
+            # Restore original settings
+            task.max_retries = original_max_retries
+            task.max_duration = original_max_duration
+            if hasattr(task, 'speed_multiplier'):
+                delattr(task, 'speed_multiplier')
             return result
 
         # Handle position tasks (direct joint position movement)
@@ -1289,6 +1309,11 @@ class TaskAgentOrchestrator:
                 "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
                 f"{result.status.value} ({result.duration:.1f}s)"
                 + (f" — {result.error_message}" if result.error_message else ""))
+            # Restore original settings
+            task.max_retries = original_max_retries
+            task.max_duration = original_max_duration
+            if hasattr(task, 'speed_multiplier'):
+                delattr(task, 'speed_multiplier')
             return result
 
         # Handle position_sequence tasks (multi-step position movement)
@@ -1299,6 +1324,11 @@ class TaskAgentOrchestrator:
                 "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
                 f"{result.status.value} ({result.duration:.1f}s)"
                 + (f" — {result.error_message}" if result.error_message else ""))
+            # Restore original settings
+            task.max_retries = original_max_retries
+            task.max_duration = original_max_duration
+            if hasattr(task, 'speed_multiplier'):
+                delattr(task, 'speed_multiplier')
             return result
 
         # Handle visual_align tasks (AprilTag-guided AGV fine alignment)
@@ -1309,6 +1339,11 @@ class TaskAgentOrchestrator:
                 "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
                 f"{result.status.value} ({result.duration:.1f}s)"
                 + (f" — {result.error_message}" if result.error_message else ""))
+            # Restore original settings
+            task.max_retries = original_max_retries
+            task.max_duration = original_max_duration
+            if hasattr(task, 'speed_multiplier'):
+                delattr(task, 'speed_multiplier')
             return result
 
         # Handle policy tasks (existing logic)
@@ -1328,21 +1363,6 @@ class TaskAgentOrchestrator:
             print(f"[_execute_single_task] Also set on underlying scheduler")
 
         print(f"[_execute_single_task] Detector assigned: {self.task_scheduler.completion_detector}")
-
-        # Override settings if specified
-        original_max_retries = task.max_retries
-        original_max_duration = task.max_duration
-
-        if self.config.override_max_retries is not None:
-            task.max_retries = self.config.override_max_retries
-        if self.config.override_max_duration is not None:
-            task.max_duration = self.config.override_max_duration
-
-        # Apply global speed_multiplier (clamped to safe range)
-        multiplier = max(0.25, min(4.0, self.config.speed_multiplier))
-        if multiplier != 1.0:
-            task.max_duration = max(1.0, task.max_duration / multiplier)
-            task.speed_multiplier = multiplier
 
         # Execute task
         # Check if using adaptive scheduler
@@ -1461,9 +1481,12 @@ class TaskAgentOrchestrator:
             except Exception:
                 pass
 
-        # Apply speed_multiplier to AGV max_duration
+        # Apply speed_multiplier to AGV velocities and max_duration
         multiplier = getattr(task, 'speed_multiplier', 1.0)
         agv_max_duration = max(1.0, agv_config.max_duration / multiplier) if multiplier != 1.0 else agv_config.max_duration
+        agv_vx = agv_config.translate_vx * multiplier if agv_config.translate_vx is not None and multiplier != 1.0 else agv_config.translate_vx
+        agv_vy = agv_config.translate_vy * multiplier if agv_config.translate_vy is not None and multiplier != 1.0 else agv_config.translate_vy
+        agv_vw = agv_config.turn_vw * multiplier if agv_config.turn_vw is not None and multiplier != 1.0 else agv_config.turn_vw
 
         # Execute AGV navigation
         agv_result = self.agv_executor.execute(
@@ -1471,11 +1494,11 @@ class TaskAgentOrchestrator:
             target_station=agv_config.target_station,
             target_position=agv_config.target_position,
             translate_dist=agv_config.translate_dist,
-            translate_vx=agv_config.translate_vx,
-            translate_vy=agv_config.translate_vy,
+            translate_vx=agv_vx,
+            translate_vy=agv_vy,
             translate_mode=agv_config.translate_mode,
             turn_angle=agv_config.turn_angle,
-            turn_vw=agv_config.turn_vw,
+            turn_vw=agv_vw,
             turn_mode=agv_config.turn_mode,
             max_duration=agv_max_duration,
             wait_for_arrival=agv_config.wait_for_arrival,
@@ -1798,10 +1821,15 @@ class TaskAgentOrchestrator:
 
             # Create a temporary TaskConfig for this step, reusing _execute_position_task
             from lerobot.tasks.config import CompletionCriteria
+            step_max_duration = step.max_duration
+            multiplier = getattr(task, 'speed_multiplier', 1.0)
+            if multiplier != 1.0:
+                step_max_duration = max(1.0, step_max_duration / multiplier)
+
             step_task = TaskConfig(
                 name=f"{task.name}/{step_name}",
                 task_type="position",
-                max_duration=step.max_duration,
+                max_duration=step_max_duration,
                 max_retries=1,
                 completion_criteria=CompletionCriteria(
                     type="position",
@@ -1809,6 +1837,8 @@ class TaskAgentOrchestrator:
                     position_tolerance=step.position_tolerance,
                 ),
             )
+            if multiplier != 1.0:
+                step_task.speed_multiplier = multiplier
 
             result = self._execute_position_task(step_task)
             total_duration += result.duration or 0.0
