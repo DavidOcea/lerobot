@@ -1283,7 +1283,6 @@ class TaskAgentOrchestrator:
         # Apply global speed_multiplier (clamped to safe range)
         multiplier = max(0.25, min(4.0, self.config.speed_multiplier))
         if multiplier != 1.0:
-            task.max_duration = max(1.0, task.max_duration / multiplier)
             task.speed_multiplier = multiplier
 
         # Handle AGV tasks separately
@@ -1347,6 +1346,10 @@ class TaskAgentOrchestrator:
             return result
 
         # Handle policy tasks (existing logic)
+        # Apply speed_multiplier to policy task timeout
+        if multiplier != 1.0:
+            task.max_duration = max(1.0, task.max_duration / multiplier)
+
         # Switch cameras for this task
         self._switch_cameras_for_task(task)
         self._add_monitor_event("info", task.name, "Policy task started")
@@ -1688,12 +1691,11 @@ class TaskAgentOrchestrator:
                 distance = abs(target - current)
                 max_distance = max(max_distance, distance)
 
-        # Estimate time needed (rough: 30 deg/s max speed)
-        estimated_duration = max_distance / 30.0 + 1.0  # seconds
-        actual_duration = min(max_duration, max(estimated_duration, 3.0))
-
-        if multiplier != 1.0:
-            actual_duration = max(1.0, actual_duration / multiplier)
+        # Estimate time needed — speed constant and floor scale with multiplier
+        speed_deg_per_s = 30.0 * max(multiplier, 1.0)
+        duration_floor = max(1.0, 3.0 / max(multiplier, 1.0))
+        estimated_duration = max_distance / speed_deg_per_s + (1.0 / max(multiplier, 1.0))
+        actual_duration = min(max_duration, max(estimated_duration, duration_floor))
 
         logger.info(f"Moving to target positions, estimated duration: {actual_duration:.1f}s")
         logger.debug(f"Target positions: {target_positions}")
@@ -1821,15 +1823,10 @@ class TaskAgentOrchestrator:
 
             # Create a temporary TaskConfig for this step, reusing _execute_position_task
             from lerobot.tasks.config import CompletionCriteria
-            step_max_duration = step.max_duration
-            multiplier = getattr(task, 'speed_multiplier', 1.0)
-            if multiplier != 1.0:
-                step_max_duration = max(1.0, step_max_duration / multiplier)
-
             step_task = TaskConfig(
                 name=f"{task.name}/{step_name}",
                 task_type="position",
-                max_duration=step_max_duration,
+                max_duration=step.max_duration,
                 max_retries=1,
                 completion_criteria=CompletionCriteria(
                     type="position",
@@ -1837,6 +1834,7 @@ class TaskAgentOrchestrator:
                     position_tolerance=step.position_tolerance,
                 ),
             )
+            # Propagate speed_multiplier — _execute_position_task handles actual scaling
             if multiplier != 1.0:
                 step_task.speed_multiplier = multiplier
 
