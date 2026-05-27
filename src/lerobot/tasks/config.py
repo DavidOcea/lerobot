@@ -294,6 +294,7 @@ class OrchestratorConfig:
     environment_dt: float = 1.0 / 30.0  # Control loop timestep
     observation_timeout: float = 5.0  # Seconds to wait for observations
     action_timeout: float = 5.0  # Seconds to wait for actions
+    speed_multiplier: float = 1.0  # Global speed scaling (1.0=normal, 2.0=2x). Clamped to [0.25, 4.0].
 
     # Reset settings
     reset_duration: float = 3.0  # Time in seconds for smooth reset to zero position

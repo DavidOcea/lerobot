@@ -123,6 +123,14 @@ Examples:
         help="Save observations to disk for debugging",
     )
 
+    # Speed control
+    parser.add_argument(
+        "--speed-multiplier",
+        type=float,
+        default=None,
+        help="Global speed scaling factor (0.25-4.0, default: 1.0). 2.0 = 2x faster.",
+    )
+
     # Interactive mode
     parser.add_argument(
         "--interactive",
@@ -216,6 +224,11 @@ def main():
 
         if args.save_observations:
             config.save_observations = True
+
+        # Apply speed multiplier override
+        if args.speed_multiplier is not None:
+            config.speed_multiplier = args.speed_multiplier
+            logger.info(f"Override speed_multiplier: {args.speed_multiplier}")
 
         # Apply interactive mode setting
         config.enable_interactive_mode = args.interactive
