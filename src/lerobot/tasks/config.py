@@ -197,6 +197,10 @@ class VisualAlignConfig:
     turn_speed: float = 15.0  # 转动微调速度 (度/s)
     approach_distance: float = 0.50  # 目标接近距离 (米), 停在标记前方此距离处
 
+    # ===== 参考照片对齐 (可选) =====
+    # 设置后跳过 approach_distance, 用参考帧的位姿作为对齐目标
+    reference_pose_path: str | None = None  # 参考位姿 JSON 文件路径
+
     # ===== 相机-AGV 坐标变换 =====
     # 相机相对于 AGV 中心的偏移 (先用 (0,0,0) 近似, 闭环收敛弥补误差)
     camera_offset_x: float = 0.0  # 相机在 AGV 前后方向的偏移 (米)

@@ -125,6 +125,39 @@ def detect_marker(
     return None
 
 
+def _marker_to_agv_xy(
+    tvec: np.ndarray,
+    config: VisualAlignConfig,
+) -> tuple[float, float]:
+    """Transform marker position from camera frame to AGV ground-plane frame.
+
+    Steps:
+      1. Pitch correction — project tilted optical axis onto ground plane.
+      2. Yaw + offset — rotate and translate from camera to AGV center.
+
+    Returns (dx_agv, dy_agv):
+      dx_agv: forward distance from AGV center to marker ground projection (m)
+      dy_agv: leftward distance from AGV center to marker ground projection (m)
+    """
+    x_cam = tvec[0]  # rightward
+    y_cam = tvec[1]  # downward
+    z_cam = tvec[2]  # along optical axis
+
+    # Pitch correction: project onto horizontal plane
+    pitch_rad = config.camera_offset_pitch * DEG_TO_RAD
+    z_horiz = math.cos(pitch_rad) * z_cam - math.sin(pitch_rad) * y_cam
+    x_horiz = x_cam  # pitch around x-axis, lateral unchanged
+
+    # Rotate + translate to AGV frame
+    offset_yaw_rad = config.camera_offset_yaw * DEG_TO_RAD
+    cos_yaw = math.cos(offset_yaw_rad)
+    sin_yaw = math.sin(offset_yaw_rad)
+    dx_agv = z_horiz * cos_yaw - x_horiz * sin_yaw + config.camera_offset_x
+    dy_agv = -z_horiz * sin_yaw - x_horiz * cos_yaw + config.camera_offset_y
+
+    return dx_agv, dy_agv
+
+
 def compute_agv_movement(
     tvec: np.ndarray,
     rvec: np.ndarray,
@@ -139,50 +172,13 @@ def compute_agv_movement(
       2. After turning, compute the remaining forward distance → AGV
          drives straight toward the marker.
 
-    Camera coordinate convention (OpenCV):
-      x: right, y: down, z: forward (along optical axis)
-
-    If the camera is pitched downward (common for head-mounted cameras),
-    the optical axis points diagonally downward.  We must undo the pitch
-    rotation to project the marker position onto the ground plane before
-    computing AGV movement.  Without this correction, z_cam (along the
-    tilted optical axis) would be misinterpreted as ground-plane forward
-    distance, causing the AGV to overshoot.
-
-    When camera_offset_pitch = 0 (horizontal camera), the pitch
-    correction degenerates to identity and the behaviour matches the
-    original code — backward compatible.
-
     Returns (dtheta_deg, forward_dist_m):
       dtheta_deg: angle AGV must turn (positive = left/CCW)
       forward_dist_m: distance AGV must move forward after turning
     """
-    # Marker position in camera frame
-    x_cam = tvec[0]  # rightward offset
-    y_cam = tvec[1]  # downward offset
-    z_cam = tvec[2]  # along optical axis
+    dx_agv, dy_agv = _marker_to_agv_xy(tvec, config)
 
-    # Step 1: Undo camera pitch rotation → project to horizontal plane.
-    # Camera pitched downward by pitch_deg: optical axis tilts from
-    # horizontal into the downward direction.  Reverse rotation R_x(-pitch):
-    #   z_horiz = cos(pitch)*z_cam - sin(pitch)*y_cam  (ground forward)
-    #   x_horiz = x_cam                                 (lateral, unchanged)
-    #   y_horiz = sin(pitch)*z_cam + cos(pitch)*y_cam   (vertical, unused)
-    pitch_rad = config.camera_offset_pitch * DEG_TO_RAD
-    z_horiz = math.cos(pitch_rad) * z_cam - math.sin(pitch_rad) * y_cam
-    x_horiz = x_cam  # pitch rotation around x-axis, lateral unchanged
-
-    # Step 2: Rotate horizontal coordinates by yaw offset → AGV frame.
-    offset_yaw_rad = config.camera_offset_yaw * DEG_TO_RAD
-    offset_x = config.camera_offset_x
-    offset_y = config.camera_offset_y
-
-    cos_yaw = math.cos(offset_yaw_rad)
-    sin_yaw = math.sin(offset_yaw_rad)
-    dx_agv = z_horiz * cos_yaw - x_horiz * sin_yaw + offset_x  # AGV forward
-    dy_agv = -z_horiz * sin_yaw - x_horiz * cos_yaw + offset_y  # AGV left
-
-    # Angle to face the marker: atan2(left_offset, forward_offset)
+    # Angle to face the marker
     dtheta_rad = math.atan2(dy_agv, dx_agv)
     dtheta_deg = dtheta_rad * RAD_TO_DEG
 
@@ -190,9 +186,104 @@ def compute_agv_movement(
     # Ground-plane distance minus the desired approach distance.
     total_dist = math.sqrt(dx_agv**2 + dy_agv**2)
     forward_dist = total_dist - config.approach_distance
-    # Positive = drive forward, negative = drive backward (approach_distance overshot)
 
     return dtheta_deg, forward_dist
+
+
+def save_reference_pose(path: str, tvec: np.ndarray, rvec: np.ndarray):
+    """Save a reference camera pose (relative to AprilTag) to JSON."""
+    import json
+    data = {
+        "tvec": tvec.tolist(),
+        "rvec": rvec.tolist(),
+    }
+    with open(path, 'w') as f:
+        json.dump(data, f, indent=2)
+
+
+def load_reference_pose(path: str) -> tuple[np.ndarray, np.ndarray]:
+    """Load reference camera pose from JSON. Returns (tvec, rvec)."""
+    import json
+    with open(path, 'r') as f:
+        data = json.load(f)
+    return np.array(data["tvec"]), np.array(data["rvec"])
+
+
+def compute_alignment_to_reference(
+    tvec_cur: np.ndarray,
+    rvec_cur: np.ndarray,
+    ref_tvec: np.ndarray,
+    ref_rvec: np.ndarray,
+    config: VisualAlignConfig,
+) -> tuple[float, float]:
+    """Compute AGV movement to align current view to reference view.
+
+    Both current and reference marker poses are in camera frame (solvePnP output).
+    Uses the same camera→AGV transform as compute_agv_movement, but the target
+    is the reference pose instead of a fixed approach_distance.
+
+    Strategy for differential-drive AGV (no lateral movement):
+      1. Turn to face the reference camera position relative to the marker.
+      2. Drive forward/backward to match the reference distance.
+
+    Returns (dtheta_deg, forward_dist_m).
+    """
+    # Current marker position in AGV frame
+    cur_x, cur_y = _marker_to_agv_xy(tvec_cur, config)
+    # Reference marker position in AGV frame
+    ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
+
+    # Delta: movement needed to bring marker to reference position in AGV frame
+    dx = ref_x - cur_x  # AGV forward component
+    dy = ref_y - cur_y  # AGV leftward component
+
+    # Turn to face the delta direction, then drive
+    dtheta_rad = math.atan2(dy, dx)
+    dtheta_deg = dtheta_rad * RAD_TO_DEG
+    forward_dist = math.sqrt(dx**2 + dy**2)
+
+    # Heading correction from rotation difference
+    R_cur, _ = cv2.Rodrigues(rvec_cur)
+    R_ref, _ = cv2.Rodrigues(ref_rvec)
+    yaw_cur = math.atan2(R_cur[1, 0], R_cur[0, 0])
+    yaw_ref = math.atan2(R_ref[1, 0], R_ref[0, 0])
+    d_yaw = ((yaw_ref - yaw_cur) * RAD_TO_DEG + 180) % 360 - 180
+
+    return dtheta_deg + d_yaw, forward_dist
+
+
+def capture_reference_pose(
+    robot,
+    config: VisualAlignConfig,
+    logger: logging.Logger,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Capture current camera pose relative to AprilTag as reference.
+
+    Takes one photo, detects the target marker, and returns (tvec, rvec).
+    Returns None if marker not found.
+
+    The caller should save the result with save_reference_pose().
+    """
+    detector = _get_detector(config.marker_family)
+    obs = robot.get_observation()
+    img = obs.get("images", {}).get("head_cam")
+    if img is None:
+        logger.error("capture_reference_pose: no head_cam image")
+        return None
+    bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
+
+    marker = detect_marker(bgr, config, detector)
+    if marker is None:
+        logger.error(
+            f"capture_reference_pose: marker ID={config.marker_id} not found"
+        )
+        return None
+
+    logger.info(
+        f"Reference pose captured: marker ID={marker['id']}, "
+        f"tvec=[{marker['tvec'][0]:.3f}, {marker['tvec'][1]:.3f}, {marker['tvec'][2]:.3f}]"
+    )
+    return marker["tvec"].copy(), marker["rvec"].copy()
 
 
 def search_marker(
@@ -270,14 +361,18 @@ def execute_visual_align(
 ) -> tuple[bool, str]:
     """Execute closed-loop visual alignment using AprilTag.
 
+    Two modes:
+      - approach_distance mode (default): align to a fixed distance in front of tag.
+      - reference_pose mode: align to a saved reference camera pose.
+
     Flow:
       1. Search for marker (rotate AGV if not immediately visible)
-      2. For each iteration:
+      2. [Reference mode] Load reference pose
+      3. For each iteration:
          a. Detect marker → compute (turn_angle, forward_distance)
          b. Check convergence (within tolerance)
-         c. Turn AGV to face marker
-         d. Drive forward/backward toward marker
-      3. Return (success, message)
+         c. Turn AGV, then drive forward/backward
+      4. Return (success, message)
 
     Args:
         robot: SupreRobotFollower instance (provides get_observation)
@@ -297,6 +392,20 @@ def execute_visual_align(
 
     logger.info(f"Marker found: ID={marker['id']}, proceeding to alignment loop")
 
+    # Load reference pose if using reference alignment mode
+    ref_tvec = None
+    ref_rvec = None
+    use_reference = config.reference_pose_path is not None
+    if use_reference:
+        try:
+            ref_tvec, ref_rvec = load_reference_pose(config.reference_pose_path)
+            logger.info(
+                f"Reference pose loaded from {config.reference_pose_path}: "
+                f"tvec={ref_tvec}, rvec={ref_rvec}"
+            )
+        except Exception as e:
+            return False, f"Failed to load reference pose: {e}"
+
     # Step 1: Closed-loop alignment
     for iteration in range(config.max_iterations):
         # Capture fresh image
@@ -312,12 +421,19 @@ def execute_visual_align(
             return False, f"Iteration {iteration}: marker lost (no detection)"
 
         # Compute required AGV movement
-        dtheta_deg, forward_dist = compute_agv_movement(
-            marker["tvec"], marker["rvec"], config,
-        )
+        if use_reference:
+            dtheta_deg, forward_dist = compute_alignment_to_reference(
+                marker["tvec"], marker["rvec"], ref_tvec, ref_rvec, config,
+            )
+            mode_label = "[ref]"
+        else:
+            dtheta_deg, forward_dist = compute_agv_movement(
+                marker["tvec"], marker["rvec"], config,
+            )
+            mode_label = ""
 
         logger.info(
-            f"Iteration {iteration}: marker at "
+            f"Iteration {iteration}{mode_label}: marker at "
             f"tvec=[{marker['tvec'][0]:.3f}, {marker['tvec'][1]:.3f}, {marker['tvec'][2]:.3f}]m "
             f"→ dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
         )
