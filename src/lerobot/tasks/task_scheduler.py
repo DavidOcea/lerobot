@@ -738,6 +738,11 @@ class LocalTaskScheduler:
         if hasattr(task, "control_frequency"):
             control_dt = 1.0 / task.control_frequency
 
+        # Apply speed_multiplier (set by orchestrator per task)
+        multiplier = getattr(task, 'speed_multiplier', 1.0)
+        if multiplier != 1.0:
+            control_dt = max(0.005, control_dt / multiplier)  # 200 Hz hard cap
+
         try:
             # Initialize with empty action for first collision check
             last_action = None

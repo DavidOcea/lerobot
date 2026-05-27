@@ -237,6 +237,11 @@ class AdaptiveTaskScheduler:
         # Control frequency from config
         control_dt = 1.0 / self.scheduler.robot.config.control_frequency
 
+        # Apply speed_multiplier if set
+        multiplier = getattr(task, 'speed_multiplier', 1.0)
+        if multiplier != 1.0:
+            control_dt = max(0.005, control_dt / multiplier)
+
         logger.info(f"Starting control loop for task {task.name} (timeout={task.max_duration}s)")
         print(f"[AdaptiveScheduler] Starting control loop for task {task.name} (timeout={task.max_duration}s)")
 

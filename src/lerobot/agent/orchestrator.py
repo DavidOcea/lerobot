@@ -1338,6 +1338,12 @@ class TaskAgentOrchestrator:
         if self.config.override_max_duration is not None:
             task.max_duration = self.config.override_max_duration
 
+        # Apply global speed_multiplier (clamped to safe range)
+        multiplier = max(0.25, min(4.0, self.config.speed_multiplier))
+        if multiplier != 1.0:
+            task.max_duration = max(1.0, task.max_duration / multiplier)
+            task.speed_multiplier = multiplier
+
         # Execute task
         # Check if using adaptive scheduler
         if hasattr(self.task_scheduler, 'execute_task_adaptive'):
@@ -1381,6 +1387,8 @@ class TaskAgentOrchestrator:
         # Restore original settings
         task.max_retries = original_max_retries
         task.max_duration = original_max_duration
+        if hasattr(task, 'speed_multiplier'):
+            delattr(task, 'speed_multiplier')
 
         self._add_monitor_event(
             "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
@@ -1453,6 +1461,10 @@ class TaskAgentOrchestrator:
             except Exception:
                 pass
 
+        # Apply speed_multiplier to AGV max_duration
+        multiplier = getattr(task, 'speed_multiplier', 1.0)
+        agv_max_duration = max(1.0, agv_config.max_duration / multiplier) if multiplier != 1.0 else agv_config.max_duration
+
         # Execute AGV navigation
         agv_result = self.agv_executor.execute(
             task_name=task.name,
@@ -1465,7 +1477,7 @@ class TaskAgentOrchestrator:
             turn_angle=agv_config.turn_angle,
             turn_vw=agv_config.turn_vw,
             turn_mode=agv_config.turn_mode,
-            max_duration=agv_config.max_duration,
+            max_duration=agv_max_duration,
             wait_for_arrival=agv_config.wait_for_arrival,
             arrival_timeout=agv_config.arrival_timeout,
             arrival_tolerance=agv_config.arrival_tolerance,
@@ -1632,6 +1644,11 @@ class TaskAgentOrchestrator:
         control_frequency = getattr(self.config.robot_config, 'control_frequency', 30)
         dt = 1.0 / control_frequency
 
+        # Apply speed_multiplier if set
+        multiplier = getattr(task, 'speed_multiplier', 1.0)
+        if multiplier != 1.0:
+            dt = max(0.005, dt / multiplier)
+
         # Get current positions using the robot's helper method
         # SupreRobotFollower.get_current_position() returns {"joint_name": position} in degrees
         current_positions_dict = self.robot.get_current_position()
@@ -1651,6 +1668,9 @@ class TaskAgentOrchestrator:
         # Estimate time needed (rough: 30 deg/s max speed)
         estimated_duration = max_distance / 30.0 + 1.0  # seconds
         actual_duration = min(max_duration, max(estimated_duration, 3.0))
+
+        if multiplier != 1.0:
+            actual_duration = max(1.0, actual_duration / multiplier)
 
         logger.info(f"Moving to target positions, estimated duration: {actual_duration:.1f}s")
         logger.debug(f"Target positions: {target_positions}")
