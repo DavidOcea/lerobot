@@ -27,6 +27,7 @@ Usage:
 import faulthandler
 import sys
 import time
+from dataclasses import dataclass
 
 faulthandler.enable()
 
@@ -44,6 +45,7 @@ from lerobot.robots.config import RobotConfig
 from lerobot.robots import make_robot_from_config
 
 
+@dataclass
 class CaptureReferenceConfig:
     robot: RobotConfig
     marker_id: int = 0
