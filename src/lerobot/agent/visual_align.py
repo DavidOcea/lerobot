@@ -218,49 +218,38 @@ def compute_alignment_to_reference(
 ) -> tuple[float, float]:
     """Compute AGV movement to align current view to reference view.
 
-    Both current and reference marker poses are in camera frame (solvePnP output).
-    Uses the same camera→AGV transform as compute_agv_movement, but the target
-    is the reference pose instead of a fixed approach_distance.
+    Works directly in camera frame (both ref and cur are solvePnP outputs).
+    No pitch correction needed — comparing raw tvec values is sufficient
+    because both measurements share the same camera coordinate system.
 
     Strategy for differential-drive AGV (no lateral movement):
-      1. Turn to face the marker (same as approach_distance mode).
-      2. Drive forward/backward to match the reference distance.
+      1. Turn to center the marker horizontally (x_cam → 0).
+      2. Drive forward/backward to match the z-distance (z_cam).
 
     Returns (dtheta_deg, forward_dist_m).
     """
-    # Current marker position in AGV frame
-    cur_x, cur_y = _marker_to_agv_xy(tvec_cur, config)
-    # Reference marker position in AGV frame
-    ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
-
-    # Distance from AGV to marker (ground-plane projection)
-    cur_dist = math.sqrt(cur_x**2 + cur_y**2)
-    ref_dist = math.sqrt(ref_x**2 + ref_y**2)
-
-    # Same strategy as compute_agv_movement: turn to face the marker,
-    # then drive forward/backward to match the reference distance.
-    # Using atan2(cur_y, cur_x) avoids the sign-reversal bug when
-    # ref_x < cur_x (which happens when reference was closer to tag).
-    dtheta_rad = math.atan2(cur_y, cur_x)
+    # Turn: use camera-frame x/z to face the marker
+    dtheta_rad = math.atan2(tvec_cur[0], tvec_cur[2])
     dtheta_deg = dtheta_rad * RAD_TO_DEG
-    forward_dist = cur_dist - ref_dist  # +forward to get closer, -backward if overshot
+
+    # Forward: compare z-distance along optical axis directly.
+    # +forward_dist = AGV is farther than reference → drive forward toward tag.
+    forward_dist = tvec_cur[2] - ref_tvec[2]
 
     return dtheta_deg, forward_dist
 
 def _log_reference_diagnostics(
     tvec_cur, tvec_ref, config, logger,
 ):
-    """Log detailed AGV-frame diagnostics for debugging."""
-    cur_x, cur_y = _marker_to_agv_xy(tvec_cur, config)
-    ref_x, ref_y = _marker_to_agv_xy(tvec_ref, config)
-    cur_dist = math.sqrt(cur_x**2 + cur_y**2)
-    ref_dist = math.sqrt(ref_x**2 + ref_y**2)
-    cur_angle = math.atan2(cur_y, cur_x) * RAD_TO_DEG
-    ref_angle = math.atan2(ref_y, ref_x) * RAD_TO_DEG
+    """Log camera-frame diagnostics for debugging reference alignment."""
+    # Camera-frame comparison (no pitch correction needed)
+    z_diff = tvec_cur[2] - tvec_ref[2]
+    x_angle_cur = math.atan2(tvec_cur[0], tvec_cur[2]) * RAD_TO_DEG
     logger.warning(
-        f"  [diag] cur_agv=(x={cur_x:.3f}, y={cur_y:.3f}) dist={cur_dist:.3f}m angle={cur_angle:.1f}° | "
-        f"ref_agv=(x={ref_x:.3f}, y={ref_y:.3f}) dist={ref_dist:.3f}m angle={ref_angle:.1f}° | "
-        f"forward={cur_dist - ref_dist:.3f}m"
+        f"  [diag] cur_cam=(x={tvec_cur[0]:.3f}, y={tvec_cur[1]:.3f}, z={tvec_cur[2]:.3f}) "
+        f"angle={x_angle_cur:.1f}° | "
+        f"ref_cam=(x={tvec_ref[0]:.3f}, y={tvec_ref[1]:.3f}, z={tvec_ref[2]:.3f}) | "
+        f"dz={z_diff:.3f}m"
     )
 
 
@@ -415,11 +404,8 @@ def execute_visual_align(
                 f"Reference pose loaded from {config.reference_pose_path}: "
                 f"tvec={ref_tvec}, rvec={ref_rvec}"
             )
-            ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
-            ref_dist = math.sqrt(ref_x**2 + ref_y**2)
             logger.warning(
-                f"  [diag] reference AGV-frame: x={ref_x:.3f}m, y={ref_y:.3f}m, "
-                f"dist_to_tag={ref_dist:.3f}m"
+                f"  [diag] reference camera-frame: z={ref_tvec[2]:.3f}m"
             )
         except Exception as e:
             return False, f"Failed to load reference pose: {e}"
@@ -455,6 +441,7 @@ def execute_visual_align(
             f"Iteration {iteration}{mode_label}: marker at "
             f"tvec=[{marker['tvec'][0]:.3f}, {marker['tvec'][1]:.3f}, {marker['tvec'][2]:.3f}]m "
             f"→ dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
+            + (f" (ref_z={ref_tvec[2]:.3f}m)" if use_reference else "")
         )
 
         # Check convergence
