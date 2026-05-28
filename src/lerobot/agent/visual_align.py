@@ -235,9 +235,9 @@ def compute_alignment_to_reference(
     Returns (dtheta_deg, forward_dist_m).
     """
     # Turn: match lateral offset to reference, not center.
-    # When AGV turns by δθ, x_cam shifts by ≈ z_cam * δθ.
-    # So δθ = (cur_x - ref_x) / cur_z achieves the desired lateral offset.
-    dx = tvec_cur[0] - ref_tvec[0]
+    # AGV left turn → x_cam increases. So to shift x_cam toward ref_x:
+    #   δθ = (ref_x - cur_x) / cur_z
+    dx = ref_tvec[0] - tvec_cur[0]
     cur_z = tvec_cur[2]
     if abs(cur_z) > 0.01:
         dtheta_rad = dx / cur_z
