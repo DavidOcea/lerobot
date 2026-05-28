@@ -218,25 +218,17 @@ def compute_alignment_to_reference(
 ) -> tuple[float, float]:
     """Compute AGV movement to align current view to reference view.
 
-    Works directly in camera frame (both ref and cur are solvePnP outputs).
-    No pitch correction needed — comparing raw tvec values is sufficient
-    because both measurements share the same camera coordinate system.
+    Both poses are solvePnP outputs in camera frame.
 
-    Strategy for differential-drive AGV (no lateral movement):
-      1. Turn to match the reference lateral offset (cur_x → ref_x).
-      2. Drive forward/backward to match the z-distance (cur_z → ref_z).
-
-    The turn angle is derived from how x_cam changes when AGV rotates:
-      δθ ≈ (cur_x - ref_x) / cur_z
-
-    This correctly handles the case where the reference tag was NOT
-    centered in the camera frame (e.g., tag slightly off to one side).
+    Turn: compared in camera frame — match x_cam to ref_x_cam.
+    Forward: compared in AGV ground frame — pitch correction needed because
+    z_cam alone doesn't represent horizontal ground distance when the
+    camera is tilted.  We use _marker_to_agv_xy for distance only.
 
     Returns (dtheta_deg, forward_dist_m).
     """
-    # Turn: match lateral offset to reference, not center.
-    # AGV left turn → x_cam increases. So to shift x_cam toward ref_x:
-    #   δθ = (ref_x - cur_x) / cur_z
+    # Turn: match lateral offset in camera frame.
+    # AGV left turn → x_cam increases.  δθ = (ref_x - cur_x) / cur_z
     dx = ref_tvec[0] - tvec_cur[0]
     cur_z = tvec_cur[2]
     if abs(cur_z) > 0.01:
@@ -245,24 +237,28 @@ def compute_alignment_to_reference(
         dtheta_rad = 0.0
     dtheta_deg = dtheta_rad * RAD_TO_DEG
 
-    # Forward: compare z-distance along optical axis directly.
-    # +forward_dist = AGV is farther than reference → drive forward toward tag.
-    forward_dist = tvec_cur[2] - ref_tvec[2]
+    # Forward: compare ground-plane distances (pitch-corrected).
+    # _marker_to_agv_xy with yaw=0, offset=0 returns z_horiz as dx_agv.
+    cur_x_agv, _ = _marker_to_agv_xy(tvec_cur, config)
+    ref_x_agv, _ = _marker_to_agv_xy(ref_tvec, config)
+    forward_dist = cur_x_agv - ref_x_agv  # + = farther → drive forward
 
     return dtheta_deg, forward_dist
 
 def _log_reference_diagnostics(
     tvec_cur, tvec_ref, config, logger,
 ):
-    """Log camera-frame diagnostics for debugging reference alignment."""
-    # Camera-frame comparison (no pitch correction needed)
-    z_diff = tvec_cur[2] - tvec_ref[2]
+    """Log diagnostics for debugging reference alignment."""
+    # Camera-frame lateral comparison
     x_angle_cur = math.atan2(tvec_cur[0], tvec_cur[2]) * RAD_TO_DEG
+    # Ground-plane distance comparison
+    cur_dx, _ = _marker_to_agv_xy(tvec_cur, config)
+    ref_dx, _ = _marker_to_agv_xy(tvec_ref, config)
     logger.warning(
-        f"  [diag] cur_cam=(x={tvec_cur[0]:.3f}, y={tvec_cur[1]:.3f}, z={tvec_cur[2]:.3f}) "
-        f"angle={x_angle_cur:.1f}° | "
-        f"ref_cam=(x={tvec_ref[0]:.3f}, y={tvec_ref[1]:.3f}, z={tvec_ref[2]:.3f}) | "
-        f"dz={z_diff:.3f}m"
+        f"  [diag] cur=(x_cam={tvec_cur[0]:.3f}, angle={x_angle_cur:.1f}°, "
+        f"ground_dist={cur_dx:.3f}m) | "
+        f"ref=(x_cam={tvec_ref[0]:.3f}, ground_dist={ref_dx:.3f}m) | "
+        f"Δground={cur_dx - ref_dx:.3f}m"
     )
 
 
@@ -417,8 +413,10 @@ def execute_visual_align(
                 f"Reference pose loaded from {config.reference_pose_path}: "
                 f"tvec={ref_tvec}, rvec={ref_rvec}"
             )
+            ref_dx, _ = _marker_to_agv_xy(ref_tvec, config)
             logger.warning(
-                f"  [diag] reference camera-frame: z={ref_tvec[2]:.3f}m"
+                f"  [diag] reference: z_cam={ref_tvec[2]:.3f}m, "
+                f"ground_dist={ref_dx:.3f}m"
             )
         except Exception as e:
             return False, f"Failed to load reference pose: {e}"
