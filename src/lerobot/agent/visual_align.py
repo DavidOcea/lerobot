@@ -223,13 +223,26 @@ def compute_alignment_to_reference(
     because both measurements share the same camera coordinate system.
 
     Strategy for differential-drive AGV (no lateral movement):
-      1. Turn to center the marker horizontally (x_cam → 0).
-      2. Drive forward/backward to match the z-distance (z_cam).
+      1. Turn to match the reference lateral offset (cur_x → ref_x).
+      2. Drive forward/backward to match the z-distance (cur_z → ref_z).
+
+    The turn angle is derived from how x_cam changes when AGV rotates:
+      δθ ≈ (cur_x - ref_x) / cur_z
+
+    This correctly handles the case where the reference tag was NOT
+    centered in the camera frame (e.g., tag slightly off to one side).
 
     Returns (dtheta_deg, forward_dist_m).
     """
-    # Turn: use camera-frame x/z to face the marker
-    dtheta_rad = math.atan2(tvec_cur[0], tvec_cur[2])
+    # Turn: match lateral offset to reference, not center.
+    # When AGV turns by δθ, x_cam shifts by ≈ z_cam * δθ.
+    # So δθ = (cur_x - ref_x) / cur_z achieves the desired lateral offset.
+    dx = tvec_cur[0] - ref_tvec[0]
+    cur_z = tvec_cur[2]
+    if abs(cur_z) > 0.01:
+        dtheta_rad = dx / cur_z
+    else:
+        dtheta_rad = 0.0
     dtheta_deg = dtheta_rad * RAD_TO_DEG
 
     # Forward: compare z-distance along optical axis directly.
