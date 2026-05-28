@@ -125,6 +125,7 @@ tasks:
     enabled: true
     visual_align_config:
       # reference_pose_path: "ref_C.json"  # 站点参考位姿文件 默认不配置用approach_distance，配置时用参考照片定位
+      distance_offset: 0.20     # 参考位姿距离修正 (米), 补偿减号公式系统偏移, 正值=多前进
       marker_id: 0              # AprilTag ID=0 (站点C的标记)
       marker_size: 0.10         # 标记物理边长 10cm (0.10m)
       marker_family: "tag36h11" # AprilTag 家族
