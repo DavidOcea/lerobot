@@ -247,6 +247,22 @@ def compute_alignment_to_reference(
 
     return dtheta_deg, forward_dist
 
+def _log_reference_diagnostics(
+    tvec_cur, tvec_ref, config, logger,
+):
+    """Log detailed AGV-frame diagnostics for debugging."""
+    cur_x, cur_y = _marker_to_agv_xy(tvec_cur, config)
+    ref_x, ref_y = _marker_to_agv_xy(tvec_ref, config)
+    cur_dist = math.sqrt(cur_x**2 + cur_y**2)
+    ref_dist = math.sqrt(ref_x**2 + ref_y**2)
+    cur_angle = math.atan2(cur_y, cur_x) * RAD_TO_DEG
+    ref_angle = math.atan2(ref_y, ref_x) * RAD_TO_DEG
+    logger.warning(
+        f"  [diag] cur_agv=(x={cur_x:.3f}, y={cur_y:.3f}) dist={cur_dist:.3f}m angle={cur_angle:.1f}° | "
+        f"ref_agv=(x={ref_x:.3f}, y={ref_y:.3f}) dist={ref_dist:.3f}m angle={ref_angle:.1f}° | "
+        f"forward={cur_dist - ref_dist:.3f}m"
+    )
+
 
 def capture_reference_pose(
     robot,
@@ -399,6 +415,12 @@ def execute_visual_align(
                 f"Reference pose loaded from {config.reference_pose_path}: "
                 f"tvec={ref_tvec}, rvec={ref_rvec}"
             )
+            ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
+            ref_dist = math.sqrt(ref_x**2 + ref_y**2)
+            logger.warning(
+                f"  [diag] reference AGV-frame: x={ref_x:.3f}m, y={ref_y:.3f}m, "
+                f"dist_to_tag={ref_dist:.3f}m"
+            )
         except Exception as e:
             return False, f"Failed to load reference pose: {e}"
 
@@ -422,6 +444,7 @@ def execute_visual_align(
                 marker["tvec"], marker["rvec"], ref_tvec, ref_rvec, config,
             )
             mode_label = "[ref]"
+            _log_reference_diagnostics(marker["tvec"], ref_tvec, config, logger)
         else:
             dtheta_deg, forward_dist = compute_agv_movement(
                 marker["tvec"], marker["rvec"], config,
