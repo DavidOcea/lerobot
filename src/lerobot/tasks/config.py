@@ -200,6 +200,7 @@ class VisualAlignConfig:
     # ===== 参考照片对齐 (可选) =====
     # 设置后跳过 approach_distance, 用参考帧的位姿作为对齐目标
     reference_pose_path: str | None = None  # 参考位姿 JSON 文件路径
+    distance_offset: float = 0.0  # 参考位姿距离修正 (米), 正值=多前进, 负值=多后退
 
     # ===== 相机-AGV 坐标变换 =====
     # 相机相对于 AGV 中心的偏移 (先用 (0,0,0) 近似, 闭环收敛弥补误差)

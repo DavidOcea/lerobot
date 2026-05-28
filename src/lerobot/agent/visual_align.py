@@ -209,19 +209,6 @@ def load_reference_pose(path: str) -> tuple[np.ndarray, np.ndarray]:
     return np.array(data["tvec"]), np.array(data["rvec"])
 
 
-def _camera_pos_in_tag_frame(
-    tvec: np.ndarray,
-    rvec: np.ndarray,
-) -> np.ndarray:
-    """Compute camera position in the tag's coordinate frame.
-
-    solvePnP gives rvec, tvec such that: P_cam = R(rvec) @ P_tag + tvec
-    So the camera position in tag frame is: -R^T @ tvec
-    """
-    R, _ = cv2.Rodrigues(rvec)
-    return -R.T @ tvec
-
-
 def compute_alignment_to_reference(
     tvec_cur: np.ndarray,
     rvec_cur: np.ndarray,
@@ -231,51 +218,47 @@ def compute_alignment_to_reference(
 ) -> tuple[float, float]:
     """Compute AGV movement to align current view to reference view.
 
-    Uses the tag coordinate frame as a common reference — both the current
-    and reference camera positions are computed in the tag frame, then
-    the displacement between them gives the exact AGV movement needed.
+    Uses the "face the marker" + ground distance strategy:
+      1. Turn to face the marker (atan2 in AGV frame).
+      2. Compare ground-plane distances (_marker_to_agv_xy).
 
-    This avoids all pitch/yaw correction issues because the tag frame is
-    fixed and independent of the camera orientation.
+    This is the same strategy as compute_agv_movement, but the target
+    distance is the reference distance instead of approach_distance.
+
+    At 45° pitch the minus-formula ground distance has a systematic offset,
+    but the RELATIVE comparison is stable for closed-loop convergence.
+    A configurable distance_offset compensates for the systematic bias.
 
     Returns (dtheta_deg, forward_dist_m).
     """
-    # Camera positions in tag frame
-    cam_cur = _camera_pos_in_tag_frame(tvec_cur, rvec_cur)
-    cam_ref = _camera_pos_in_tag_frame(ref_tvec, ref_rvec)
+    # Current and reference marker positions in AGV frame
+    cur_x, cur_y = _marker_to_agv_xy(tvec_cur, config)
+    ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
 
-    # Displacement from current to reference, in tag frame
-    delta = cam_ref - cam_cur  # where the camera needs to move to
+    # Distance from AGV to marker (ground-plane projection)
+    cur_dist = math.sqrt(cur_x**2 + cur_y**2)
+    ref_dist = math.sqrt(ref_x**2 + ref_y**2)
 
-    # Tag frame: x=right, y=down (on tag surface), z=outward (toward camera)
-    # The z-axis of the tag points outward from the tag surface toward the
-    # camera, so moving along +tag_z means moving AWAY from the tag.
-    forward_dist = -delta[2]  # negative because moving toward tag = forward for AGV
-
-    # Turn: lateral offset in tag frame
-    # delta[0] is the rightward displacement needed in tag frame
-    # We need to turn so that this lateral offset is resolved
-    # Approximate: δθ ≈ lateral / distance_to_tag
-    dist = math.sqrt(tvec_cur[0]**2 + tvec_cur[1]**2 + tvec_cur[2]**2)
-    if dist > 0.01:
-        dtheta_rad = delta[0] / dist  # positive = turn left to move right in tag frame
-    else:
-        dtheta_rad = 0.0
+    # Turn to face the marker
+    dtheta_rad = math.atan2(cur_y, cur_x)
     dtheta_deg = dtheta_rad * RAD_TO_DEG
+
+    # Forward: match reference distance + offset correction
+    forward_dist = cur_dist - ref_dist + config.distance_offset
 
     return dtheta_deg, forward_dist
 
 def _log_reference_diagnostics(
-    tvec_cur, rvec_cur, tvec_ref, rvec_ref, logger,
+    tvec_cur, tvec_ref, config, logger,
 ):
     """Log diagnostics for debugging reference alignment."""
-    cam_cur = _camera_pos_in_tag_frame(tvec_cur, rvec_cur)
-    cam_ref = _camera_pos_in_tag_frame(tvec_ref, rvec_ref)
-    delta = cam_ref - cam_cur
+    cur_x, cur_y = _marker_to_agv_xy(tvec_cur, config)
+    ref_x, ref_y = _marker_to_agv_xy(tvec_ref, config)
+    cur_dist = math.sqrt(cur_x**2 + cur_y**2)
+    ref_dist = math.sqrt(ref_x**2 + ref_y**2)
     logger.warning(
-        f"  [diag] cam_in_tag: cur=({cam_cur[0]:.3f}, {cam_cur[1]:.3f}, {cam_cur[2]:.3f}) "
-        f"ref=({cam_ref[0]:.3f}, {cam_ref[1]:.3f}, {cam_ref[2]:.3f}) "
-        f"delta=({delta[0]:.3f}, {delta[1]:.3f}, {delta[2]:.3f})"
+        f"  [diag] cur_dist={cur_dist:.3f}m ref_dist={ref_dist:.3f}m "
+        f"delta={(cur_dist - ref_dist):.3f}m offset={config.distance_offset:.3f}m"
     )
 
 
@@ -430,10 +413,10 @@ def execute_visual_align(
                 f"Reference pose loaded from {config.reference_pose_path}: "
                 f"tvec={ref_tvec}, rvec={ref_rvec}"
             )
-            cam_ref = _camera_pos_in_tag_frame(ref_tvec, ref_rvec)
+            ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
+            ref_dist = math.sqrt(ref_x**2 + ref_y**2)
             logger.warning(
-                f"  [diag] reference camera in tag frame: "
-                f"({cam_ref[0]:.3f}, {cam_ref[1]:.3f}, {cam_ref[2]:.3f})m"
+                f"  [diag] reference: ground_dist={ref_dist:.3f}m"
             )
         except Exception as e:
             return False, f"Failed to load reference pose: {e}"
@@ -458,7 +441,7 @@ def execute_visual_align(
                 marker["tvec"], marker["rvec"], ref_tvec, ref_rvec, config,
             )
             mode_label = "[ref]"
-            _log_reference_diagnostics(marker["tvec"], marker["rvec"], ref_tvec, ref_rvec, logger)
+            _log_reference_diagnostics(marker["tvec"], ref_tvec, config, logger)
         else:
             dtheta_deg, forward_dist = compute_agv_movement(
                 marker["tvec"], marker["rvec"], config,
