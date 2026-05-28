@@ -223,7 +223,7 @@ def compute_alignment_to_reference(
     is the reference pose instead of a fixed approach_distance.
 
     Strategy for differential-drive AGV (no lateral movement):
-      1. Turn to face the reference camera position relative to the marker.
+      1. Turn to face the marker (same as approach_distance mode).
       2. Drive forward/backward to match the reference distance.
 
     Returns (dtheta_deg, forward_dist_m).
@@ -233,14 +233,17 @@ def compute_alignment_to_reference(
     # Reference marker position in AGV frame
     ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
 
-    # Delta: movement needed to bring marker to reference position in AGV frame
-    dx = ref_x - cur_x  # AGV forward component
-    dy = ref_y - cur_y  # AGV leftward component
+    # Distance from AGV to marker (ground-plane projection)
+    cur_dist = math.sqrt(cur_x**2 + cur_y**2)
+    ref_dist = math.sqrt(ref_x**2 + ref_y**2)
 
-    # Turn to face the delta direction, then drive
-    dtheta_rad = math.atan2(dy, dx)
+    # Same strategy as compute_agv_movement: turn to face the marker,
+    # then drive forward/backward to match the reference distance.
+    # Using atan2(cur_y, cur_x) avoids the sign-reversal bug when
+    # ref_x < cur_x (which happens when reference was closer to tag).
+    dtheta_rad = math.atan2(cur_y, cur_x)
     dtheta_deg = dtheta_rad * RAD_TO_DEG
-    forward_dist = math.sqrt(dx**2 + dy**2)
+    forward_dist = cur_dist - ref_dist  # +forward to get closer, -backward if overshot
 
     # Heading correction from rotation difference
     R_cur, _ = cv2.Rodrigues(rvec_cur)
