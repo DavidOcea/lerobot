@@ -145,7 +145,7 @@ def _marker_to_agv_xy(
 
     # Pitch correction: project onto horizontal plane
     pitch_rad = config.camera_offset_pitch * DEG_TO_RAD
-    z_horiz = math.cos(pitch_rad) * z_cam + math.sin(pitch_rad) * y_cam
+    z_horiz = math.cos(pitch_rad) * z_cam - math.sin(pitch_rad) * y_cam
     x_horiz = x_cam  # pitch around x-axis, lateral unchanged
 
     # Rotate + translate to AGV frame
