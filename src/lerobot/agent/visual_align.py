@@ -245,14 +245,7 @@ def compute_alignment_to_reference(
     dtheta_deg = dtheta_rad * RAD_TO_DEG
     forward_dist = cur_dist - ref_dist  # +forward to get closer, -backward if overshot
 
-    # Heading correction from rotation difference
-    R_cur, _ = cv2.Rodrigues(rvec_cur)
-    R_ref, _ = cv2.Rodrigues(ref_rvec)
-    yaw_cur = math.atan2(R_cur[1, 0], R_cur[0, 0])
-    yaw_ref = math.atan2(R_ref[1, 0], R_ref[0, 0])
-    d_yaw = ((yaw_ref - yaw_cur) * RAD_TO_DEG + 180) % 360 - 180
-
-    return dtheta_deg + d_yaw, forward_dist
+    return dtheta_deg, forward_dist
 
 
 def capture_reference_pose(
