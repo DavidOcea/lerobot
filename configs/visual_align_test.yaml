@@ -133,7 +133,7 @@ tasks:
       search_max_attempts: 9    # 搜索步数 (90/10=9)
       position_tolerance: 0.02  # 位置收敛阈值 2cm
       angle_tolerance: 2.0      # 角度收敛阈值 2°
-      max_iterations: 3         # 闭环最多3轮微调
+      max_iterations: 5         # 闭环最多5轮微调 (参考照片模式建议≥5)
       translate_speed: 0.15     # 前进微调速度 0.15m/s
       turn_speed: 15.0          # 转动微调速度 15°/s
       approach_distance: 0.50   # 停在标记前方50cm处

@@ -275,7 +275,7 @@ def capture_reference_pose(
         )
         return None
 
-    logger.info(
+    logger.warning(
         f"Reference pose captured: marker ID={marker['id']}, "
         f"tvec=[{marker['tvec'][0]:.3f}, {marker['tvec'][1]:.3f}, {marker['tvec'][2]:.3f}]"
     )
@@ -320,7 +320,7 @@ def search_marker(
 
         marker = detect_marker(bgr, config, detector)
         if marker is not None:
-            logger.info(
+            logger.warning(
                 f"Search: found marker ID={marker['id']} at attempt {attempt} "
                 f"(total search turn: {total_turned:.1f}°)"
             )
@@ -336,7 +336,7 @@ def search_marker(
             )
             return None
 
-        logger.info(f"Search: turning {step_deg}° (cumulative {total_turned:.1f}°)")
+        logger.warning(f"Search: turning {step_deg}° (cumulative {total_turned:.1f}°)")
         agv_controller.turn(
             angle=step_deg * DEG_TO_RAD,
             vw=config.turn_speed * DEG_TO_RAD,
@@ -386,7 +386,7 @@ def execute_visual_align(
     if marker is None:
         return False, f"Marker ID={config.marker_id} not found during search"
 
-    logger.info(f"Marker found: ID={marker['id']}, proceeding to alignment loop")
+    logger.warning(f"Marker found: ID={marker['id']}, proceeding to alignment loop")
 
     # Load reference pose if using reference alignment mode
     ref_tvec = None
@@ -395,7 +395,7 @@ def execute_visual_align(
     if use_reference:
         try:
             ref_tvec, ref_rvec = load_reference_pose(config.reference_pose_path)
-            logger.info(
+            logger.warning(
                 f"Reference pose loaded from {config.reference_pose_path}: "
                 f"tvec={ref_tvec}, rvec={ref_rvec}"
             )
@@ -428,7 +428,7 @@ def execute_visual_align(
             )
             mode_label = ""
 
-        logger.info(
+        logger.warning(
             f"Iteration {iteration}{mode_label}: marker at "
             f"tvec=[{marker['tvec'][0]:.3f}, {marker['tvec'][1]:.3f}, {marker['tvec'][2]:.3f}]m "
             f"→ dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
@@ -438,7 +438,7 @@ def execute_visual_align(
         converged_angle = abs(dtheta_deg) < config.angle_tolerance
         converged_pos = abs(forward_dist) < config.position_tolerance
         if converged_angle and converged_pos:
-            logger.info(f"Alignment converged at iteration {iteration}")
+            logger.warning(f"Alignment converged at iteration {iteration}")
             return True, f"Aligned after {iteration + 1} iterations"
 
         # Step 1a: Turn AGV to face marker
@@ -449,7 +449,7 @@ def execute_visual_align(
             vw = config.turn_speed * DEG_TO_RAD
             if turn_deg < 0:
                 vw = -vw
-            logger.info(f"  Turning {turn_deg:.2f}°")
+            logger.warning(f"  Turning {turn_deg:.2f}°")
             agv_controller.turn(
                 angle=abs(turn_deg) * DEG_TO_RAD,
                 vw=vw,
@@ -469,7 +469,7 @@ def execute_visual_align(
                 vx = -config.translate_speed
                 direction = "backward"
             dist = abs(forward_dist)
-            logger.info(f"  Driving {direction} {dist:.3f}m at {abs(vx):.2f}m/s")
+            logger.warning(f"  Driving {direction} {dist:.3f}m at {abs(vx):.2f}m/s")
             ok = agv_controller.translate(
                 dist=dist,
                 vx=vx,
