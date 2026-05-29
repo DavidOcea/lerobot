@@ -52,6 +52,7 @@ class TaskResult:
     start_time: float = field(default_factory=time.time)
     end_time: float = 0.0
     retry_with_new_model: bool = False  # Set when user wants to retry with alternative model
+    next_task: str = ""  # Non-empty → orchestrator jumps to this task name next
 
     def __post_init__(self):
         # Only calculate duration if end_time is explicitly set (non-zero)
