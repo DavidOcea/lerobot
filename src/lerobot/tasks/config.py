@@ -215,6 +215,27 @@ class VisualAlignConfig:
     camera_matrix: list | None = None  # 3x3 内参矩阵 (fx, fy, cx, cy), flat list
     dist_coeffs: list | None = None  # 畸变系数 (k1, k2, p1, p2, k3)
 
+
+@dataclass
+class ClassifyConfig:
+    """Configuration for workpiece classification tasks.
+
+    Supports pluggable methods via the ``method`` field. Each method
+    has its own set of parameters as nested fields.
+    """
+
+    method: str = "apriltag"  # classification method: "apriltag", "color", "model"
+
+    # --- AprilTag method ---
+    marker_id_map: dict[int, str] = field(default_factory=dict)
+    # e.g. {1: "workpiece_type_1", 2: "workpiece_type_2"}
+    marker_family: str = "tag36h11"
+    marker_size: float = 0.05  # smaller tags for workpieces
+
+    # --- Common ---
+    default_label: str = "unknown"
+    default_next_task: str = ""  # fallback if classification fails
+
     # ===== 安全配置 =====
     check_arm_safe_position: bool = True  # AGV 微调前检查机械臂安全位置
     arm_safe_positions: dict[str, float] = field(default_factory=dict)
@@ -235,7 +256,7 @@ class TaskConfig:
     name: str
 
     # 任务类型
-    task_type: Literal["policy", "agv", "position", "position_sequence", "visual_align"] = "policy"
+    task_type: Literal["policy", "agv", "position", "position_sequence", "visual_align", "classify"] = "policy"
 
     # Policy任务字段 (现有)
     policy_path: str | None = None
@@ -255,6 +276,11 @@ class TaskConfig:
     # Visual align任务字段
     visual_align_config: VisualAlignConfig | None = None
 
+    # Classify任务字段 (workpiece identification for conditional branching)
+    classify_config: ClassifyConfig | None = None
+    # Conditional branch routing: {label: next_task_name, ...}
+    next_tasks: dict[str, str] = field(default_factory=dict)
+
     def validate(self) -> bool:
         """验证任务配置."""
         if self.task_type == "policy":
@@ -273,6 +299,9 @@ class TaskConfig:
         elif self.task_type == "visual_align":
             if self.visual_align_config is None:
                 raise ValueError(f"Task '{self.name}': visual_align_config required for visual_align tasks")
+        elif self.task_type == "classify":
+            if self.classify_config is None:
+                raise ValueError(f"Task '{self.name}': classify_config required for classify tasks")
         return True
 
 
@@ -442,6 +471,15 @@ def parse_task_dict(
         task_kwargs["max_duration"] = task_dict.get("max_duration", 30.0)
         task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
         task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+    elif task_type == "classify":
+        cc_dict = task_dict.get("classify_config", {})
+        task_kwargs["classify_config"] = ClassifyConfig(**cc_dict)
+        task_kwargs["max_duration"] = task_dict.get("max_duration", 10.0)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
+        task_kwargs["enabled"] = task_dict.get("enabled", True)
+        # Conditional branch routing
+        task_kwargs["next_tasks"] = task_dict.get("next_tasks", {})
 
     return TaskConfig(**task_kwargs)
 

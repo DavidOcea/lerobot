@@ -1,0 +1,321 @@
+# AGV Pick + Classify + Conditional Place (A → B or C)
+#
+# 流程: AGV到A点 → 抓料片 → 识别料片类型 → 按类型分支放置
+#   - 料片类型1 (tag_id=1) → 放到B点
+#   - 料片类型2 (tag_id=2) → 放到C点
+#
+# 标记准备:
+#   将 tag36h11_id1.png 贴在料片类型1上
+#   将 tag36h11_id2.png 贴在料片类型2上
+#   建议打印边长为 5-10cm
+
+# ========== Named Positions ==========
+named_positions:
+  home:
+    left_arm_joint_1: -40.3
+    left_arm_joint_2: -4.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 11.8
+    right_arm_joint_1: 40.3
+    right_arm_joint_2: 4.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -11.8
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  place_B_approach:
+    left_arm_joint_1: -52.3
+    left_arm_joint_2: -4.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 11.8
+    right_arm_joint_1: 52.3
+    right_arm_joint_2: 4.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -11.8
+    trunk_joint_1: 0.0
+    trunk_joint_2: 45.0
+
+  place_C_approach:
+    left_arm_joint_1: -24.3
+    left_arm_joint_2: -4.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 4.0
+    right_arm_joint_1: 22.3
+    right_arm_joint_2: 4.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -4.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+# ========== AGV Global Configuration ==========
+agv_config:
+  enabled: true
+  host: "192.168.2.210"
+  port: 19204
+  connection_timeout: 5.0
+  read_timeout: 2.0
+  auto_reconnect: true
+  auto_disconnect_after_task: false
+  emergency_stop_enabled: true
+  check_arm_before_move: true
+  station_map:
+    station_A: [0.168, 0.029, 0.650]
+    station_B: [5.0, 0.0, 0.0]
+    station_C: [0.0, 9.0, 0.0]
+  default_arm_safe_positions:
+    left_arm_joint_1: 5.0
+    left_arm_joint_2: 5.0
+    left_arm_joint_3: 5.0
+    left_arm_joint_4: 5.0
+    left_arm_joint_5: 5.0
+    left_arm_joint_6: 5.0
+    right_arm_joint_1: 5.0
+    right_arm_joint_2: 5.0
+    right_arm_joint_3: 5.0
+    right_arm_joint_4: 5.0
+    right_arm_joint_5: 5.0
+    right_arm_joint_6: 5.0
+    trunk_joint_1: 3.0
+    trunk_joint_2: 3.0
+
+# ========== Robot Configuration ==========
+robot_config:
+  type: "supre_robot_follower"
+  control_frequency: 50
+  prometheus_port: 8000
+  max_relative_joint_move: 2.0
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
+  cameras:
+    head_cam:
+      type: opencv
+      index: 0
+      width: 640
+      height: 480
+      fps: 30
+
+# ========== Collision Detection ==========
+collision_config:
+  collision_threshold: 2.0
+  detection_window: 5
+  adaptive_mode: true
+  velocity_compensation: true
+  auto_calibrate: true
+  calibration_samples: 20
+
+# ========== Monitoring ==========
+monitoring_config:
+  log_level: "INFO"
+  enable_prometheus: false
+  prometheus_port: 9090
+
+# ========== Task Sequence ==========
+# 核心流程:
+#   1. AGV → A点 → 抓料片 → 归位
+#   2. 视觉识别料片上的 AprilTag → 确定类型
+#   3. 类型1 → B点放置; 类型2 → C点放置
+#   4. AGV → 对应站点 → 放置 → 归位 → 返回A
+
+tasks:
+  # ---- Step 1: AGV到A点 ----
+  - name: "agv_to_station_A"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM8"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # ---- Step 2: 抓取料片 (policy) ----
+  - name: "pick_at_station_A"
+    task_type: "policy"
+    policy_path: "/home/t/workspace/dc_dir/models/act_0421_1/checkpoints/120000/pretrained_model"
+    policy_type: "act"
+    max_duration: 6.0
+    max_retries: 1
+    enabled: true
+    cameras:
+      - name: "head_cam"
+        type: "opencv"
+        index: 0
+        width: 640
+        height: 480
+        fps: 30
+    completion_criteria:
+      type: "composite"
+      conditions:
+        - type: "stability"
+          stability_window: 5
+          stability_tolerance: 0.05
+
+  - name: "arm_home_after_pick"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  # ---- Step 3: 拍照识别料片类型 (条件分支) ----
+  # 用 head_cam 拍料片上的 AprilTag:
+  #   tag_id=1 → 类型1 → 跳到 "agv_to_station_B"
+  #   tag_id=2 → 类型2 → 跳到 "agv_to_station_C"
+  #   没检测到 → 跳到 "error_no_tag_found"
+  - name: "classify_workpiece"
+    task_type: "classify"
+    max_duration: 5.0
+    max_retries: 1
+    enabled: true
+    cameras:
+      - name: "head_cam"
+        type: "opencv"
+        index: 0
+        width: 640
+        height: 480
+        fps: 30
+    classify_config:
+      method: "apriltag"
+      marker_family: "tag36h11"
+      marker_size: 0.05           # 料片上的标记较小 (5cm)
+      marker_id_map:
+        1: "workpiece_type_1"      # tag_id=1 → 类型1
+        2: "workpiece_type_2"      # tag_id=2 → 类型2
+      default_label: "unknown"     # 未识别到任何标记
+    next_tasks:
+      workpiece_type_1: "agv_to_station_B"   # 类型1 → B点
+      workpiece_type_2: "agv_to_station_C"   # 类型2 → C点
+
+  # ---- Step 4a: 类型1 → AGV到B点 → 放置 ----
+  - name: "agv_to_station_B"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM7"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "place_at_station_B"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "approach"
+        position: place_B_approach
+        max_duration: 10.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_place_B"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  # 放置完成后跳到返回A
+  - name: "agv_return_from_B_to_A"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM8"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # ---- Step 4b: 类型2 → AGV到C点 → 放置 ----
+  - name: "agv_to_station_C"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "AP10"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "place_at_station_C"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "approach"
+        position: place_C_approach
+        max_duration: 10.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_place_C"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  - name: "agv_return_from_C_to_A"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM8"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+# ========== Cycle Execution Settings ==========
+max_cycles: 10
+cycle_delay: 3.0
+enable_cycle_prompt: true
+environment_dt: 1.0 / 30.0
+observation_timeout: 5.0
+action_timeout: 5.0
+reset_duration: 3.0
+reset_positions: {}

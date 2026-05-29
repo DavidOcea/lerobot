@@ -54,6 +54,7 @@ from lerobot.safety.emergency_stop_controller import (
 # AGV imports (NEW)
 from lerobot.robots.agv.seer_agv_controller import SeerAGVController, AGVPosition
 from lerobot.tasks.agv_executor import AGVTaskExecutor, AGVExecutionResult, create_task_result_from_agv_result
+from lerobot.tasks.classifier import make_classifier
 
 # Monitoring imports (NEW)
 from lerobot.monitoring.dashboard import MonitorCollector, HTTPDashboard
@@ -1218,23 +1219,44 @@ class TaskAgentOrchestrator:
             # If task failed (e.g., after emergency stop with rollback), keep index
             # so user can retry the same task or choose a different action
             if result.status == TaskStatus.COMPLETED:
-                self.interactive_selector.current_task_index += 1
-                # Skip builtin skills in AUTOMATIC mode — they are manually
-                # selectable skills, not part of the automatic task sequence.
-                if (
-                    self._builtin_task_names
-                    and self.interactive_selector._execution_mode == ExecutionMode.AUTOMATIC
-                ):
+                # Conditional branching: if the task returned next_task,
+                # jump to that task by name instead of sequential advance.
+                if result.next_task and self.interactive_selector is not None:
                     selector_tasks = self.interactive_selector.config_tasks
-                    while self.interactive_selector.current_task_index < len(selector_tasks):
-                        t = selector_tasks[self.interactive_selector.current_task_index]
-                        if t.name in self._builtin_task_names:
-                            logger.info(
-                                f"Skipping builtin skill '{t.name}' in AUTOMATIC mode"
+                    found = False
+                    for idx, t in enumerate(selector_tasks):
+                        if t.name == result.next_task:
+                            self.interactive_selector.current_task_index = idx
+                            logger.warning(
+                                f"Branch: {task.name} → {result.next_task} "
+                                f"(index {idx})"
                             )
-                            self.interactive_selector.current_task_index += 1
-                        else:
+                            found = True
                             break
+                    if not found:
+                        logger.error(
+                            f"Branch target '{result.next_task}' not found "
+                            f"in task list — falling back to sequential advance"
+                        )
+                        self.interactive_selector.current_task_index += 1
+                else:
+                    self.interactive_selector.current_task_index += 1
+                    # Skip builtin skills in AUTOMATIC mode — they are manually
+                    # selectable skills, not part of the automatic task sequence.
+                    if (
+                        self._builtin_task_names
+                        and self.interactive_selector._execution_mode == ExecutionMode.AUTOMATIC
+                    ):
+                        selector_tasks = self.interactive_selector.config_tasks
+                        while self.interactive_selector.current_task_index < len(selector_tasks):
+                            t = selector_tasks[self.interactive_selector.current_task_index]
+                            if t.name in self._builtin_task_names:
+                                logger.info(
+                                    f"Skipping builtin skill '{t.name}' in AUTOMATIC mode"
+                                )
+                                self.interactive_selector.current_task_index += 1
+                            else:
+                                break
                 logger.info(f"Task {task.name} completed, moving to next task")
             elif result.status == TaskStatus.FAILED:
                 # Task failed but not fatal - keep index to allow retry
@@ -1334,6 +1356,21 @@ class TaskAgentOrchestrator:
         if task.task_type == "visual_align":
             self._add_monitor_event("info", task.name, "Visual alignment started")
             result = self._execute_visual_align_task(task)
+            self._add_monitor_event(
+                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                f"{result.status.value} ({result.duration:.1f}s)"
+                + (f" — {result.error_message}" if result.error_message else ""))
+            # Restore original settings
+            task.max_retries = original_max_retries
+            task.max_duration = original_max_duration
+            if hasattr(task, 'speed_multiplier'):
+                delattr(task, 'speed_multiplier')
+            return result
+
+        # Handle classify tasks (workpiece identification for branching)
+        if task.task_type == "classify":
+            self._add_monitor_event("info", task.name, "Classify started")
+            result = self._execute_classify_task(task)
             self._add_monitor_event(
                 "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
                 f"{result.status.value} ({result.duration:.1f}s)"
@@ -1623,6 +1660,83 @@ class TaskAgentOrchestrator:
             status=status,
             duration=duration,
             error_message=None if success else message,
+        )
+
+    def _execute_classify_task(self, task: TaskConfig) -> TaskResult:
+        """Classify a workpiece using the head camera.
+
+        Captures an image, runs the configured classifier, and returns
+        a TaskResult whose ``next_task`` is set from ``task.next_tasks``
+        mapped by the classification label.
+
+        The orchestrator reads ``next_task`` to decide which task to
+        execute next (branching).
+        """
+        logger.info(f"Executing classify task: {task.name}")
+        start_time = time.time()
+
+        if not self.robot:
+            return TaskResult(
+                task_name=task.name, status=TaskStatus.SKIPPED,
+                duration=0.0, error_message="Robot not connected",
+            )
+
+        cc = task.classify_config
+        if cc is None:
+            return TaskResult(
+                task_name=task.name, status=TaskStatus.FAILED,
+                duration=0.0, error_message="classify_config is None",
+            )
+
+        self._switch_cameras_for_task(task)
+
+        # Capture image
+        obs = self.robot.get_observation()
+        img = obs.get("images", {}).get("head_cam")
+        if img is None:
+            return TaskResult(
+                task_name=task.name, status=TaskStatus.FAILED,
+                duration=time.time() - start_time,
+                error_message="No head_cam image",
+            )
+
+        import numpy as np
+        bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
+
+        # Build classifier
+        classifier_kwargs = {
+            "marker_id_map": cc.marker_id_map,
+            "marker_family": cc.marker_family,
+            "marker_size": cc.marker_size,
+            "default_label": cc.default_label,
+            "default_next_task": cc.default_next_task,
+        }
+        try:
+            classifier = make_classifier(cc.method, **classifier_kwargs)
+            result = classifier.classify(bgr)
+        except Exception as e:
+            logger.error(f"Classification failed: {e}")
+            return TaskResult(
+                task_name=task.name, status=TaskStatus.FAILED,
+                duration=time.time() - start_time,
+                error_message=f"Classification error: {e}",
+            )
+
+        # Route to next task based on label
+        next_task = task.next_tasks.get(result.label, cc.default_next_task)
+        label_str = f"label={result.label}"
+        if next_task:
+            label_str += f" → next_task={next_task}"
+        logger.warning(
+            f"Classify result: {label_str} (confidence={result.confidence:.2f})"
+        )
+
+        return TaskResult(
+            task_name=task.name,
+            status=TaskStatus.COMPLETED,
+            duration=time.time() - start_time,
+            success=True,
+            next_task=next_task,
         )
 
     def _execute_position_task(self, task: TaskConfig) -> TaskResult:
