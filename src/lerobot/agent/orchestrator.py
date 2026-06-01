@@ -1074,6 +1074,12 @@ class TaskAgentOrchestrator:
         """Execute task sequence with collision monitoring and interactive selection."""
         results = []
 
+        has_selector = self.interactive_selector is not None
+        logger.warning(
+            f"[DIAG] _execute_with_safety: interactive_selector={has_selector}, "
+            f"task_count={len(self.config.tasks)}"
+        )
+
         # Use while loop to properly handle interactive task selection
         # The interactive_selector maintains the current task index
         while True:
@@ -1149,6 +1155,7 @@ class TaskAgentOrchestrator:
                 # Note: Index increment is now AFTER task execution, based on result
             else:
                 # No interactive selector, use indexed while loop with branch support
+                logger.warning("[DIAG] Entering non-interactive while loop")
                 task_list = self.config.tasks
                 idx = 0
                 while idx < len(task_list):
@@ -1180,6 +1187,10 @@ class TaskAgentOrchestrator:
                         break
 
                     # Branch routing (same logic as interactive path)
+                    logger.warning(
+                        f"[DIAG] result processing: task={task.name}, "
+                        f"next_task='{result.next_task}', cycle_end={task.cycle_end}"
+                    )
                     if result.next_task:
                         found = False
                         for j, t in enumerate(task_list):
@@ -1243,6 +1254,10 @@ class TaskAgentOrchestrator:
             if result.status == TaskStatus.COMPLETED:
                 # Conditional branching: if the task returned next_task,
                 # jump to that task by name instead of sequential advance.
+                logger.warning(
+                    f"[DIAG] interactive result: task={task.name}, "
+                    f"next_task='{result.next_task}', cycle_end={task.cycle_end}"
+                )
                 if result.next_task and self.interactive_selector is not None:
                     selector_tasks = self.interactive_selector.config_tasks
                     found = False
@@ -1400,6 +1415,10 @@ class TaskAgentOrchestrator:
                 "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
                 f"{result.status.value} ({result.duration:.1f}s)"
                 + (f" — {result.error_message}" if result.error_message else ""))
+            logger.warning(
+                f"[DIAG] _execute_single_task classify: next_task='{result.next_task}', "
+                f"status={result.status.value}"
+            )
             # Restore original settings
             task.max_retries = original_max_retries
             task.max_duration = original_max_duration
