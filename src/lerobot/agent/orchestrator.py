@@ -131,16 +131,6 @@ class TaskAgentOrchestrator:
         self.is_running = False
         self.total_collision_count = 0
 
-        # ▼▼▼ 新增 1：初始化双臂运动学求解器 ▼▼▼
-        try:
-            from lerobot.robots.supre_robot_follower.supre_kinematics import SupreRobotKinematics
-            urdf_path = "/home/t/workspace/dc_dir/RJ2506/urdf/RJ2506.urdf"
-            self.ik_solver = SupreRobotKinematics(urdf_path)
-        except Exception as e:
-            logger.error(f"初始化运动学求解器失败，将无法执行动态 Z 轴偏移: {e}")
-            self.ik_solver = None
-        # ▲▲▲ 新增结束 ▲▲▲
-
         # Execution mode
         self.use_local_execution = getattr(config, "use_local_execution", True)
 
@@ -1789,28 +1779,6 @@ class TaskAgentOrchestrator:
                 attempts=1,
             )
 
-                    
-            # ▼▼▼ 新增 2：动态摞料双臂 IK 计算逻辑 ▼▼▼
-            z_offset = getattr(task, 'z_offset_per_cycle', 0.0)
-            current_cycle = getattr(self, 'current_cycle', 1)
-
-            if z_offset != 0.0 and current_cycle > 1:
-                layer_index = current_cycle - 1
-                total_offset = layer_index * z_offset
-
-                logger.info(f"第 {current_cycle} 层：触发双臂协同 Z 轴抬高 +{total_offset} 米")
-
-                if self.ik_solver is not None:
-                    try:
-                        target_positions = self.ik_solver.apply_dual_arm_z_offset(
-                            yaml_positions=target_positions,
-                            z_offset_meters=total_offset
-                        )
-                    except Exception as e:
-                        logger.error(f"双臂 IK 计算失败，取消本次偏移: {e}")
-            # ▲▲▲ 新增结束 ▲▲▲
-
-
         tolerance = task.completion_criteria.position_tolerance  # degrees
         max_duration = task.max_duration
         control_frequency = getattr(self.config.robot_config, 'control_frequency', 30)
@@ -1984,12 +1952,7 @@ class TaskAgentOrchestrator:
             step_multiplier = getattr(task, 'speed_multiplier', 1.0)
             if step_multiplier != 1.0:
                 step_task.speed_multiplier = step_multiplier
-            
-            # ▼▼▼ 新增 3：将父任务的 Z 轴偏移参数传递给每一个子步骤 ▼▼▼
-            if hasattr(task, 'z_offset_per_cycle'):
-                step_task.z_offset_per_cycle = task.z_offset_per_cycle
-            # ▲▲▲ 新增结束 ▲▲▲
-            
+
             result = self._execute_position_task(step_task)
             total_duration += result.duration or 0.0
 

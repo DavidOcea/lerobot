@@ -205,7 +205,7 @@ tasks:
 
   # ---- Step 3: 拍照识别料片类型 (条件分支) ----
   # 用 head_cam 拍料片上的 AprilTag:
-  #   tag_id=1 → 类型1 → 跳到 "agv_to_station_B"
+  #   tag_id=1 → 类型1 → 跳到 "agv_to_station_D"
   #   tag_id=2 → 类型2 → 跳到 "agv_to_station_C"
   #   没检测到 → 跳到 "error_no_tag_found"
   - name: "classify_workpiece"
@@ -223,13 +223,13 @@ tasks:
     classify_config:
       method: "apriltag"
       marker_family: "tag36h11"
-      marker_size: 0.05           # 料片上的标记较小 (5cm)
+      marker_size: 0.13           # 料片上的标记较小 (5cm)
       marker_id_map:
         1: "workpiece_type_1"      # tag_id=1 → 类型1
         2: "workpiece_type_2"      # tag_id=2 → 类型2
       default_label: "unknown"     # 未识别到任何标记
     next_tasks:
-      workpiece_type_1: "agv_to_station_B"   # 类型1 → B点
+      workpiece_type_1: "agv_to_station_D"   # 类型1 → B点
       workpiece_type_2: "agv_to_station_C"   # 类型2 → C点
 
   # ---- Step 4a: 类型1 → AGV到D点 → 放置 ----
