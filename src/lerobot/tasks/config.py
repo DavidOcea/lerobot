@@ -281,6 +281,8 @@ class TaskConfig:
     # Conditional branch routing: {label: next_task_name, ...}
     next_tasks: dict[str, str] = field(default_factory=dict)
 
+    # ▼▼▼ 新增：双臂摞料的 Z 轴偏移量 ▼▼▼
+    z_offset_per_cycle: float = 0.0
     def validate(self) -> bool:
         """验证任务配置."""
         if self.task_type == "policy":
@@ -481,6 +483,9 @@ def parse_task_dict(
         # Conditional branch routing
         task_kwargs["next_tasks"] = task_dict.get("next_tasks", {})
 
+    # ▼▼▼ 新增：从 YAML 中读取偏移量 ▼▼▼
+    task_kwargs["z_offset_per_cycle"] = task_dict.get("z_offset_per_cycle", 0.0)
+    
     return TaskConfig(**task_kwargs)
 
 

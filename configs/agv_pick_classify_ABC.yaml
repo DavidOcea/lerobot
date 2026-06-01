@@ -18,6 +18,7 @@ named_positions:
     left_arm_joint_4: -58.6
     left_arm_joint_5: -2.0
     left_arm_joint_6: 11.8
+    left_arm_joint_7: 0.0
     right_arm_joint_1: 40.3
     right_arm_joint_2: 4.0
     right_arm_joint_3: 0.8
@@ -34,6 +35,7 @@ named_positions:
     left_arm_joint_4: -58.6
     left_arm_joint_5: -2.0
     left_arm_joint_6: 11.8
+    left_arm_joint_7: 0.0
     right_arm_joint_1: 52.3
     right_arm_joint_2: 4.0
     right_arm_joint_3: 0.8
@@ -50,6 +52,7 @@ named_positions:
     left_arm_joint_4: -58.6
     left_arm_joint_5: -2.0
     left_arm_joint_6: 4.0
+    left_arm_joint_7: 0.0
     right_arm_joint_1: 22.3
     right_arm_joint_2: 4.0
     right_arm_joint_3: 0.5
@@ -62,7 +65,7 @@ named_positions:
 # ========== AGV Global Configuration ==========
 agv_config:
   enabled: true
-  host: "192.168.2.210"
+  host: "192.168.2.31"
   port: 19204
   connection_timeout: 5.0
   read_timeout: 2.0
@@ -104,6 +107,18 @@ robot_config:
       width: 640
       height: 480
       fps: 30
+    left_wrist_cam:
+      type: opencv
+      index: 2
+      width: 640
+      height: 480
+      fps: 30
+    right_wrist_cam:
+      type: opencv
+      index: 4
+      width: 640
+      height: 480
+      fps: 30
 
 # ========== Collision Detection ==========
 collision_config:
@@ -139,7 +154,7 @@ tasks:
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
-      check_arm_safe_position: true
+      check_arm_safe_position: false
       retry_on_timeout: true
       retry_count: 2
       emergency_stop_on_error: true
@@ -147,7 +162,7 @@ tasks:
   # ---- Step 2: 抓取料片 (policy) ----
   - name: "pick_at_station_A"
     task_type: "policy"
-    policy_path: "/home/t/workspace/dc_dir/models/act_0421_1/checkpoints/120000/pretrained_model"
+    policy_path: "/home/t/workspace/dc_dir/models/act_0527/checkpoints/120000/pretrained_model"
     policy_type: "act"
     max_duration: 6.0
     max_retries: 1
@@ -156,6 +171,18 @@ tasks:
       - name: "head_cam"
         type: "opencv"
         index: 0
+        width: 640
+        height: 480
+        fps: 30
+      - name: "left_wrist_cam"
+        type: "opencv"
+        index: 2
+        width: 640
+        height: 480
+        fps: 30
+      - name: "right_wrist_cam"
+        type: "opencv"
+        index: 4
         width: 640
         height: 480
         fps: 30
@@ -205,14 +232,14 @@ tasks:
       workpiece_type_1: "agv_to_station_B"   # 类型1 → B点
       workpiece_type_2: "agv_to_station_C"   # 类型2 → C点
 
-  # ---- Step 4a: 类型1 → AGV到B点 → 放置 ----
-  - name: "agv_to_station_B"
+  # ---- Step 4a: 类型1 → AGV到D点 → 放置 ----
+  - name: "agv_to_station_D"
     task_type: "agv"
     max_duration: 60.0
     max_retries: 2
     enabled: true
     agv_config:
-      target_station: "LM7"
+      target_station: "AP11"
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
