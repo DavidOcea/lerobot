@@ -223,7 +223,7 @@ tasks:
     classify_config:
       method: "apriltag"
       marker_family: "tag36h11"
-      marker_size: 0.05           # 料片上的标记较小 (5cm)
+      marker_size: 0.13           # 料片上的标记较小 (5cm)
       marker_id_map:
         1: "workpiece_type_1"      # tag_id=1 → 类型1
         2: "workpiece_type_2"      # tag_id=2 → 类型2
@@ -243,7 +243,7 @@ tasks:
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
-      check_arm_safe_position: true
+      check_arm_safe_position: false
       retry_on_timeout: true
       retry_count: 2
       emergency_stop_on_error: true
@@ -281,7 +281,7 @@ tasks:
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
-      check_arm_safe_position: true
+      check_arm_safe_position: false
       retry_on_timeout: true
       retry_count: 2
       emergency_stop_on_error: true
@@ -297,7 +297,7 @@ tasks:
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
-      check_arm_safe_position: true
+      check_arm_safe_position: false
       retry_on_timeout: true
       retry_count: 2
       emergency_stop_on_error: true
@@ -334,7 +334,7 @@ tasks:
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
-      check_arm_safe_position: true
+      check_arm_safe_position: false
       retry_on_timeout: true
       retry_count: 2
       emergency_stop_on_error: true
