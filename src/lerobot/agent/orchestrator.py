@@ -1148,22 +1148,21 @@ class TaskAgentOrchestrator:
 
                 # Note: Index increment is now AFTER task execution, based on result
             else:
-                # No interactive selector, use simple for loop
-                for i, task in enumerate(self.config.tasks):
+                # No interactive selector, use indexed while loop with branch support
+                task_list = self.config.tasks
+                idx = 0
+                while idx < len(task_list):
+                    task = task_list[idx]
                     if not task.enabled:
                         logger.info(f"Skipping disabled task: {task.name}")
+                        idx += 1
                         continue
 
-                    logger.info(f"Executing task {i + 1}/{len(self.config.tasks)}: {task.name}")
+                    logger.info(f"Executing task {idx + 1}/{len(task_list)}: {task.name}")
 
                     # Execute the task
                     result = self._execute_single_task(task)
-
                     results.append(result)
-
-                    # Record task execution
-                    if self.interactive_selector is not None:
-                        self.interactive_selector.record_task_execution(task.name)
 
                     # Update collision count
                     if result.collision_detected:
@@ -1179,6 +1178,29 @@ class TaskAgentOrchestrator:
                             f"Maximum collision count reached ({self.config.max_total_collisions}), aborting"
                         )
                         break
+
+                    # Branch routing (same logic as interactive path)
+                    if result.next_task:
+                        found = False
+                        for j, t in enumerate(task_list):
+                            if t.name == result.next_task:
+                                idx = j
+                                logger.warning(
+                                    f"Branch: {task.name} → {result.next_task} (index {j})"
+                                )
+                                found = True
+                                break
+                        if not found:
+                            logger.error(
+                                f"Branch target '{result.next_task}' not found "
+                                f"in task list — falling back to sequential advance"
+                            )
+                            idx += 1
+                    elif task.cycle_end:
+                        logger.info(f"Cycle end marker at task {task.name}")
+                        break  # end current cycle, loop back via max_cycles
+                    else:
+                        idx += 1
                 # Exit while loop when no interactive selector
                 break
 
@@ -1240,6 +1262,9 @@ class TaskAgentOrchestrator:
                         )
                         self.interactive_selector.current_task_index += 1
                 else:
+                    if task.cycle_end:
+                        logger.info(f"Cycle end marker at task {task.name}")
+                        break  # end current cycle via while loop
                     self.interactive_selector.current_task_index += 1
                     # Skip builtin skills in AUTOMATIC mode — they are manually
                     # selectable skills, not part of the automatic task sequence.

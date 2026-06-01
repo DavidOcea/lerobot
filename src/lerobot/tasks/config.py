@@ -266,6 +266,7 @@ class TaskConfig:
     completion_criteria: CompletionCriteria = field(default_factory=CompletionCriteria)
     enabled: bool = True  # Allow disabling specific tasks
     cameras: list[CameraConfig] = field(default_factory=list)  # Active cameras for this task
+    cycle_end: bool = False  # When True, orchestrator ends the current cycle after this task
 
     # AGV任务字段
     agv_config: AGVTaskConfig | None = None
