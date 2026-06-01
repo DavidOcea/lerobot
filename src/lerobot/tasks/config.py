@@ -423,6 +423,7 @@ def parse_task_dict(
         "completion_criteria": completion_criteria,
         "cameras": cameras,
         "agv_config": agv_config,
+        "cycle_end": task_dict.get("cycle_end", False),
     }
 
     # Task-type-specific fields
