@@ -1,0 +1,1096 @@
+# AGV Pick + YOLO Classify + Conditional Place (A → C or D)
+#
+# 流程:
+#   1. AGV → A点
+#   2. 拍照识别料片类型 (long/short, 基于 YOLO ONNX)
+#   3. long → 长料片抓取 → AGV→C → 放置 (交替两个放置动作)
+#      short → 短料片抓取 → AGV→D → 放置
+#   4. 未识别 → 原地等待重试 (最多 10 次, 每次等 2s)
+#   5. 返回A, 每轮重置长料片放置计数
+#
+# 依赖: pip install onnxruntime
+# 模型: best.onnx (由 detection_model/runs/workpiece_yolo/weights/best.onnx)
+
+# ========== Named Positions ==========
+named_positions:
+  home:
+    left_arm_joint_1: -40.3
+    left_arm_joint_2: -4.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 11.8
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 40.3
+    right_arm_joint_2: 4.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -11.8
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  # === 长物料抓取 (pickup_station_5 系列) ===
+  pickup_station_5_1:
+    left_arm_joint_1: -70.3
+    left_arm_joint_2: -18.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -24.6
+    left_arm_joint_5: -90.0
+    left_arm_joint_6: -90.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 70.3
+    right_arm_joint_2: 18.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 24.6
+    right_arm_joint_5: 90.0
+    right_arm_joint_6: 90.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_station_5_2:
+    left_arm_joint_1: -48.8
+    left_arm_joint_2: -18.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -34.6
+    left_arm_joint_5: -100.0
+    left_arm_joint_6: -75.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 47.3
+    right_arm_joint_2: 18.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 34.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 78.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_station_5_3:
+    left_arm_joint_1: -50.3
+    left_arm_joint_2: -8.3
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -35.8
+    left_arm_joint_5: -98.0
+    left_arm_joint_6: -77.5
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 49.3
+    right_arm_joint_2: 9.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 34.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 84.5
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_station_5_4:
+    left_arm_joint_1: -50.3
+    left_arm_joint_2: -8.3
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -36.8
+    left_arm_joint_5: -98.0
+    left_arm_joint_6: -77.5
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 49.3
+    right_arm_joint_2: 9.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 35.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 84.5
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_station_5_5:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -8.3
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -27.8
+    left_arm_joint_5: -98.0
+    left_arm_joint_6: -87.5
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 9.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 26.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 88.5
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_station_5_home:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -8.3
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -27.8
+    left_arm_joint_5: -98.0
+    left_arm_joint_6: -87.5
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 9.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 26.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 88.5
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  # === 短物料抓取 (pickup 系列) ===
+  pickup_1:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -8.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -28.0
+    left_arm_joint_5: -100.0
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_2:
+    left_arm_joint_1: -49.3
+    left_arm_joint_2: -18.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -40.0
+    left_arm_joint_5: -93.0
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_3:
+    left_arm_joint_1: -49.3
+    left_arm_joint_2: -0.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -40.0
+    left_arm_joint_5: -93.0
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_4:
+    left_arm_joint_1: -49.3
+    left_arm_joint_2: -0.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -40.0
+    left_arm_joint_5: -93.0
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: -9.5
+    trunk_joint_2: 0.0
+
+  pickup_5:
+    left_arm_joint_1: -49.3
+    left_arm_joint_2: -0.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -40.0
+    left_arm_joint_5: -93.0
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: -9.5
+    trunk_joint_2: 0.0
+
+  pickup_6:
+    left_arm_joint_1: -64.3
+    left_arm_joint_2: -0.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -28.0
+    left_arm_joint_5: -93.0
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  pickup_home_1:
+    left_arm_joint_1: -64.3
+    left_arm_joint_2: -0.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -28.0
+    left_arm_joint_5: -93.0
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  # === 长料片放置动作1 (首次) ===
+  B_put_long_0:
+    left_arm_joint_1: -67.8
+    left_arm_joint_2: -8.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -99.2
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 66.4
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 25.3
+    right_arm_joint_5: 97.2
+    right_arm_joint_6: 88.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  B_put_long_1:
+    left_arm_joint_1: -67.8
+    left_arm_joint_2: -8.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -102.7
+    left_arm_joint_6: -48.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 66.4
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 25.3
+    right_arm_joint_5: 100.7
+    right_arm_joint_6: 47.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long_2:
+    left_arm_joint_1: -67.8
+    left_arm_joint_2: -8.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -102.7
+    left_arm_joint_6: -48.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 66.4
+    right_arm_joint_2: 18.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 25.3
+    right_arm_joint_5: 78.2
+    right_arm_joint_6: 49.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long_3:
+    left_arm_joint_1: -67.8
+    left_arm_joint_2: -8.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -102.7
+    left_arm_joint_6: -48.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 69.4
+    right_arm_joint_2: 7.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 30.3
+    right_arm_joint_5: 100.7
+    right_arm_joint_6: 47.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long_3_2:
+    left_arm_joint_1: -67.8
+    left_arm_joint_2: -7.5
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -102.7
+    left_arm_joint_6: -48.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 69.4
+    right_arm_joint_2: 7.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 16.3
+    right_arm_joint_5: 100.7
+    right_arm_joint_6: 45.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long_4:
+    left_arm_joint_1: -67.8
+    left_arm_joint_2: -8.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -102.7
+    left_arm_joint_6: -48.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 69.4
+    right_arm_joint_2: 7.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 15.3
+    right_arm_joint_5: 100.7
+    right_arm_joint_6: 45.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long_5:
+    left_arm_joint_1: -72.8
+    left_arm_joint_2: -19.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -80.2
+    left_arm_joint_6: -48.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 69.4
+    right_arm_joint_2: 7.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 15.3
+    right_arm_joint_5: 100.7
+    right_arm_joint_6: 45.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long_home:
+    left_arm_joint_1: -67.8
+    left_arm_joint_2: -8.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -99.2
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 66.4
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 25.3
+    right_arm_joint_5: 97.2
+    right_arm_joint_6: 88.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  # === 长料片放置动作2 (第二次, 位置微调) ===
+  B_put_long2_3_2:
+    left_arm_joint_1: -67.8
+    left_arm_joint_2: -7.5
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -102.7
+    left_arm_joint_6: -48.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 69.4
+    right_arm_joint_2: 7.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 19.3
+    right_arm_joint_5: 100.7
+    right_arm_joint_6: 45.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long2_4:
+    left_arm_joint_1: -67.8
+    left_arm_joint_2: -8.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -102.7
+    left_arm_joint_6: -48.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 69.4
+    right_arm_joint_2: 7.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 18.3
+    right_arm_joint_5: 100.7
+    right_arm_joint_6: 45.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long2_5:
+    left_arm_joint_1: -72.8
+    left_arm_joint_2: -19.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -80.2
+    left_arm_joint_6: -48.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 69.4
+    right_arm_joint_2: 7.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 18.3
+    right_arm_joint_5: 100.7
+    right_arm_joint_6: 45.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  # === 短料片放置动作 ===
+  B_put_short_0:
+    left_arm_joint_1: -64.3
+    left_arm_joint_2: -0.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -28.0
+    left_arm_joint_5: -93.0
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  B_put_short_1:
+    left_arm_joint_1: -99.3
+    left_arm_joint_2: -10.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -8.0
+    left_arm_joint_5: -93.0
+    left_arm_joint_6: -65.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 28.0
+
+  B_put_short_2:
+    left_arm_joint_1: -94.3
+    left_arm_joint_2: -7.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -8.0
+    left_arm_joint_5: -55.0
+    left_arm_joint_6: -49.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 33.0
+
+  B_put_short_3:
+    left_arm_joint_1: -99.3
+    left_arm_joint_2: -0.6
+    left_arm_joint_3: -29.4
+    left_arm_joint_4: -10.1
+    left_arm_joint_5: -24.7
+    left_arm_joint_6: -49.5
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 45.0
+
+  B_put_short_3_5:
+    left_arm_joint_1: -99.3
+    left_arm_joint_2: -0.6
+    left_arm_joint_3: -29.4
+    left_arm_joint_4: -10.1
+    left_arm_joint_5: -24.7
+    left_arm_joint_6: -49.5
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 45.0
+
+  B_put_short_4:
+    left_arm_joint_1: -99.3
+    left_arm_joint_2: -8.6
+    left_arm_joint_3: -29.4
+    left_arm_joint_4: -25.1
+    left_arm_joint_5: -24.7
+    left_arm_joint_6: -49.5
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 45.0
+
+  B_put_short_home:
+    left_arm_joint_1: -64.3
+    left_arm_joint_2: -0.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -28.0
+    left_arm_joint_5: -60.0
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  B_put_short_home_2:
+    left_arm_joint_1: -64.3
+    left_arm_joint_2: -0.8
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -28.0
+    left_arm_joint_5: -93.0
+    left_arm_joint_6: -85.0
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.5
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 28.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 87.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+# ========== AGV Global Configuration ==========
+agv_config:
+  enabled: true
+  host: "192.168.2.31"
+  port: 19204
+  connection_timeout: 5.0
+  read_timeout: 2.0
+  auto_reconnect: true
+  auto_disconnect_after_task: false
+  emergency_stop_enabled: true
+  check_arm_before_move: true
+  station_map:
+    station_A: [0.168, 0.029, 0.650]
+    station_C: [0.0, 9.0, 0.0]
+    station_D: [5.0, 0.0, 0.0]
+  default_arm_safe_positions:
+    left_arm_joint_1: 5.0
+    left_arm_joint_2: 5.0
+    left_arm_joint_3: 5.0
+    left_arm_joint_4: 5.0
+    left_arm_joint_5: 5.0
+    left_arm_joint_6: 5.0
+    right_arm_joint_1: 5.0
+    right_arm_joint_2: 5.0
+    right_arm_joint_3: 5.0
+    right_arm_joint_4: 5.0
+    right_arm_joint_5: 5.0
+    right_arm_joint_6: 5.0
+    trunk_joint_1: 3.0
+    trunk_joint_2: 3.0
+
+# ========== Robot Configuration ==========
+robot_config:
+  type: "supre_robot_follower"
+  control_frequency: 50
+  prometheus_port: 8000
+  max_relative_joint_move: 2.0
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
+  cameras:
+    head_cam:
+      type: opencv
+      index: 0
+      width: 640
+      height: 480
+      fps: 30
+    left_wrist_cam:
+      type: opencv
+      index: 2
+      width: 640
+      height: 480
+      fps: 30
+    right_wrist_cam:
+      type: opencv
+      index: 4
+      width: 640
+      height: 480
+      fps: 30
+
+# ========== Collision Detection ==========
+collision_config:
+  collision_threshold: 2.0
+  detection_window: 5
+  adaptive_mode: true
+  velocity_compensation: true
+  auto_calibrate: true
+  calibration_samples: 20
+
+# ========== Monitoring ==========
+monitoring_config:
+  log_level: "INFO"
+  enable_prometheus: false
+  prometheus_port: 9090
+
+# ========== Task Sequence ==========
+# 流程:
+#   AGV→A → 分类(头部相机) → long/short 分支
+#     long: 长料片抓取 → arm_home → AGV→C → 放置(long_1 或 long_2交替)
+#     short: 短料片抓取 → arm_home → AGV→D → 短放置
+#   未识别 → 原地等待重试
+#   → 返回A (cycle_end)
+#
+# 长料片放置每次循环交替:
+#   第1次 long → long_1 (放长料片)
+#   第2次 long → long_2 (放长料片2)
+#   每轮大循环重置计数
+
+tasks:
+  # ---- Step 1: AGV到A点 ----
+  - name: "agv_to_station_A"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM8"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # ---- Step 2: 拍照识别料片类型 (条件分支) ----
+  # YOLO ONNX 检测 → label="long" 或 "short"
+  # 未识别 → 原地等待重试 (最多 10 次, 每次 2s)
+  # label_counter 把 long 自动标记为 long_1 / long_2 (交替)
+  - name: "classify_workpiece"
+    task_type: "classify"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    cameras:
+      - name: "head_cam"
+        type: "opencv"
+        index: 0
+        width: 640
+        height: 480
+        fps: 30
+    classify_config:
+      method: "yolo_detect"
+      model_path: "/home/t/workspace/gitprj/lerobot/../detection_model/runs/workpiece_yolo/weights/best.onnx"
+      classes: ["short", "long"]
+      default_label: "unknown"
+      # 未识别 → 原地等待重试
+      retry_on_no_detect: true
+      retry_wait_seconds: 2.0
+      retry_max_attempts: 10
+      # 长料片交替放置计数
+      label_counter_enable: true
+      counter_keywords: ["long"]
+      counter_modulo: 2           # long_1 → long_2 → long_1 → ... 循环
+    next_tasks:
+      long_1: "pickup_long"       # 第1次长料片 → 长抓取 → C点放置1
+      long_2: "pickup_long2"      # 第2次长料片 → 长抓取 → C点放置2
+      short: "pickup_short"       # 短料片 → 短抓取 → D点
+
+  # === 长料片分支 ===
+
+  # 长料片抓取 (第1次放置)
+  - name: "pickup_long"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "手臂摊开"
+        position: pickup_station_5_1
+        max_duration: 2.0
+        position_tolerance: 3.0
+      - name: "手臂下降"
+        position: pickup_station_5_2
+        max_duration: 2.0
+        position_tolerance: 3.0
+      - name: "手臂闭合"
+        position: pickup_station_5_3
+        max_duration: 2.0
+        position_tolerance: 3.0
+      - name: "夹爪闭合"
+        position: pickup_station_5_4
+        max_duration: 1.0
+        position_tolerance: 3.0
+      - name: "手臂抬起"
+        position: pickup_station_5_5
+        max_duration: 2.0
+        position_tolerance: 3.0
+      - name: "home"
+        position: pickup_station_5_home
+        max_duration: 2.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_pickup_long"
+    task_type: "position"
+    max_duration: 15.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 2.0
+
+  - name: "agv_to_station_C"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "AP10"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # 长料片放置1 (第1次)
+  - name: "place_long_1"
+    task_type: "position_sequence"
+    max_duration: 16.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "step_1"
+        position: B_put_long_0
+        max_duration: 1.0
+        position_tolerance: 3.0
+      - name: "step_2"
+        position: B_put_long_1
+        max_duration: 4.0
+        position_tolerance: 3.0
+      - name: "step_3"
+        position: B_put_long_2
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "step_4"
+        position: B_put_long_3
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "step_4_5"
+        position: B_put_long_3_2
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "step_5"
+        position: B_put_long_4
+        max_duration: 1.0
+        position_tolerance: 3.0
+      - name: "step_6"
+        position: B_put_long_5
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "step_7"
+        position: B_put_long_home
+        max_duration: 4.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_place_long_1"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  - name: "agv_return_from_C_to_A"
+    cycle_end: true
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM8"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # 长料片抓取 (第2次放置)
+  - name: "pickup_long2"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "手臂摊开"
+        position: pickup_station_5_1
+        max_duration: 2.0
+        position_tolerance: 3.0
+      - name: "手臂下降"
+        position: pickup_station_5_2
+        max_duration: 2.0
+        position_tolerance: 3.0
+      - name: "手臂闭合"
+        position: pickup_station_5_3
+        max_duration: 2.0
+        position_tolerance: 3.0
+      - name: "夹爪闭合"
+        position: pickup_station_5_4
+        max_duration: 1.0
+        position_tolerance: 3.0
+      - name: "手臂抬起"
+        position: pickup_station_5_5
+        max_duration: 2.0
+        position_tolerance: 3.0
+      - name: "home"
+        position: pickup_station_5_home
+        max_duration: 2.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_pickup_long2"
+    task_type: "position"
+    max_duration: 15.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 2.0
+
+  - name: "agv_to_station_C2"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "AP10"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # 长料片放置2 (第2次, 位置微调版)
+  - name: "place_long_2"
+    task_type: "position_sequence"
+    max_duration: 16.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "step_1"
+        position: B_put_long_0
+        max_duration: 1.0
+        position_tolerance: 3.0
+      - name: "step_2"
+        position: B_put_long_1
+        max_duration: 4.0
+        position_tolerance: 3.0
+      - name: "step_3"
+        position: B_put_long_2
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "step_4"
+        position: B_put_long_3
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "step_4_5"
+        position: B_put_long2_3_2
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "step_5"
+        position: B_put_long2_4
+        max_duration: 1.0
+        position_tolerance: 3.0
+      - name: "step_6"
+        position: B_put_long2_5
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "step_7"
+        position: B_put_long_home
+        max_duration: 4.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_place_long_2"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  - name: "agv_return_from_C2_to_A"
+    cycle_end: true
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM8"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # === 短料片分支 ===
+
+  # 短料片抓取
+  - name: "pickup_short"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "手臂摊开"
+        position: pickup_1
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "手臂下降"
+        position: pickup_2
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "手臂闭合"
+        position: pickup_3
+        max_duration: 2.0
+        position_tolerance: 3.0
+      - name: "腰部旋转"
+        position: pickup_4
+        max_duration: 1.5
+        position_tolerance: 3.0
+      - name: "夹爪闭合"
+        position: pickup_5
+        max_duration: 1.0
+        position_tolerance: 3.0
+      - name: "手臂抬起"
+        position: pickup_6
+        max_duration: 2.0
+        position_tolerance: 3.0
+      - name: "夹爪打开"
+        position: pickup_home_1
+        max_duration: 1.0
+        position_tolerance: 3.0
+
+  - name: "arm_home_after_pickup_short"
+    task_type: "position"
+    max_duration: 15.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 2.0
+
+  - name: "agv_to_station_D"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "AP11"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # 短料片放置
+  - name: "place_short"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "step_0"
+        position: B_put_short_0
+        max_duration: 1.0
+      - name: "step_1"
+        position: B_put_short_1
+        max_duration: 4.0
+      - name: "step_2"
+        position: B_put_short_2
+        max_duration: 3.0
+      - name: "step_3"
+        position: B_put_short_3
+        max_duration: 2.5
+      - name: "step_3_5"
+        position: B_put_short_3_5
+        max_duration: 1.0
+      - name: "step_4"
+        position: B_put_short_4
+        max_duration: 2.0
+      - name: "step_5"
+        position: B_put_short_home
+        max_duration: 3.5
+      - name: "step_6"
+        position: B_put_short_home_2
+        max_duration: 3.0
+
+  - name: "arm_home_after_place_short"
+    task_type: "position"
+    max_duration: 10.0
+    max_retries: 1
+    enabled: true
+    completion_criteria:
+      type: "position"
+      position: home
+      position_tolerance: 3.0
+
+  - name: "agv_return_from_D_to_A"
+    cycle_end: true
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM8"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+# ========== Cycle Execution Settings ==========
+max_cycles: 10
+cycle_delay: 3.0
+enable_cycle_prompt: true
+environment_dt: 1.0 / 30.0
+observation_timeout: 5.0
+action_timeout: 5.0
+reset_duration: 3.0
+reset_positions: {}
