@@ -1754,6 +1754,9 @@ class TaskAgentOrchestrator:
             "marker_size": cc.marker_size,
             "default_label": cc.default_label,
             "default_next_task": cc.default_next_task,
+            # YOLO-specific (ignored by apriltag)
+            "model_path": cc.model_path,
+            "classes": cc.classes,
         }
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
