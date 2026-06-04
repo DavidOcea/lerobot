@@ -102,7 +102,8 @@ class AGVTaskConfig:
 
     # ===== 安全检查 =====
     check_arm_safe_position: bool = True  # 移动前检查机械臂是否在安全位置
-    arm_safe_positions: dict[str, float] = field(default_factory=dict)  # 安全位置阈值
+    arm_safe_positions: dict[str, float] = field(default_factory=dict)  # 安全偏差阈值
+    arm_home_positions: dict[str, float] = field(default_factory=dict)  # 安全基准位置 (默认用硬编码 home)
 
     # ===== 错误处理 =====
     retry_on_timeout: bool = True  # 超时是否重试

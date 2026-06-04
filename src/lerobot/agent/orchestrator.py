@@ -1592,6 +1592,7 @@ class TaskAgentOrchestrator:
             arrival_tolerance=agv_config.arrival_tolerance,
             check_arm_safe=agv_config.check_arm_safe_position,
             arm_safe_positions=agv_config.arm_safe_positions,
+            arm_home_positions=agv_config.arm_home_positions,
             retry_on_timeout=agv_config.retry_on_timeout,
             retry_count=agv_config.retry_count,
             emergency_stop_on_error=agv_config.emergency_stop_on_error,
