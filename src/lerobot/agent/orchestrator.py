@@ -463,10 +463,11 @@ class TaskAgentOrchestrator:
                 if builtin_tasks:
                     named_positions = self.config.named_positions
                     default_arm_safe = self.config.agv_config.default_arm_safe_positions if self.config.agv_config else {}
+                    default_arm_home = self.config.agv_config.default_arm_home_positions if self.config.agv_config else {}
                     builtin_configs = []
                     for td in builtin_tasks:
                         try:
-                            tc = parse_task_dict(td, named_positions, default_arm_safe)
+                            tc = parse_task_dict(td, named_positions, default_arm_safe, default_arm_home)
                             builtin_configs.append(tc)
                         except Exception as e:
                             logger.warning(

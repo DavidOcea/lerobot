@@ -356,6 +356,7 @@ def parse_task_dict(
     task_dict: dict[str, Any],
     named_positions: dict[str, dict[str, float]] | None = None,
     default_arm_safe_positions: dict[str, Any] | None = None,
+    default_arm_home_positions: dict[str, Any] | None = None,
 ) -> TaskConfig:
     """Parse a single task dict into a fully-formed TaskConfig.
 
@@ -368,6 +369,7 @@ def parse_task_dict(
         named_positions: Optional mapping of position name → joint dict, used to
             resolve ``position: home`` shorthand references.
         default_arm_safe_positions: Optional default arm-safe positions inherited
+        default_arm_home_positions: Optional default arm-home positions inherited
             by AGV tasks that don't specify their own.
 
     Returns:
@@ -375,6 +377,7 @@ def parse_task_dict(
     """
     named_positions = named_positions or {}
     default_arm_safe_positions = default_arm_safe_positions or {}
+    default_arm_home_positions = default_arm_home_positions or {}
 
     task_type = task_dict.get("task_type", "policy")
 
@@ -422,6 +425,8 @@ def parse_task_dict(
     if agv_config_dict:
         if default_arm_safe_positions and "arm_safe_positions" not in agv_config_dict:
             agv_config_dict["arm_safe_positions"] = default_arm_safe_positions
+        if default_arm_home_positions and "arm_home_positions" not in agv_config_dict:
+            agv_config_dict["arm_home_positions"] = default_arm_home_positions
 
         # Convert target_position list → tuple
         if "target_position" in agv_config_dict:
@@ -551,11 +556,13 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     # Parse global agv_config for default_arm_safe_positions
     global_agv_config_dict = config_dict.get("agv_config", {})
     default_arm_safe_positions = global_agv_config_dict.get("default_arm_safe_positions", {})
+    default_arm_home_positions = global_agv_config_dict.get("default_arm_home_positions", {})
 
     # Parse tasks
     tasks = []
     for task_dict in config_dict.get("tasks", []):
-        tc = parse_task_dict(task_dict, named_positions, default_arm_safe_positions)
+        tc = parse_task_dict(task_dict, named_positions, default_arm_safe_positions,
+                             default_arm_home_positions)
         tasks.append(tc)
 
     # Parse robot config using draccus to handle polymorphic types
