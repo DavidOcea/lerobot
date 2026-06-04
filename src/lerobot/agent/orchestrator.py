@@ -1791,6 +1791,17 @@ class TaskAgentOrchestrator:
                     error_message="Classification failed after retries",
                 )
 
+            # No-detection even after retries: fail to stop the cycle
+            if result.label == "no_detection" and cc.retry_on_no_detect:
+                logger.error(
+                    f"Classify failed: no_detection after {max_retries} retries — stopping cycle"
+                )
+                return TaskResult(
+                    task_name=task.name, status=TaskStatus.FAILED,
+                    duration=time.time() - start_time,
+                    error_message=f"No workpiece detected after {max_retries} attempts",
+                )
+
             # Apply label counter for alternating placements
             if cc.label_counter_enable and cc.counter_keywords:
                 result.label = _counted_label(result.label, cc.counter_keywords, cc.counter_modulo)
