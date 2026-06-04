@@ -12,11 +12,49 @@ Supported methods:
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
 from lerobot.agent.visual_align import detect_marker, _get_detector
 from lerobot.tasks.config import VisualAlignConfig
+
+# ── global label counter (resets per cycle, used for alternating placements) ──
+
+_LABEL_COUNTERS: dict[str, int] = {}
+
+
+def reset_classify_counters(keywords: Optional[list[str]] = None):
+    """Reset label counters at the start of each cycle.
+
+    Called by the orchestrator before each cycle begins.
+    If keywords is None, resets ALL counters.
+    If keywords is a list, only resets those specific counters.
+    """
+    global _LABEL_COUNTERS
+    if keywords is None:
+        _LABEL_COUNTERS.clear()
+    else:
+        for kw in keywords:
+            _LABEL_COUNTERS.pop(kw, None)
+
+
+def _counted_label(label: str, counter_keywords: list[str], modulo: int = 0) -> str:
+    """Append sequence number to label if it matches a counted keyword.
+
+    e.g. "long" → "long_1", then "long_2", etc.
+    If modulo > 0, wraps after reaching modulo: 1→2→...→modulo→1→...
+    Counter resets when orchestrator calls reset_classify_counters().
+    """
+    for kw in counter_keywords:
+        if kw == label:
+            global _LABEL_COUNTERS
+            _LABEL_COUNTERS[label] = _LABEL_COUNTERS.get(label, 0) + 1
+            seq = _LABEL_COUNTERS[label]
+            if modulo > 0:
+                seq = ((seq - 1) % modulo) + 1
+            return f"{label}_{seq}"
+    return label
 
 
 @dataclass

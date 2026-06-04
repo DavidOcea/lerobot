@@ -240,6 +240,16 @@ class ClassifyConfig:
     model_path: str = ""  # ONNX model path (e.g. best.onnx)
     classes: list = field(default_factory=lambda: ["short", "long"])  # cls_id → label
 
+    # --- Label counter (for alternating placements) ---
+    label_counter_enable: bool = False  # enable label counting (e.g. long→long_1, long_2)
+    counter_keywords: list = field(default_factory=list)  # which labels to count
+    counter_modulo: int = 0  # if > 0, wrap count: 1→2→...→counter_modulo→1→... (0=no wrap)
+
+    # --- No-detection retry ---
+    retry_on_no_detect: bool = False  # wait and retry if nothing found
+    retry_wait_seconds: float = 2.0   # seconds between retries
+    retry_max_attempts: int = 10      # max retries before giving up
+
     # ===== 安全配置 =====
     check_arm_safe_position: bool = True  # AGV 微调前检查机械臂安全位置
     arm_safe_positions: dict[str, float] = field(default_factory=dict)

@@ -54,7 +54,7 @@ from lerobot.safety.emergency_stop_controller import (
 # AGV imports (NEW)
 from lerobot.robots.agv.seer_agv_controller import SeerAGVController, AGVPosition
 from lerobot.tasks.agv_executor import AGVTaskExecutor, AGVExecutionResult, create_task_result_from_agv_result
-from lerobot.tasks.classifier import make_classifier
+from lerobot.tasks.classifier import make_classifier, reset_classify_counters, _counted_label
 
 # Monitoring imports (NEW)
 from lerobot.monitoring.dashboard import MonitorCollector, HTTPDashboard
@@ -988,6 +988,8 @@ class TaskAgentOrchestrator:
                 # Reset task index for new cycle
                 if self.interactive_selector is not None:
                     self.interactive_selector.current_task_index = 0
+                # Reset classify label counters for alternating placements
+                reset_classify_counters()
 
                 # Execute one cycle
                 summary = self._execute_with_safety()
@@ -1760,7 +1762,39 @@ class TaskAgentOrchestrator:
         }
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
-            result = classifier.classify(bgr)
+
+            # Retry loop for no_detection
+            retry_attempts = 0
+            max_retries = cc.retry_max_attempts if cc.retry_on_no_detect else 1
+            result = None
+            for retry_attempts in range(max_retries):
+                result = classifier.classify(bgr)
+                if result.label == "no_detection" and cc.retry_on_no_detect:
+                    logger.warning(
+                        f"Classify retry {retry_attempts + 1}/{max_retries}: "
+                        f"no detection, waiting {cc.retry_wait_seconds}s ..."
+                    )
+                    time.sleep(cc.retry_wait_seconds)
+                    # Re-capture image
+                    obs = self.robot.get_observation()
+                    img = obs.get("images", {}).get("head_cam")
+                    if img is not None:
+                        bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
+                else:
+                    break
+
+            if result is None:
+                return TaskResult(
+                    task_name=task.name, status=TaskStatus.FAILED,
+                    duration=time.time() - start_time,
+                    error_message="Classification failed after retries",
+                )
+
+            # Apply label counter for alternating placements
+            if cc.label_counter_enable and cc.counter_keywords:
+                result.label = _counted_label(result.label, cc.counter_keywords, cc.counter_modulo)
+                logger.warning(f"Classify counted label: {result.label}")
+
         except Exception as e:
             logger.error(f"Classification failed: {e}")
             return TaskResult(
