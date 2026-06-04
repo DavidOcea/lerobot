@@ -12,15 +12,15 @@
 # ========== Named Positions ==========
 named_positions:
   home:
-    left_arm_joint_1: -40.3
-    left_arm_joint_2: -4.0
+    left_arm_joint_1: -45.3
+    left_arm_joint_2: -8.0
     left_arm_joint_3: -0.5
     left_arm_joint_4: -58.6
     left_arm_joint_5: -2.0
     left_arm_joint_6: 11.8
     left_arm_joint_7: 0.0
-    right_arm_joint_1: 40.3
-    right_arm_joint_2: 4.0
+    right_arm_joint_1: 45.3
+    right_arm_joint_2: 8.0
     right_arm_joint_3: 0.8
     right_arm_joint_4: 58.6
     right_arm_joint_5: 2.0
@@ -220,17 +220,25 @@ tasks:
         width: 640
         height: 480
         fps: 30
+    # classify_config:
+    #   method: "apriltag"
+    #   marker_family: "tag36h11"
+    #   marker_size: 0.13           # 料片上的标记较小 (5cm)
+    #   marker_id_map:
+    #     1: "workpiece_type_1"      # tag_id=1 → 类型1
+    #     2: "workpiece_type_2"      # tag_id=2 → 类型2
+    #   default_label: "unknown"     # 未识别到任何标记
+    # next_tasks:
+    #   workpiece_type_1: "agv_to_station_D"   # 类型1 → B点
+    #   workpiece_type_2: "agv_to_station_C"   # 类型2 → C点
     classify_config:
-      method: "apriltag"
-      marker_family: "tag36h11"
-      marker_size: 0.13           # 料片上的标记较小 (5cm)
-      marker_id_map:
-        1: "workpiece_type_1"      # tag_id=1 → 类型1
-        2: "workpiece_type_2"      # tag_id=2 → 类型2
-      default_label: "unknown"     # 未识别到任何标记
+      method: "yolo_detect"
+      model_path: "/home/t/workspace/dc_dir/models/yolov8n/best.onnx"
+      classes: ["short", "long"]
+      default_label: "unknown"
     next_tasks:
-      workpiece_type_1: "agv_to_station_D"   # 类型1 → B点
-      workpiece_type_2: "agv_to_station_C"   # 类型2 → C点
+      short: "agv_to_station_D"   # 类型1 → B点
+      long: "agv_to_station_C"   # 类型2 → C点
 
   # ---- Step 4a: 类型1 → AGV到D点 → 放置 ----
   - name: "agv_to_station_D"

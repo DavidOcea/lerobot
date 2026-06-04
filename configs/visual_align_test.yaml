@@ -11,18 +11,19 @@
 # ========== Named Positions ==========
 named_positions:
   home:
-    left_arm_joint_1: -40.3
-    left_arm_joint_2: -4.0
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -8.3
     left_arm_joint_3: -0.5
-    left_arm_joint_4: -58.6
-    left_arm_joint_5: -2.0
-    left_arm_joint_6: 11.8
-    right_arm_joint_1: 40.3
-    right_arm_joint_2: 4.0
+    left_arm_joint_4: -27.8
+    left_arm_joint_5: -98.0
+    left_arm_joint_6: -87.5
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 9.0
     right_arm_joint_3: 0.8
-    right_arm_joint_4: 58.6
-    right_arm_joint_5: 2.0
-    right_arm_joint_6: -11.8
+    right_arm_joint_4: 26.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 88.5
     trunk_joint_1: 0.0
     trunk_joint_2: 0.0
 
@@ -55,6 +56,23 @@ agv_config:
     right_arm_joint_6: 5.0
     trunk_joint_1: 3.0
     trunk_joint_2: 3.0
+
+  default_arm_home_positions:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -8.3
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -27.8
+    left_arm_joint_5: -98.0
+    left_arm_joint_6: -87.5
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 9.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 26.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 88.5
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
 
 # ========== Robot Configuration ==========
 robot_config:
@@ -107,7 +125,7 @@ tasks:
     max_retries: 2
     enabled: true
     agv_config:
-      target_station: "AP10"
+      target_station: "LM8"
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
@@ -121,10 +139,10 @@ tasks:
   - name: "visual_align_marker_C"
     task_type: "visual_align"
     max_duration: 120.0
-    max_retries: 2
+    max_retries: 5
     enabled: true
     visual_align_config:
-      reference_pose_path: "ref_station_D.json"  # 站点参考位姿文件 默认不配置用approach_distance，配置时用参考照片定位
+      reference_pose_path: "ref_station_C.json"  # 站点参考位姿文件 默认不配置用approach_distance，配置时用参考照片定位
       distance_offset: -0.20     # 参考位姿距离修正 (米), 补偿减号公式系统偏移, 正值=多前进
       marker_id: 0              # AprilTag ID=0 (站点C的标记)
       marker_size: 0.13         # 标记物理边长 10cm (0.10m)
@@ -137,7 +155,7 @@ tasks:
       max_iterations: 5         # 闭环最多5轮微调 (参考照片模式建议≥5)
       translate_speed: 0.15     # 前进微调速度 0.15m/s
       turn_speed: 15.0          # 转动微调速度 15°/s
-      approach_distance: 0.50   # 停在标记前方50cm处
+      approach_distance: 0.90   # 停在标记前方50cm处
       camera_offset_x: 0.0      # 相机偏移 (先用0, 闭环收敛弥补)
       camera_offset_y: 0.0
       camera_offset_yaw: 0.0

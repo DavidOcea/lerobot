@@ -10,23 +10,25 @@
 #
 # 依赖: pip install onnxruntime
 # 模型: best.onnx (由 detection_model/runs/workpiece_yolo/weights/best.onnx)
+# 备注：C=B1，D=B2
+
 
 # ========== Named Positions ==========
 named_positions:
   home:
-    left_arm_joint_1: -40.3
-    left_arm_joint_2: -4.0
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -8.3
     left_arm_joint_3: -0.5
-    left_arm_joint_4: -58.6
-    left_arm_joint_5: -2.0
-    left_arm_joint_6: 11.8
-    left_arm_joint_7: 0.0
-    right_arm_joint_1: 40.3
-    right_arm_joint_2: 4.0
+    left_arm_joint_4: -27.8
+    left_arm_joint_5: -98.0
+    left_arm_joint_6: -87.5
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 9.0
     right_arm_joint_3: 0.8
-    right_arm_joint_4: 58.6
-    right_arm_joint_5: 2.0
-    right_arm_joint_6: -11.8
+    right_arm_joint_4: 26.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 88.5
     trunk_joint_1: 0.0
     trunk_joint_2: 0.0
 
@@ -123,7 +125,7 @@ named_positions:
     left_arm_joint_4: -27.8
     left_arm_joint_5: -98.0
     left_arm_joint_6: -87.5
-    left_arm_joint_7: 0.0
+    left_arm_joint_7: 1.0
     right_arm_joint_1: 63.8
     right_arm_joint_2: 9.0
     right_arm_joint_3: 0.8
@@ -243,7 +245,7 @@ named_positions:
     left_arm_joint_4: -28.0
     left_arm_joint_5: -93.0
     left_arm_joint_6: -85.0
-    left_arm_joint_7: 0.0
+    left_arm_joint_7: 1.0
     right_arm_joint_1: 63.8
     right_arm_joint_2: 7.5
     right_arm_joint_3: 0.8
@@ -610,6 +612,24 @@ agv_config:
     trunk_joint_1: 3.0
     trunk_joint_2: 3.0
 
+  default_arm_home_positions:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -8.3
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -27.8
+    left_arm_joint_5: -98.0
+    left_arm_joint_6: -87.5
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 9.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 26.6
+    right_arm_joint_5: 98.0
+    right_arm_joint_6: 88.5
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+
 # ========== Robot Configuration ==========
 robot_config:
   type: "supre_robot_follower"
@@ -677,9 +697,25 @@ tasks:
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
-      check_arm_safe_position: false
+      check_arm_safe_position: true
       retry_on_timeout: true
       retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "agv_forward_10cm_A"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.10     # 距离绝对值 0.2米
+      translate_vx: 0.1       # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
       emergency_stop_on_error: true
 
   # ---- Step 2: 拍照识别料片类型 (条件分支) ----
@@ -700,7 +736,7 @@ tasks:
         fps: 30
     classify_config:
       method: "yolo_detect"
-      model_path: "/home/t/workspace/gitprj/lerobot/../detection_model/runs/workpiece_yolo/weights/best.onnx"
+      model_path: "/home/t/workspace/dc_dir/models/yolov8n/best.onnx"
       classes: ["short", "long"]
       default_label: "unknown"
       # 未识别 → 原地等待重试
@@ -760,19 +796,51 @@ tasks:
       position: home
       position_tolerance: 2.0
 
-  - name: "agv_to_station_C"
+  - name: "agv_backward_20cm_A1_1"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.20      # 距离绝对值 0.2米
+      translate_vx: -0.1      # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: true
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  - name: "agv_to_station_B1"
     task_type: "agv"
     max_duration: 60.0
     max_retries: 2
     enabled: true
     agv_config:
-      target_station: "AP10"
+      target_station: "LM1"
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
       check_arm_safe_position: true
       retry_on_timeout: true
       retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "agv_forward_5cm_B1_1"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.05      # 距离绝对值 0.2米
+      translate_vx: 0.1       # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
       emergency_stop_on_error: true
 
   # 长料片放置1 (第1次)
@@ -825,7 +893,23 @@ tasks:
       position: home
       position_tolerance: 3.0
 
-  - name: "agv_return_from_C_to_A"
+  - name: "agv_backward_20cm_B1_1"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.20      # 距离绝对值 0.2米
+      translate_vx: -0.1      # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  - name: "agv_return_from_B1_to_A"
     cycle_end: true
     task_type: "agv"
     max_duration: 60.0
@@ -883,19 +967,51 @@ tasks:
       position: home
       position_tolerance: 2.0
 
-  - name: "agv_to_station_C2"
+  - name: "agv_backward_20cm_A1_2"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.20      # 距离绝对值 0.2米
+      translate_vx: -0.1      # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  - name: "agv_to_station_B1"
     task_type: "agv"
     max_duration: 60.0
     max_retries: 2
     enabled: true
     agv_config:
-      target_station: "AP10"
+      target_station: "LM1"
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
       check_arm_safe_position: true
       retry_on_timeout: true
       retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "agv_forward_5cm_B1_2"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.05      # 距离绝对值 0.2米
+      translate_vx: 0.1       # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
       emergency_stop_on_error: true
 
   # 长料片放置2 (第2次, 位置微调版)
@@ -948,7 +1064,23 @@ tasks:
       position: home
       position_tolerance: 3.0
 
-  - name: "agv_return_from_C2_to_A"
+  - name: "agv_backward_20cm_B1_2"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.20      # 距离绝对值 0.2米
+      translate_vx: -0.1      # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  - name: "agv_return_from_B1_to_A"
     cycle_end: true
     task_type: "agv"
     max_duration: 60.0
@@ -1012,19 +1144,51 @@ tasks:
       position: home
       position_tolerance: 2.0
 
-  - name: "agv_to_station_D"
+  - name: "agv_backward_20cm_A2"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.20      # 距离绝对值 0.2米
+      translate_vx: -0.1      # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  - name: "agv_to_station_B2"
     task_type: "agv"
     max_duration: 60.0
     max_retries: 2
     enabled: true
     agv_config:
-      target_station: "AP11"
+      target_station: "LM2"
       wait_for_arrival: true
       arrival_timeout: 60.0
       arrival_tolerance: 0.3
       check_arm_safe_position: true
       retry_on_timeout: true
       retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "agv_forward_5cm_B2"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.05      # 距离绝对值 0.2米
+      translate_vx: 0.1       # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
       emergency_stop_on_error: true
 
   # 短料片放置
@@ -1069,7 +1233,23 @@ tasks:
       position: home
       position_tolerance: 3.0
 
-  - name: "agv_return_from_D_to_A"
+  - name: "agv_backward_20cm_B2"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.20      # 距离绝对值 0.2米
+      translate_vx: -0.1      # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  - name: "agv_return_from_B2_to_A"
     cycle_end: true
     task_type: "agv"
     max_duration: 60.0
