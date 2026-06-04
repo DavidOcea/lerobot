@@ -463,10 +463,11 @@ class TaskAgentOrchestrator:
                 if builtin_tasks:
                     named_positions = self.config.named_positions
                     default_arm_safe = self.config.agv_config.default_arm_safe_positions if self.config.agv_config else {}
+                    default_arm_home = self.config.agv_config.default_arm_home_positions if self.config.agv_config else {}
                     builtin_configs = []
                     for td in builtin_tasks:
                         try:
-                            tc = parse_task_dict(td, named_positions, default_arm_safe)
+                            tc = parse_task_dict(td, named_positions, default_arm_safe, default_arm_home)
                             builtin_configs.append(tc)
                         except Exception as e:
                             logger.warning(
@@ -1760,6 +1761,7 @@ class TaskAgentOrchestrator:
             # YOLO-specific (ignored by apriltag)
             "model_path": cc.model_path,
             "classes": cc.classes,
+            "conf_threshold": cc.conf_threshold,
         }
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
@@ -1789,6 +1791,17 @@ class TaskAgentOrchestrator:
                     task_name=task.name, status=TaskStatus.FAILED,
                     duration=time.time() - start_time,
                     error_message="Classification failed after retries",
+                )
+
+            # No-detection even after retries: fail to stop the cycle
+            if result.label == "no_detection" and cc.retry_on_no_detect:
+                logger.error(
+                    f"Classify failed: no_detection after {max_retries} retries — stopping cycle"
+                )
+                return TaskResult(
+                    task_name=task.name, status=TaskStatus.FAILED,
+                    duration=time.time() - start_time,
+                    error_message=f"No workpiece detected after {max_retries} attempts",
                 )
 
             # Apply label counter for alternating placements

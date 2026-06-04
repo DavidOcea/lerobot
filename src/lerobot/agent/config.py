@@ -47,6 +47,7 @@ class AGVGlobalConfig:
 
     # 默认机械臂安全位置阈值 (所有AGV任务继承此配置，除非任务级别指定)
     default_arm_safe_positions: dict[str, float] = field(default_factory=dict)
+    default_arm_home_positions: dict[str, float] = field(default_factory=dict)  # 自定义安全基准位置
 
 
 @dataclass
