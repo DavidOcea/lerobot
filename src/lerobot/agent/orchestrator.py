@@ -1760,6 +1760,7 @@ class TaskAgentOrchestrator:
             # YOLO-specific (ignored by apriltag)
             "model_path": cc.model_path,
             "classes": cc.classes,
+            "conf_threshold": cc.conf_threshold,
         }
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)

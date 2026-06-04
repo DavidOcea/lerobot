@@ -240,6 +240,7 @@ class ClassifyConfig:
     # --- YOLO method ---
     model_path: str = ""  # ONNX model path (e.g. best.onnx)
     classes: list = field(default_factory=lambda: ["short", "long"])  # cls_id → label
+    conf_threshold: float = 0.50  # minimum YOLO confidence
 
     # --- Label counter (for alternating placements) ---
     label_counter_enable: bool = False  # enable label counting (e.g. long→long_1, long_2)
