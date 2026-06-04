@@ -128,10 +128,8 @@ class YOLOClassifier(BaseClassifier):
             return ClassifyResult(label=self.default_label, confidence=0.0)
 
         h0, w0 = image.shape[:2]
-        # Preprocess: RGB, resize 640×640, HWC→CHW, normalise 0–1
-        img = image
-        if img.shape[-1] == 3:
-            img = img[:, :, ::-1]  # BGR→RGB
+        # Preprocess: BGR→RGB (copy needed — cv2.resize rejects negative strides)
+        img = image[:, :, ::-1].copy()
         img = cv2.resize(img, (640, 640)).transpose(2, 0, 1).astype(np.float32) / 255.0
         img = np.expand_dims(img, axis=0)
 
@@ -167,6 +165,10 @@ class YOLOClassifier(BaseClassifier):
         best_cls = cls_ids[best_idx]
         best_conf = scores[best_idx]
         label = self.classes[best_cls] if best_cls < len(self.classes) else f"cls{best_cls}"
+
+        if __debug__ or True:  # always log first few detections for debugging
+            print(f"[YOLOClassifier] {len(boxes_xywh)} raw → {len(indices)} after NMS → "
+                  f"{label} (conf={best_conf:.3f})")
 
         return ClassifyResult(label=label, confidence=float(best_conf))
 
