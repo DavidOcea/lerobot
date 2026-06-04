@@ -327,6 +327,142 @@ def method_orb_features(roi, _contour, templates, _tc):
     return f"{best} (conf={scores[best]:.2f})"
 
 
+# ── YOLO / ONNX detection ─────────────────────────────────────
+
+_YOLO_MODEL = None          # ultralytics YOLO instance (server) or None
+_ONNX_SESSION = None        # onnxruntime session (robot) or None
+_MODEL_PATH_PT  = "/root/workspace/dc_dir/detection_model/runs/workpiece_yolo/weights/best.pt"
+_MODEL_PATH_ONNX = "/root/workspace/dc_dir/detection_model/runs/workpiece_yolo/weights/best.onnx"
+_YOLO_CLASSES = ["short", "long"]  # cls_id → label
+_YOLO_PREVIEW_TICK = 0
+
+# ONNX image size — must match export imgsz
+_ONNX_IMGSZ = 640
+_ONNX_INPUT_NAME = "images"
+_ORT_AVAILABLE = False
+
+
+def _init_onnx():
+    """Initialise onnxruntime session. Called once on first use."""
+    global _ONNX_SESSION, _ORT_AVAILABLE
+    if _ONNX_SESSION is not None:
+        return True
+    try:
+        import onnxruntime as ort
+        _ONNX_SESSION = ort.InferenceSession(_MODEL_PATH_ONNX)
+        _ORT_AVAILABLE = True
+        print(f"[ONNX] Session loaded: {_MODEL_PATH_ONNX}")
+        return True
+    except ImportError:
+        _ORT_AVAILABLE = False
+        print("[ONNX] onnxruntime not installed — pip install onnxruntime")
+        return False
+    except Exception as e:
+        _ORT_AVAILABLE = False
+        print(f"[ONNX] Failed to load model: {e}")
+        return False
+
+
+def _ort_detect(frame_bgr):
+    """Run ONNX inference, return list of (x1,y1,x2,y2,conf,cls_id)."""
+    _init_onnx()
+    if _ONNX_SESSION is None:
+        return []
+
+    h0, w0 = frame_bgr.shape[:2]
+    img = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, (_ONNX_IMGSZ, _ONNX_IMGSZ))
+    img = img.transpose(2, 0, 1).astype(np.float32) / 255.0
+    img = np.expand_dims(img, axis=0)
+
+    outputs = _ONNX_SESSION.run(None, {_ONNX_INPUT_NAME: img})
+    preds = outputs[0][0]  # [4+nc, 8400]
+
+    boxes_xywh, scores, cls_ids = [], [], []
+    for i in range(preds.shape[1]):
+        cx, cy, bw, bh = preds[0:4, i]
+        cls_conf = preds[4:, i]
+        max_conf = float(cls_conf.max())
+        if max_conf < 0.15:
+            continue
+        cls_id = int(cls_conf.argmax())
+        # Convert cxcywh → xyxy, scale back to original image size
+        x1 = (cx - bw / 2) / _ONNX_IMGSZ * w0
+        y1 = (cy - bh / 2) / _ONNX_IMGSZ * h0
+        x2 = (cx + bw / 2) / _ONNX_IMGSZ * w0
+        y2 = (cy + bh / 2) / _ONNX_IMGSZ * h0
+        # NMS expects [x, y, w, h] format
+        boxes_xywh.append([x1, y1, x2 - x1, y2 - y1])
+        scores.append(max_conf)
+        cls_ids.append(cls_id)
+
+    # NMS — remove duplicate boxes
+    if boxes_xywh:
+        indices = cv2.dnn.NMSBoxes(boxes_xywh, scores, 0.15, 0.45)
+        if len(indices) > 0:
+            result = []
+            for i in indices.flatten():
+                x, y, w, h = boxes_xywh[i]
+                result.append((x, y, x + w, y + h, scores[i], cls_ids[i]))
+            return result
+    return []
+
+
+def _get_yolo():
+    """Return ultralytics YOLO instance, or None (falls back to ONNX)."""
+    global _YOLO_MODEL
+    if _YOLO_MODEL is None:
+        try:
+            from ultralytics import YOLO
+            _YOLO_MODEL = YOLO(_MODEL_PATH_PT)
+        except ImportError:
+            return None
+    return _YOLO_MODEL
+
+
+def _run_detection(frame):
+    """Run YOLO (ultralytics) or ONNX, whichever is available.
+
+    Returns list of (x1, y1, x2, y2, conf, cls_id).
+    """
+    # Try ultralytics first (server), fall back to ONNX (robot)
+    model = _get_yolo()
+    if model is not None:
+        results = model(frame, conf=0.15, verbose=False)
+        boxes = results[0].boxes
+        return [(float(b.xyxy[0][0]), float(b.xyxy[0][1]),
+                 float(b.xyxy[0][2]), float(b.xyxy[0][3]),
+                 float(b.conf[0]), int(b.cls[0])) for b in boxes]
+    # ONNX fallback
+    return _ort_detect(frame)
+
+
+def _draw_detection_boxes(frame, detections):
+    """Draw detection boxes onto frame (in-place)."""
+    for x1, y1, x2, y2, conf, cls_id in detections:
+        x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
+        label = _YOLO_CLASSES[cls_id] if cls_id < len(_YOLO_CLASSES) else f"cls{cls_id}"
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 255), 2)
+        cv2.putText(frame, f"{label} {conf:.2f}", (x1, max(y1 - 4, 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
+
+
+def method_yolo_classify(frame, _roi, _contour, templates, template_contours):
+    """YOLO/ONNX detection → direct class prediction."""
+    detections = _run_detection(frame)
+    if not detections:
+        return "no_detection"
+
+    # Draw boxes for live preview
+    _draw_detection_boxes(frame, detections)
+
+    # Take the highest-confidence detection
+    best = max(detections, key=lambda d: d[4])
+    _, _, _, _, best_conf, best_cls = best
+    label = _YOLO_CLASSES[best_cls] if best_cls < len(_YOLO_CLASSES) else f"cls{best_cls}"
+    return f"{label} (conf={best_conf:.2f})"
+
+
 # ── main ─────────────────────────────────────────────────────
 
 
@@ -339,10 +475,11 @@ METHODS = {
     "hsv_histogram":         (method_hsv_histogram,               "HSV colour histogram"),
     "template_match":        (method_template_match,              "Template match (ROI)"),
     "orb_features":          (method_orb_features,                "ORB keypoint matching"),
+    "yolo_detect":           (None,                                "YOLO-nano detect + area match"),
 }
 
 
-def benchmark_one(methods, roi, contour, templates, template_contours, template_hists):
+def benchmark_one(methods, frame, roi, contour, templates, template_contours, template_hists):
     """Run all methods once, return {name: (output_str, time_ms)}."""
     result = {}
     for name, (func, _) in methods.items():
@@ -350,6 +487,8 @@ def benchmark_one(methods, roi, contour, templates, template_contours, template_
         try:
             if name == "hsv_histogram":
                 out = func(roi, contour, templates, template_hists)
+            elif name == "yolo_detect":
+                out = method_yolo_classify(frame, roi, contour, templates, template_contours)
             else:
                 out = func(roi, contour, templates, template_contours)
         except Exception as e:
@@ -634,6 +773,16 @@ def main():
                 f"1=Otsu 2=Canny 3=BG | C=compare Q=finish")
         cv2.putText(display, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
+        # Live YOLO/ONNX preview (every 5th frame to avoid lag)
+        global _YOLO_PREVIEW_TICK
+        _YOLO_PREVIEW_TICK += 1
+        if _YOLO_PREVIEW_TICK % 5 == 0:
+            try:
+                dets = _run_detection(frame)
+                _draw_detection_boxes(display, dets)
+            except Exception:
+                pass
+
         cv2.imshow("Benchmark", display)
         key = cv2.waitKey(1) & 0xFF
 
@@ -683,7 +832,7 @@ def main():
             if auto_roi is None:
                 print("  Auto ROI not found! Try M for manual.")
                 continue
-            bench = benchmark_one(METHODS, auto_roi, auto_contour, templates,
+            bench = benchmark_one(METHODS, frame, auto_roi, auto_contour, templates,
                                   template_contours, template_hists)
             print_one_result("AUTO", f"bbox={auto_bbox}", bench)
             prompt = f"  True label ({'/'.join(labels)}) or Enter to skip: "
@@ -706,7 +855,7 @@ def main():
             manual_roi, manual_contour = _roi_from_rect(frame, rect)
             if manual_roi is None or manual_roi.size == 0:
                 continue
-            bench = benchmark_one(METHODS, manual_roi, manual_contour, templates,
+            bench = benchmark_one(METHODS, frame, manual_roi, manual_contour, templates,
                                   template_contours, template_hists)
             print_one_result("MANUAL", f"rect={rect}", bench)
             prompt = f"  True label ({'/'.join(labels)}) or Enter to skip: "
@@ -724,7 +873,7 @@ def main():
             # Side-by-side: auto + manual on same frame
             print("\n  — Auto ROI —")
             if auto_roi is not None:
-                bench_auto = benchmark_one(METHODS, auto_roi, auto_contour, templates,
+                bench_auto = benchmark_one(METHODS, frame, auto_roi, auto_contour, templates,
                                            template_contours, template_hists)
                 print_one_result("AUTO", f"bbox={auto_bbox}", bench_auto)
             else:
@@ -735,7 +884,7 @@ def main():
             rect = selector.select(frame)
             if rect is not None:
                 manual_roi, manual_contour = _roi_from_rect(frame, rect)
-                bench_manual = benchmark_one(METHODS, manual_roi, manual_contour, templates,
+                bench_manual = benchmark_one(METHODS, frame, manual_roi, manual_contour, templates,
                                              template_contours, template_hists)
                 print_one_result("MANUAL", f"rect={rect}", bench_manual)
 

@@ -256,6 +256,7 @@ class ClassifyConfig:
     retry_on_no_detect: bool = False  # wait and retry if nothing found
     retry_wait_seconds: float = 2.0   # seconds between retries
     retry_max_attempts: int = 10      # max retries before giving up
+    recovery_task: str = ""  # task name to jump to after retries exhausted (""→FAIL)
 
     # ===== 安全配置 =====
     check_arm_safe_position: bool = True  # AGV 微调前检查机械臂安全位置
@@ -277,7 +278,7 @@ class TaskConfig:
     name: str
 
     # 任务类型
-    task_type: Literal["policy", "agv", "position", "position_sequence", "visual_align", "classify"] = "policy"
+    task_type: Literal["policy", "agv", "position", "position_sequence", "visual_align", "classify", "system_command"] = "policy"
 
     # Policy任务字段 (现有)
     policy_path: str | None = None
@@ -302,6 +303,8 @@ class TaskConfig:
     classify_config: ClassifyConfig | None = None
     # Conditional branch routing: {label: next_task_name, ...}
     next_tasks: dict[str, str] = field(default_factory=dict)
+    # system_command task field
+    command: str = ""  # shell command to run (for system_command task_type)
 
     def validate(self) -> bool:
         """验证任务配置."""
@@ -510,6 +513,12 @@ def parse_task_dict(
         task_kwargs["enabled"] = task_dict.get("enabled", True)
         # Conditional branch routing
         task_kwargs["next_tasks"] = task_dict.get("next_tasks", {})
+
+    elif task_type == "system_command":
+        task_kwargs["command"] = task_dict.get("command", "")
+        task_kwargs["max_duration"] = task_dict.get("max_duration", 5.0)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
+        task_kwargs["enabled"] = task_dict.get("enabled", True)
 
     return TaskConfig(**task_kwargs)
 

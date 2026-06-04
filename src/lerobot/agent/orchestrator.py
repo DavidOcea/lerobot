@@ -1435,6 +1435,19 @@ class TaskAgentOrchestrator:
                 delattr(task, 'speed_multiplier')
             return result
 
+        # Handle system_command tasks (shell command execution)
+        if task.task_type == "system_command":
+            self._add_monitor_event("info", task.name, f"Running: {task.command}")
+            result = self._execute_system_command_task(task)
+            self._add_monitor_event(
+                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                f"{result.status.value} ({result.duration:.1f}s)")
+            task.max_retries = original_max_retries
+            task.max_duration = original_max_duration
+            if hasattr(task, 'speed_multiplier'):
+                delattr(task, 'speed_multiplier')
+            return result
+
         # Handle policy tasks (existing logic)
         # Apply speed_multiplier to policy task timeout
         if multiplier != 1.0:
@@ -1799,8 +1812,21 @@ class TaskAgentOrchestrator:
                     error_message="Classification failed after retries",
                 )
 
-            # No-detection even after retries: fail to stop the cycle
+            # No-detection even after retries: recovery or fail
             if result.label == "no_detection" and cc.retry_on_no_detect:
+                if cc.recovery_task:
+                    logger.warning(
+                        f"Classify failed after {max_retries} retries — "
+                        f"recovery → {cc.recovery_task}"
+                    )
+                    # Return COMPLETED with next_task pointing to recovery
+                    return TaskResult(
+                        task_name=task.name,
+                        status=TaskStatus.COMPLETED,
+                        duration=time.time() - start_time,
+                        success=True,
+                        next_task=cc.recovery_task,
+                    )
                 logger.error(
                     f"Classify failed: no_detection after {max_retries} retries — stopping cycle"
                 )
@@ -1839,6 +1865,33 @@ class TaskAgentOrchestrator:
             success=True,
             next_task=next_task,
         )
+
+    def _execute_system_command_task(self, task: TaskConfig) -> TaskResult:
+        """Execute a shell command task (e.g. TTS voice broadcast)."""
+        import subprocess
+        logger.info(f"Executing system_command: {task.command}")
+        start_time = time.time()
+        try:
+            subprocess.run(task.command, shell=True, timeout=task.max_duration,
+                           capture_output=True)
+            return TaskResult(
+                task_name=task.name,
+                status=TaskStatus.COMPLETED,
+                duration=time.time() - start_time,
+                success=True,
+            )
+        except subprocess.TimeoutExpired:
+            return TaskResult(
+                task_name=task.name, status=TaskStatus.FAILED,
+                duration=time.time() - start_time,
+                error_message=f"Command timed out after {task.max_duration}s",
+            )
+        except Exception as e:
+            return TaskResult(
+                task_name=task.name, status=TaskStatus.FAILED,
+                duration=time.time() - start_time,
+                error_message=str(e),
+            )
 
     def _execute_position_task(self, task: TaskConfig) -> TaskResult:
         """Execute a position task - move joints directly to target positions.
