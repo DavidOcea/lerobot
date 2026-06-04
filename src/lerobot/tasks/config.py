@@ -236,6 +236,10 @@ class ClassifyConfig:
     default_label: str = "unknown"
     default_next_task: str = ""  # fallback if classification fails
 
+    # --- YOLO method ---
+    model_path: str = ""  # ONNX model path (e.g. best.onnx)
+    classes: list = field(default_factory=lambda: ["short", "long"])  # cls_id → label
+
     # ===== 安全配置 =====
     check_arm_safe_position: bool = True  # AGV 微调前检查机械臂安全位置
     arm_safe_positions: dict[str, float] = field(default_factory=dict)
