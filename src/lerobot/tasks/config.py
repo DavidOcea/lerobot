@@ -216,6 +216,11 @@ class VisualAlignConfig:
     camera_matrix: list | None = None  # 3x3 内参矩阵 (fx, fy, cx, cy), flat list
     dist_coeffs: list | None = None  # 畸变系数 (k1, k2, p1, p2, k3)
 
+    # ===== 安全配置 =====
+    check_arm_safe_position: bool = True  # AGV 微调前检查机械臂安全位置
+    arm_safe_positions: dict[str, float] = field(default_factory=dict)  # 安全偏差阈值
+    arm_home_positions: dict[str, float] = field(default_factory=dict)  # 安全基准位置 (可选)
+
 
 @dataclass
 class ClassifyConfig:
@@ -490,6 +495,8 @@ def parse_task_dict(
         va_config_dict = task_dict.get("visual_align_config", {})
         if default_arm_safe_positions and "arm_safe_positions" not in va_config_dict:
             va_config_dict["arm_safe_positions"] = default_arm_safe_positions
+        if default_arm_home_positions and "arm_home_positions" not in va_config_dict:
+            va_config_dict["arm_home_positions"] = default_arm_home_positions
         task_kwargs["visual_align_config"] = VisualAlignConfig(**va_config_dict)
         task_kwargs["max_duration"] = task_dict.get("max_duration", 30.0)
         task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
