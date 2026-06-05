@@ -989,8 +989,6 @@ class TaskAgentOrchestrator:
                 # Reset task index for new cycle
                 if self.interactive_selector is not None:
                     self.interactive_selector.current_task_index = 0
-                # Reset classify label counters for alternating placements
-                reset_classify_counters()
 
                 # Execute one cycle
                 summary = self._execute_with_safety()
