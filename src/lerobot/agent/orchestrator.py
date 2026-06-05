@@ -1247,9 +1247,6 @@ class TaskAgentOrchestrator:
             if result.status == TaskStatus.FATAL_FAILURE:
                 logger.error(f"Fatal failure in task {task.name}, aborting sequence")
                 break
-            if result.status == TaskStatus.FAILED:
-                logger.error(f"Task {task.name} failed — stopping cycle")
-                break
 
             if self.total_collision_count >= self.config.max_total_collisions:
                 logger.error(
