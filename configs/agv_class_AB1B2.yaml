@@ -19,14 +19,14 @@ named_positions:
     left_arm_joint_1: -65.3
     left_arm_joint_2: -8.3
     left_arm_joint_3: -0.5
-    left_arm_joint_4: -27.8
+    left_arm_joint_4: -30.8
     left_arm_joint_5: -98.0
     left_arm_joint_6: -87.5
     left_arm_joint_7: 1.0
     right_arm_joint_1: 63.8
     right_arm_joint_2: 9.0
     right_arm_joint_3: 0.8
-    right_arm_joint_4: 26.6
+    right_arm_joint_4: 29.6
     right_arm_joint_5: 98.0
     right_arm_joint_6: 88.5
     trunk_joint_1: 0.0
@@ -616,14 +616,14 @@ agv_config:
     left_arm_joint_1: -65.3
     left_arm_joint_2: -8.3
     left_arm_joint_3: -0.5
-    left_arm_joint_4: -27.8
+    left_arm_joint_4: -30.8
     left_arm_joint_5: -98.0
     left_arm_joint_6: -87.5
     left_arm_joint_7: 1.0
     right_arm_joint_1: 63.8
     right_arm_joint_2: 9.0
     right_arm_joint_3: 0.8
-    right_arm_joint_4: 26.6
+    right_arm_joint_4: 29.6
     right_arm_joint_5: 98.0
     right_arm_joint_6: 88.5
     trunk_joint_1: 0.0
@@ -743,6 +743,7 @@ tasks:
       retry_on_no_detect: true
       retry_wait_seconds: 2.0
       retry_max_attempts: 10
+      recovery_task: "recovery_voice_retreat"  # 10次后跳到这个 task
       # 长料片交替放置计数
       label_counter_enable: true
       counter_keywords: ["long"]
@@ -751,6 +752,19 @@ tasks:
       long_1: "pickup_long"       # 第1次长料片 → 长抓取 → C点放置1
       long_2: "pickup_long2"      # 第2次长料片 → 长抓取 → C点放置2
       short: "pickup_short"       # 短料片 → 短抓取 → D点
+
+  # 恢复任务链
+  - name: "recovery_voice_retreat"
+    task_type: "system_command"
+    command: "espeak-ng -v zh '未检测到料片，请放料片'"
+
+  - name: "agv_retreat_30cm"
+    task_type: "agv"
+    agv_config:
+      translate_dist: 0.30     # 后退 30cm
+      translate_vx: -0.10
+      check_arm_safe_position: false
+    cycle_end: true             # 完成后结束循环, 重新开始
 
   # === 长料片分支 ===
 
@@ -763,15 +777,15 @@ tasks:
     steps:
       - name: "手臂摊开"
         position: pickup_station_5_1
-        max_duration: 2.0
+        max_duration: 1.5
         position_tolerance: 3.0
       - name: "手臂下降"
         position: pickup_station_5_2
-        max_duration: 2.0
+        max_duration: 1.5
         position_tolerance: 3.0
       - name: "手臂闭合"
         position: pickup_station_5_3
-        max_duration: 2.0
+        max_duration: 1.5
         position_tolerance: 3.0
       - name: "夹爪闭合"
         position: pickup_station_5_4
@@ -779,11 +793,11 @@ tasks:
         position_tolerance: 3.0
       - name: "手臂抬起"
         position: pickup_station_5_5
-        max_duration: 2.0
+        max_duration: 1.0
         position_tolerance: 3.0
       - name: "home"
         position: pickup_station_5_home
-        max_duration: 2.0
+        max_duration: 1.5
         position_tolerance: 3.0
 
   - name: "arm_home_after_pickup_long"
@@ -1107,19 +1121,19 @@ tasks:
     steps:
       - name: "手臂摊开"
         position: pickup_1
-        max_duration: 1.5
+        max_duration: 1.0
         position_tolerance: 3.0
       - name: "手臂下降"
         position: pickup_2
-        max_duration: 1.5
+        max_duration: 1.0
         position_tolerance: 3.0
       - name: "手臂闭合"
         position: pickup_3
-        max_duration: 2.0
+        max_duration: 1.8
         position_tolerance: 3.0
       - name: "腰部旋转"
         position: pickup_4
-        max_duration: 1.5
+        max_duration: 1.0
         position_tolerance: 3.0
       - name: "夹爪闭合"
         position: pickup_5
@@ -1127,11 +1141,11 @@ tasks:
         position_tolerance: 3.0
       - name: "手臂抬起"
         position: pickup_6
-        max_duration: 2.0
+        max_duration: 1.8
         position_tolerance: 3.0
       - name: "夹爪打开"
         position: pickup_home_1
-        max_duration: 1.0
+        max_duration: 0.8
         position_tolerance: 3.0
 
   - name: "arm_home_after_pickup_short"

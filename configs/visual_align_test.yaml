@@ -139,7 +139,7 @@ tasks:
   - name: "visual_align_marker_C"
     task_type: "visual_align"
     max_duration: 120.0
-    max_retries: 5
+    max_retries: 10
     enabled: true
     visual_align_config:
       reference_pose_path: "ref_station_C.json"  # 站点参考位姿文件 默认不配置用approach_distance，配置时用参考照片定位
@@ -155,7 +155,7 @@ tasks:
       max_iterations: 5         # 闭环最多5轮微调 (参考照片模式建议≥5)
       translate_speed: 0.15     # 前进微调速度 0.15m/s
       turn_speed: 15.0          # 转动微调速度 15°/s
-      approach_distance: 0.90   # 停在标记前方50cm处
+      approach_distance: 0.50   # 停在标记前方50cm处
       camera_offset_x: 0.0      # 相机偏移 (先用0, 闭环收敛弥补)
       camera_offset_y: 0.0
       camera_offset_yaw: 0.0
