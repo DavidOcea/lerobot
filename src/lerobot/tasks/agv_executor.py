@@ -369,7 +369,7 @@ class AGVTaskExecutor:
                                 f"[AGVExecutor] Angle drift detected: {delta:.3f}rad "
                                 f"({delta*57.3:.1f}°) → correcting"
                             )
-                            self.agv.turn(angle=abs(delta), vw=-0.3 if delta > 0 else 0.3, mode=0)
+                            self.agv.turn(angle=abs(delta) * 0.5, vw=-0.3 if delta > 0 else 0.3, mode=0)
                             self.agv.wait_for_turn_complete(timeout=10.0)
                             # Verify correction
                             final_after = self.agv.get_status(use_cache=False)
