@@ -333,7 +333,7 @@ _YOLO_MODEL = None          # ultralytics YOLO instance (server) or None
 _ONNX_SESSION = None        # onnxruntime session (robot) or None
 _MODEL_PATH_PT  = "/root/workspace/dc_dir/detection_model/runs/workpiece_yolo/weights/best.pt"
 _MODEL_PATH_ONNX = "/root/workspace/dc_dir/detection_model/runs/workpiece_yolo/weights/best.onnx"
-_YOLO_CLASSES = ["short", "long"]  # cls_id → label
+_YOLO_CLASSES = ["short", "long", "box"]  # cls_id → label
 _YOLO_PREVIEW_TICK = 0
 
 # ONNX image size — must match export imgsz
