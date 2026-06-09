@@ -1875,7 +1875,14 @@ class TaskAgentOrchestrator:
         logger.info(f"Executing system_command: {task.command}")
         start_time = time.time()
         try:
-            subprocess.run(task.command, shell=True, timeout=task.max_duration,
+            parts = task.command.split()
+            if not parts or parts[0] not in ("espeak-ng", "espeak", "aplay", "speaker-test"):
+                return TaskResult(
+                    task_name=task.name, status=TaskStatus.FAILED,
+                    duration=time.time() - start_time,
+                    error_message=f"Command not in allowlist: {task.command}",
+                )
+            subprocess.run(parts, shell=False, timeout=task.max_duration,
                            capture_output=True)
             return TaskResult(
                 task_name=task.name,
