@@ -1611,8 +1611,6 @@ class TaskAgentOrchestrator:
             retry_on_timeout=agv_config.retry_on_timeout,
             retry_count=agv_config.retry_count,
             emergency_stop_on_error=agv_config.emergency_stop_on_error,
-            angle_correction=agv_config.angle_correction,
-            angle_correction_tolerance=agv_config.angle_correction_tolerance,
         )
 
         # Convert to TaskResult

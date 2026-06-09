@@ -157,8 +157,6 @@ class AGVTaskExecutor:
         retry_on_timeout: bool = True,
         retry_count: int = 2,
         emergency_stop_on_error: bool = True,
-        angle_correction: bool = False,
-        angle_correction_tolerance: float = 0.03,
     ) -> AGVExecutionResult:
         """执行AGV导航任务.
 
@@ -357,24 +355,6 @@ class AGVTaskExecutor:
                         self.agv.stop()
 
                     return result
-
-            # ========== Phase 5.5: 角度修正 ==========
-            if angle_correction and nav_mode == "translate":
-                try:
-                    after_status = self.agv.get_status(use_cache=False)
-                    if initial_status.position and after_status.position:
-                        delta = after_status.position.theta - initial_status.position.theta
-                        if abs(delta) > angle_correction_tolerance:
-                            logger.warning(
-                                f"[AGVExecutor] Angle drift detected: {delta:.3f}rad "
-                                f"({delta*57.3:.1f}°) → correcting"
-                            )
-                            # Turn proportional to 1.2× drift (over-correct slightly for gear backlash)
-                            self.agv.turn(angle=abs(delta) * 1.2, vw=0.3, mode=0)
-                            self.agv.wait_for_turn_complete(timeout=10.0)
-                            logger.info(f"[AGVExecutor] Angle correction complete")
-                except Exception as e:
-                    logger.warning(f"[AGVExecutor] Angle correction failed: {e}")
 
             # ========== Phase 6: 最终状态确认 ==========
             final_status = self.agv.get_status(use_cache=False)

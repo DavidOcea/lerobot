@@ -110,10 +110,6 @@ class AGVTaskConfig:
     retry_count: int = 2  # 重试次数
     emergency_stop_on_error: bool = True  # 异常时急停
 
-    # ===== 角度修正 =====
-    angle_correction: bool = False  # 平移后自动修正角度偏差
-    angle_correction_tolerance: float = 0.03  # 角度修正阈值 (弧度, ~1.7°)
-
     def validate(self) -> bool:
         """验证配置有效性.
 
