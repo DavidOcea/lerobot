@@ -1791,6 +1791,14 @@ class TaskAgentOrchestrator:
                         f"Classify retry {retry_attempts + 1}/{max_retries}: "
                         f"no detection, waiting {cc.retry_wait_seconds}s ..."
                     )
+                    if cc.retry_command:
+                        import subprocess as _sp
+                        parts = cc.retry_command.split()
+                        if parts and parts[0] in ("espeak-ng", "espeak", "aplay", "speaker-test"):
+                            try:
+                                _sp.run(parts, shell=False, timeout=10)
+                            except Exception:
+                                pass
                     time.sleep(cc.retry_wait_seconds)
                     # Re-capture image
                     obs = self.robot.get_observation()
@@ -1867,7 +1875,14 @@ class TaskAgentOrchestrator:
         logger.info(f"Executing system_command: {task.command}")
         start_time = time.time()
         try:
-            subprocess.run(task.command, shell=True, timeout=task.max_duration,
+            parts = task.command.split()
+            if not parts or parts[0] not in ("espeak-ng", "espeak", "aplay", "speaker-test"):
+                return TaskResult(
+                    task_name=task.name, status=TaskStatus.FAILED,
+                    duration=time.time() - start_time,
+                    error_message=f"Command not in allowlist: {task.command}",
+                )
+            subprocess.run(parts, shell=False, timeout=task.max_duration,
                            capture_output=True)
             return TaskResult(
                 task_name=task.name,

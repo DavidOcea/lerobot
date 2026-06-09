@@ -135,7 +135,7 @@ class YOLOClassifier(BaseClassifier):
                  default_label: str = "unknown", default_next_task: str = "",
                  conf_threshold: float = 0.15):
         self.model_path = model_path
-        self.classes = classes or ["short", "long"]
+        self.classes = classes or ["short", "long", "box"]
         self.default_label = default_label
         self.default_next_task = default_next_task
         self.conf_threshold = conf_threshold
