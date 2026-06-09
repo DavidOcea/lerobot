@@ -369,10 +369,18 @@ class AGVTaskExecutor:
                                 f"[AGVExecutor] Angle drift detected: {delta:.3f}rad "
                                 f"({delta*57.3:.1f}°) → correcting"
                             )
-                            # Turn proportional to 1.2× drift (over-correct slightly for gear backlash)
-                            self.agv.turn(angle=abs(delta) * 1.2, vw=0.3, mode=0)
+                            self.agv.turn(angle=abs(delta), vw=-0.3 if delta > 0 else 0.3, mode=0)
                             self.agv.wait_for_turn_complete(timeout=10.0)
-                            logger.info(f"[AGVExecutor] Angle correction complete")
+                            # Verify correction
+                            final_after = self.agv.get_status(use_cache=False)
+                            if final_after.position:
+                                new_delta = final_after.position.theta - initial_status.position.theta
+                                logger.warning(
+                                    f"[AGVExecutor] Angle correction: delta_before={delta*57.3:.1f}° "
+                                    f"→ after_correction={new_delta*57.3:.1f}°"
+                                )
+                            else:
+                                logger.warning(f"[AGVExecutor] Angle correction: turn sent (delta={delta*57.3:.1f}°)")
                 except Exception as e:
                     logger.warning(f"[AGVExecutor] Angle correction failed: {e}")
 
