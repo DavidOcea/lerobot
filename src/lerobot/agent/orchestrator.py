@@ -1793,10 +1793,12 @@ class TaskAgentOrchestrator:
                     )
                     if cc.retry_command:
                         import subprocess as _sp
-                        try:
-                            _sp.run(cc.retry_command, shell=True, timeout=10)
-                        except Exception:
-                            pass
+                        parts = cc.retry_command.split()
+                        if parts and parts[0] in ("espeak-ng", "espeak", "aplay", "speaker-test"):
+                            try:
+                                _sp.run(parts, shell=False, timeout=10)
+                            except Exception:
+                                pass
                     time.sleep(cc.retry_wait_seconds)
                     # Re-capture image
                     obs = self.robot.get_observation()
