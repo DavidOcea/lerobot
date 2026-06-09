@@ -1791,6 +1791,12 @@ class TaskAgentOrchestrator:
                         f"Classify retry {retry_attempts + 1}/{max_retries}: "
                         f"no detection, waiting {cc.retry_wait_seconds}s ..."
                     )
+                    if cc.retry_command:
+                        import subprocess as _sp
+                        try:
+                            _sp.run(cc.retry_command, shell=True, timeout=10)
+                        except Exception:
+                            pass
                     time.sleep(cc.retry_wait_seconds)
                     # Re-capture image
                     obs = self.robot.get_observation()

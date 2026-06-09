@@ -256,6 +256,7 @@ class ClassifyConfig:
     retry_on_no_detect: bool = False  # wait and retry if nothing found
     retry_wait_seconds: float = 2.0   # seconds between retries
     retry_max_attempts: int = 10      # max retries before giving up
+    retry_command: str = ""  # shell command run before each retry (e.g. TTS)
     recovery_task: str = ""  # task name to jump to after retries exhausted (""→FAIL)
 
     # ===== 安全配置 =====
