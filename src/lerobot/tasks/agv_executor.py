@@ -358,31 +358,44 @@ class AGVTaskExecutor:
 
                     return result
 
-            # ========== Phase 5.5: 角度修正 ==========
+            # ========== Phase 5.5: 角度修正 (闭环, 最多 5 次) ==========
             if angle_correction and nav_mode == "translate":
-                try:
-                    after_status = self.agv.get_status(use_cache=False)
-                    if initial_status.position and after_status.position:
-                        delta = after_status.position.theta - initial_status.position.theta
-                        if abs(delta) > angle_correction_tolerance:
+                max_attempts = 5
+                for corr_attempt in range(max_attempts):
+                    try:
+                        cur_status = self.agv.get_status(use_cache=False)
+                        if not (initial_status.position and cur_status.position):
+                            break
+                        delta = cur_status.position.theta - initial_status.position.theta
+                        if abs(delta) <= angle_correction_tolerance:
                             logger.warning(
-                                f"[AGVExecutor] Angle drift detected: {delta:.3f}rad "
-                                f"({delta*57.3:.1f}°) → correcting"
+                                f"[AGVExecutor] Angle correction converged: "
+                                f"{delta*57.3:.1f}° ≤ {angle_correction_tolerance*57.3:.1f}° "
+                                f"(attempt {corr_attempt+1})"
                             )
-                            self.agv.turn(angle=abs(delta) * 0.5, vw=-0.3 if delta > 0 else 0.3, mode=0)
-                            self.agv.wait_for_turn_complete(timeout=10.0)
-                            # Verify correction
-                            final_after = self.agv.get_status(use_cache=False)
-                            if final_after.position:
-                                new_delta = final_after.position.theta - initial_status.position.theta
-                                logger.warning(
-                                    f"[AGVExecutor] Angle correction: delta_before={delta*57.3:.1f}° "
-                                    f"→ after_correction={new_delta*57.3:.1f}°"
-                                )
-                            else:
-                                logger.warning(f"[AGVExecutor] Angle correction: turn sent (delta={delta*57.3:.1f}°)")
-                except Exception as e:
-                    logger.warning(f"[AGVExecutor] Angle correction failed: {e}")
+                            break
+                        # Decaying gain: 0.6 → 0.5 → 0.4 → 0.35 → 0.3
+                        gain = 0.6 - corr_attempt * 0.1
+                        if gain < 0.3:
+                            gain = 0.3
+                        corr_angle = abs(delta) * gain
+                        corr_vw = -0.3 if delta > 0 else 0.3
+                        logger.warning(
+                            f"[AGVExecutor] Angle drift {delta*57.3:.1f}° "
+                            f"→ correcting {corr_angle*57.3:.1f}° "
+                            f"(attempt {corr_attempt+1}/{max_attempts})"
+                        )
+                        self.agv.turn(angle=corr_angle, vw=corr_vw, mode=0)
+                        self.agv.wait_for_turn_complete(timeout=10.0)
+                        time.sleep(0.5)  # let positioning update before re-read
+                    except Exception as e:
+                        logger.warning(f"[AGVExecutor] Angle correction error: {e}")
+                        break
+                else:
+                    logger.warning(
+                        f"[AGVExecutor] Angle correction did not converge "
+                        f"after {max_attempts} attempts"
+                    )
 
             # ========== Phase 6: 最终状态确认 ==========
             final_status = self.agv.get_status(use_cache=False)
