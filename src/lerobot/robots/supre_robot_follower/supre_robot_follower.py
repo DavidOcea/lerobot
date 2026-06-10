@@ -442,29 +442,14 @@ class SupreRobotFollower(Robot):
         """
         # Always print raw forces (simple format)
         if self._observation_count % self._force_display_interval == 0:
-            # Detailed print every N cycles
-            print("")
-            print("=" * 70)
-            print(f"Force Analysis - Observation #{self._observation_count}")
-            print("=" * 70)
-
-            # Group joints by type for better readability
-            arm_joints = []
-            gripper_joints = []
-            trunk_joints = []
-
+            # Build joint info groups (logger.debug — zero I/O at default INFO level)
+            arm_joints, trunk_joints, gripper_joints = [], [], []
             for i, joint_name in enumerate(self.observation_joint_names):
                 force = forces[i]
                 rate = 0.0
                 if self._last_forces is not None and i < len(self._last_forces):
                     rate = abs(force - self._last_forces[i])
-
-                info = {
-                    "name": joint_name,
-                    "force": force,
-                    "rate": rate,
-                }
-
+                info = {"name": joint_name, "force": force, "rate": rate}
                 if "gripper" in joint_name.lower() or joint_name.endswith("_joint_7"):
                     gripper_joints.append(info)
                 elif "trunk" in joint_name.lower():
@@ -472,7 +457,7 @@ class SupreRobotFollower(Robot):
                 else:
                     arm_joints.append(info)
 
-            # Display each group
+            logger.debug(f"Force Analysis - Observation #{self._observation_count}")
             for group_name, group_data in [
                 ("Left Arm", [j for j in arm_joints if "left" in j["name"].lower()]),
                 ("Right Arm", [j for j in arm_joints if "right" in j["name"].lower()]),
@@ -481,22 +466,13 @@ class SupreRobotFollower(Robot):
             ]:
                 if not group_data:
                     continue
-
-                print(f"\n{group_name}:")
+                parts = []
                 for info in group_data:
                     force = info["force"]
                     rate = info["rate"]
-
-                    # Visual indicators
-                    force_bar = self._get_force_bar(force)
-                    rate_indicator = " 🔺" if rate > 0.1 else ""
-
-                    print(f"  {info['name']:30} | Force: {force:+6.3f} Nm {force_bar} {rate_indicator}")
-                    if rate > 0.05:
-                        print(f"  {'':30} | Rate:   {rate:.3f} Nm/step")
-
-            print("=" * 70)
-            print("")
+                    rate_str = f" Δ={rate:.3f}" if rate > 0.05 else ""
+                    parts.append(f"{info['name']}:{force:+.3f}Nm" + rate_str)
+                logger.debug(f"  [{group_name}] " + " | ".join(parts))
         elif self._last_forces is not None:
             # Check for sudden force spikes - alert immediately
             max_rate = 0
