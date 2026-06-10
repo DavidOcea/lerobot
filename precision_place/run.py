@@ -5167,6 +5167,16 @@ Z轴控制关节 (全部6个):
                     delta_deg = float(input_val) if input_val else 6.0
                 except (ValueError, EOFError):
                     delta_deg = 6.0
+                # 读取tag物理尺寸 (从SimpleIBVS或手动输入)
+                default_tag_mm = 50.0
+                if hasattr(self, 'simple_ibvs') and self.simple_ibvs:
+                    default_tag_mm = getattr(self.simple_ibvs.tag_detector, 'tag_size_mm', 50.0)
+                try:
+                    tag_input = input(f"  Tag物理尺寸(mm, 默认{default_tag_mm:.0f}): ").strip()
+                    tag_size_mm = float(tag_input) if tag_input else default_tag_mm
+                except (ValueError, EOFError):
+                    tag_size_mm = default_tag_mm
+                print(f"  使用 tag_size_mm={tag_size_mm:.0f}")
                 try:
                     from precision_place.calibration.validate_urdf import URDFValidator
                     validator = URDFValidator(
@@ -5177,6 +5187,7 @@ Z轴控制关节 (全部6个):
                         camera=camera,
                         urdf_path=self.urdf_path,
                         arm=self.current_arm,
+                        tag_size_mm=tag_size_mm,
                     )
                     validator.validate_all(delta_deg=delta_deg)
                     # 提示修正操作
