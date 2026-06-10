@@ -1352,7 +1352,7 @@ class PrecisionPlaceSystem:
 
                 if success and result.valid:
                     # 保存结果
-                    output_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
+                    output_path = Path(__file__).parent / f"hand_eye_extrinsic_{self.current_arm}.yaml"
                     self.hand_eye_calibrator.save(str(output_path))
 
                     # 诊断信息
@@ -1414,7 +1414,7 @@ class PrecisionPlaceSystem:
 """)
 
         # 加载标定结果
-        extrinsic_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
+        extrinsic_path = Path(__file__).parent / f"hand_eye_extrinsic_{self.current_arm}.yaml"
         if not extrinsic_path.exists():
             print(f"✗ 未找到手眼标定结果: {extrinsic_path}")
             print("  请先运行手眼标定: 主菜单选 4 → 再选 H")
@@ -2786,7 +2786,7 @@ class PrecisionPlaceSystem:
             print("✗ 坐标变换模块未加载")
             return False
 
-        extrinsic_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
+        extrinsic_path = Path(__file__).parent / f"hand_eye_extrinsic_{self.current_arm}.yaml"
         if not extrinsic_path.exists():
             print(f"✗ 未找到手眼标定结果: {extrinsic_path}")
             print("  请先运行手眼标定: 主菜单选 4 → 再选 H")
@@ -4826,7 +4826,7 @@ Z轴控制关节 (全部6个):
                 return
 
         # 检查手眼标定文件
-        he_path = Path(__file__).parent / "hand_eye_extrinsic.yaml"
+        he_path = Path(__file__).parent / f"hand_eye_extrinsic_{self.current_arm}.yaml"
         if not he_path.exists():
             print(f"✗ 手眼标定文件不存在: {he_path}")
             print("  请先运行手眼标定: 主菜单选 4 → 再选 H")

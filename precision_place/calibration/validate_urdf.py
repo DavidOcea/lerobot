@@ -737,7 +737,7 @@ def create_validator(arm: str = "right",
     from precision_place.calibration.forward_kinematics import create_fk_from_urdf
 
     if T_flange_cam is None:
-        he_path = Path(__file__).parent.parent / "hand_eye_extrinsic.yaml"
+        he_path = Path(__file__).parent.parent / f"hand_eye_extrinsic_{arm}.yaml"
         if he_path.exists():
             with open(he_path, 'r') as f:
                 he_data = yaml.safe_load(f)
