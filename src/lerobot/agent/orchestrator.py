@@ -143,6 +143,8 @@ class TaskAgentOrchestrator:
     def _setup_logging(self):
         """Configure logging based on config settings."""
         log_level = self.config.monitoring_config.log_level
+        if '--debug' in sys.argv:
+            log_level = 'DEBUG'
         logging.basicConfig(
             level=getattr(logging, log_level),
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
