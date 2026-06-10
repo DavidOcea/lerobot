@@ -5160,7 +5160,7 @@ Z轴控制关节 (全部6个):
             elif key == ord('v') or key == ord('V'):
                 # URDF逐关节验证
                 mode = MODE_IDLE
-                print("\n▶ URDF逐关节验证")
+                print(f"\n▶ URDF逐关节验证 ({self.current_arm.upper()} ARM)")
                 print("  请确保 AprilTag 在相机视野中且保持静止")
                 try:
                     input_val = input("  测试转动步长(度, 默认6): ").strip()
@@ -5176,8 +5176,14 @@ Z轴控制关节 (全部6个):
                         controller=self.controller,
                         camera=camera,
                         urdf_path=self.urdf_path,
+                        arm=self.current_arm,
                     )
                     validator.validate_all(delta_deg=delta_deg)
+                    # 提示修正操作
+                    if any(r.status != "ok" for r in validator.results.values()):
+                        print(f"\n  💡 有问题的关节, 运行修正:")
+                        print(f"     validator.auto_fix()  ← 一键修正全部问题")
+                        print(f"     然后重新进入 FK-IBVS → 按 V 验证效果")
                 except Exception as e:
                     print(f"✗ 验证失败: {e}")
                     import traceback
