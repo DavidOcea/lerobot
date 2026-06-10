@@ -4919,6 +4919,7 @@ Z轴控制关节 (全部6个):
   A - 对齐模式  F - 跟踪模式  S - 单步
   T - 设置目标像素  G - 设置目标为图像中心
   D - 设置目标深度  R - 深度要求切换
+  V - URDF逐关节验证(需AprilTag在视野中静止)
   +/-- 跟踪速度  X - 停止  Q - 退出
 """)
         input("按 Enter 继续...")
@@ -5156,6 +5157,31 @@ Z轴控制关节 (全部6个):
 
             if key == ord('q') or key == ord('Q'):
                 break
+            elif key == ord('v') or key == ord('V'):
+                # URDF逐关节验证
+                mode = MODE_IDLE
+                print("\n▶ URDF逐关节验证")
+                print("  请确保 AprilTag 在相机视野中且保持静止")
+                try:
+                    input_val = input("  测试转动步长(度, 默认6): ").strip()
+                    delta_deg = float(input_val) if input_val else 6.0
+                except (ValueError, EOFError):
+                    delta_deg = 6.0
+                try:
+                    from precision_place.calibration.validate_urdf import URDFValidator
+                    validator = URDFValidator(
+                        fk_solver=self.fk_ibvs.fk,
+                        T_flange_cam=T_flange_cam,
+                        camera_matrix=camera_matrix,
+                        controller=self.controller,
+                        camera=camera,
+                        urdf_path=self.urdf_path,
+                    )
+                    validator.validate_all(delta_deg=delta_deg)
+                except Exception as e:
+                    print(f"✗ 验证失败: {e}")
+                    import traceback
+                    traceback.print_exc()
             elif key == ord('a') or key == ord('A'):
                 mode = MODE_ALIGN
                 converged = False
