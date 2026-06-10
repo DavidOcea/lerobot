@@ -93,7 +93,9 @@ class URDFValidator:
                  camera,                          # 相机 (camera.read() → BGR)
                  urdf_path: str = None,
                  arm: str = "right",
-                 joint_indices: List[int] = None):
+                 joint_indices: List[int] = None,
+                 tag_family: str = "36h11",
+                 tag_size_mm: float = 50.0):
         """
         Args:
             fk_solver: 基于 URDF 的 FK 求解器
@@ -104,6 +106,8 @@ class URDFValidator:
             urdf_path: URDF 文件路径 (用于自动修正)
             arm: "left" 或 "right"
             joint_indices: 自定义测试关节, 默认根据 arm 自动选择
+            tag_family: AprilTag 家族 ("36h11" 最鲁棒)
+            tag_size_mm: tag 实际物理尺寸(mm), 影响深度估算精度
         """
         self.fk = fk_solver
         self.T_flange_cam = T_flange_cam
@@ -126,7 +130,8 @@ class URDFValidator:
             self.joint_indices = RIGHT_ARM_JOINTS
 
         from precision_place.calibration.simple_ibvs import AprilTagDetector
-        self.tag_detector = AprilTagDetector(tag_family="tag36h11")
+        self.tag_detector = AprilTagDetector(tag_family=tag_family,
+                                              tag_size_mm=tag_size_mm)
 
         self.results: Dict[int, JointValidationResult] = {}
         self._tag_world_pos: Optional[np.ndarray] = None
