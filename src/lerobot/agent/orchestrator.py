@@ -145,14 +145,14 @@ class TaskAgentOrchestrator:
         log_level = self.config.monitoring_config.log_level
         if '--debug' in sys.argv:
             log_level = 'DEBUG'
-        # Use setLevel on root + main package — basicConfig is silently
-        # ignored if another module already called it before us.
+        level = getattr(logging, log_level)
+        # setLevel works even after basicConfig, unlike basicConfig itself
         logging.basicConfig(
-            level=getattr(logging, log_level),
+            level=level,
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
-        logging.getLogger().setLevel(getattr(logging, log_level))
-        logging.getLogger('lerobot').setLevel(getattr(logging, log_level))
+        logging.getLogger().setLevel(level)
+        logging.getLogger('lerobot').setLevel(level)
 
     def initialize(self) -> bool:
         """Initialize all subsystems and connect to robot.
