@@ -1014,24 +1014,27 @@ class PrecisionPlaceSystem:
 
 要求：
   1. ChArUco标定板（打印后固定在桌面上，绝对不能动！）
-  2. 至少采集10个不同姿态（越多越好）
-  3. 姿态差异越大越好（大角度倾斜）
+  2. URDF文件（用于FK计算法兰位姿）
+  3. 至少采集10个不同姿态（越多越好）
+  4. 姿态差异越大越好（大角度倾斜）
 
 操作步骤：
   1. 固定ChArUco标定板在工作台上
-  2. 移动机械臂到标定板上方
-  3. 确保相机能看到完整的标定板
-  4. 按 'C' 键捕获当前姿态
-  5. 换一个不同姿态，重复步骤4
-  6. 采集足够后按 'S' 键开始标定
-  7. 按 'Q' 键退出
+  2. 移动机械臂到标定板上方，确保相机能看到完整的标定板
+  3. 按 'A' 自动采集15个姿态（或按 'C' 手动逐个采集）
+  4. 按 'S' 开始标定
+  5. 若RMSE偏高(URDF不准导致): 按 'S' 强制保存 → 做URDF验证修正 → 重新标定
+  6. 按 'Q' 退出
+
+迭代流程（当URDF不准确时）：
+  手眼标定(强制保存) → URDF验证修轴方向 → 重新手眼标定(精确)
 """)
 
         # 检查/初始化正运动学
         if self.forward_kinematics is None:
             if self.urdf_path is None:
-                print("\n需要URDF文件来计算正运动学。")
-                urdf_input = input("请输入URDF文件路径 (或按Enter跳过，使用简化模式): ").strip()
+                print("\n需要URDF文件来计算正运动学。(FK不准也可先标定，后修正)")
+                urdf_input = input("请输入URDF文件路径: ").strip()
                 if urdf_input:
                     self.urdf_path = urdf_input
 
@@ -1384,17 +1387,41 @@ class PrecisionPlaceSystem:
                         print(f"  建议运行FK旋转验证(F)和平移验证(T)进行诊断")
                     break
                 else:
-                    print(f"\n✗ 标定失败或精度不足，请重新采集")
-                    # 清空键盘缓冲区，等待用户确认
-                    print("  按任意键继续采集，或按Q退出...")
-                    while True:
-                        wait_key = cv2.waitKey(100) & 0xFF
-                        if wait_key == ord('q') or wait_key == ord('Q'):
-                            print("退出手眼标定")
-                            cv2.destroyWindow("Hand-Eye Calibration")
-                            return
-                        elif wait_key != 255:  # 有按键按下
-                            break
+                    if success and not result.valid:
+                        # 标定已计算但RMSE偏高 → 旋转分量大概率可用
+                        print(f"\n  RMSE={result.rmse_error:.1f}px 偏高，但旋转分量可能可用")
+                        print(f"  平移: {result.translation_vector}")
+                        print(f"  旋转:\n{result.rotation_matrix}")
+                        print(f"\n  如果URDF有问题导致FK不准，可先强制保存此结果，")
+                        print(f"  用旋转分量做URDF轴方向修正，再用修正URDF重新标定。")
+                        print(f"\n  [S]强制保存  [任意键]继续采集  [Q]退出")
+                        while True:
+                            wait_key = cv2.waitKey(100) & 0xFF
+                            if wait_key == ord('q') or wait_key == ord('Q'):
+                                print("退出手眼标定")
+                                cv2.destroyWindow("Hand-Eye Calibration")
+                                return
+                            elif wait_key == ord('s') or wait_key == ord('S'):
+                                output_path = Path(__file__).parent / f"hand_eye_extrinsic_{self.current_arm}.yaml"
+                                self.hand_eye_calibrator.save(str(output_path))
+                                print(f"✓ 已强制保存到 {output_path}")
+                                print(f"  ⚠ 此结果精度较低，仅用于启动URDF验证")
+                                print(f"  下一步: 菜单B2→按V做URDF轴方向验证")
+                                cv2.destroyWindow("Hand-Eye Calibration")
+                                return
+                            elif wait_key != 255:
+                                break
+                    else:
+                        print(f"\n✗ 标定失败，请重新采集")
+                        print("  按任意键继续采集，或按Q退出...")
+                        while True:
+                            wait_key = cv2.waitKey(100) & 0xFF
+                            if wait_key == ord('q') or wait_key == ord('Q'):
+                                print("退出手眼标定")
+                                cv2.destroyWindow("Hand-Eye Calibration")
+                                return
+                            elif wait_key != 255:
+                                break
 
             elif key == ord('q') or key == ord('Q'):
                 print("退出手眼标定")
