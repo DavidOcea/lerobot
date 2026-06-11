@@ -17,6 +17,7 @@ import sys
 import time
 import json
 import os
+import random
 import cv2
 import numpy as np
 from pathlib import Path
@@ -1149,7 +1150,7 @@ class PrecisionPlaceSystem:
             print("⚠ 同步捕获模块未加载，使用传统模式")
 
         print("\n开始采集数据...")
-        print("按键: [C]捕获  [S]标定  [Q]退出")
+        print("按键: [C]捕获  [A]自动采集  [S]标定  [Q]退出")
 
         cv2.namedWindow("Hand-Eye Calibration", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("Hand-Eye Calibration", 800, 600)
@@ -1182,7 +1183,7 @@ class PrecisionPlaceSystem:
             count = self.hand_eye_calibrator.get_capture_count()
             cv2.putText(display, f"Captured: {count}/30", (10, 60),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
-            cv2.putText(display, "[C]apture [S]olve [Q]uit", (10, 90),
+            cv2.putText(display, "[C]apture [A]uto [S]olve [Q]uit", (10, 90),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
             # 显示正运动学状态
@@ -1323,6 +1324,19 @@ class PrecisionPlaceSystem:
                 else:
                     print("  ✗ 捕获失败")
 
+            elif key == ord('a') or key == ord('A'):
+                # 自动采集
+                count = self.hand_eye_calibrator.get_capture_count()
+                remaining = max(0, 15 - count)
+                if remaining == 0:
+                    print(f"  已采集 {count} 个姿态，足够标定。按 S 开始标定或继续手动采集。")
+                else:
+                    self._auto_collect_hand_eye_poses(
+                        camera, sync_capture,
+                        first_flange_pos, first_flange_rot,
+                        target_count=remaining
+                    )
+
             elif key == ord('s') or key == ord('S'):
                 # 开始标定
                 count = self.hand_eye_calibrator.get_capture_count()
@@ -1387,6 +1401,159 @@ class PrecisionPlaceSystem:
                 break
 
         cv2.destroyWindow("Hand-Eye Calibration")
+
+    def _auto_collect_hand_eye_poses(self, camera, sync_capture,
+                                      first_flange_pos, first_flange_rot,
+                                      target_count=15):
+        """自动采集手眼标定姿态 — 在关节空间生成多样化扰动并自动捕获"""
+        from scipy.spatial.transform import Rotation as R
+
+        # 关节配置
+        if self.current_arm == "right":
+            arm_joints = [7, 8, 9, 10, 11, 12]
+            joint_limits = {
+                7: (-160, 160), 8: (0, 90), 9: (-150, 150),
+                10: (0, 90), 11: (-150, 150), 12: (-90, 90),
+            }
+        else:
+            arm_joints = [0, 1, 2, 3, 4, 5]
+            joint_limits = {
+                0: (-160, 160), 1: (-90, 0), 2: (-150, 150),
+                3: (-90, 0), 4: (-150, 150), 5: (-90, 90),
+            }
+
+        # 扰动范围 (度) — joint_1~6
+        perturb_ranges = [15, 10, 12, 15, 20, 20]
+
+        print(f"\n{'='*60}")
+        print(f"自动采集手眼标定姿态")
+        print(f"{'='*60}")
+        print(f"  目标: {target_count} 个姿态")
+        print(f"  按 Q 可中断")
+
+        base_joints = self.controller.get_joint_states()
+        if base_joints is None:
+            print("✗ 无法获取关节状态")
+            return
+
+        initial_count = self.hand_eye_calibrator.get_capture_count()
+        consecutive_failures = 0
+        consecutive_skips = 0
+        range_multiplier = 1.0
+        max_attempts = target_count * 4
+
+        for attempt in range(max_attempts):
+            # 检查中断
+            key = cv2.waitKey(10) & 0xFF
+            if key == ord('q') or key == ord('Q'):
+                print("\n  用户中断自动采集")
+                break
+
+            # 生成扰动姿态
+            target = base_joints.copy()
+            for i, jidx in enumerate(arm_joints):
+                lo, hi = joint_limits[jidx]
+                r = perturb_ranges[i] * range_multiplier
+                offset = random.uniform(-r, r)
+                target[jidx] = float(np.clip(base_joints[jidx] + offset, lo, hi))
+
+            # 移动到位
+            print(f"  [{attempt+1}] 移动...", end="", flush=True)
+            self.controller._smooth_move_all_joints(target, steps=20)
+            time.sleep(0.3)
+
+            # 检测标定板
+            image = camera.read()
+            if image is None:
+                print(" 相机失败")
+                consecutive_failures += 1
+                continue
+
+            success, _rvec, _tvec, _corners = self.hand_eye_calibrator.detect_charuco(image)
+            if not success:
+                print(" 未检测到板")
+                consecutive_failures += 1
+                if consecutive_failures >= 5:
+                    range_multiplier = min(range_multiplier * 1.5, 3.0)
+                    print(f"    扩大扰动 x{range_multiplier:.1f}")
+                    consecutive_failures = 0
+                if consecutive_failures >= 10:
+                    print("✗ 连续失败过多，退出")
+                    break
+                continue
+
+            consecutive_failures = 0
+
+            # 同步采集
+            if sync_capture:
+                cap_result = sync_capture.capture_with_verification()
+                if not cap_result.success:
+                    print(f" 同步失败: {cap_result.error_message}")
+                    continue
+                flange_position = cap_result.flange_position
+                flange_rotation = cap_result.flange_rotation
+            else:
+                joints = self.controller.get_joint_states()
+                if joints is None:
+                    print(" 关节状态失败")
+                    continue
+                if self.forward_kinematics:
+                    try:
+                        pose = self.forward_kinematics.compute(joints)
+                        flange_position = pose.get_position()
+                        flange_rotation = pose.quaternion
+                    except Exception as e:
+                        print(f" FK失败: {e}")
+                        continue
+                else:
+                    flange_position = np.array([0.0, 0.0, 0.5])
+                    flange_rotation = np.array([0.0, 0.0, 0.0, 1.0])
+
+            if flange_position is None:
+                print(" FK=None")
+                continue
+
+            # 多样性检查
+            count = self.hand_eye_calibrator.get_capture_count()
+            if count > 0:
+                r_flange = R.from_quat(flange_rotation).as_matrix()
+                min_rot_diff = float('inf')
+                min_pos_diff = float('inf')
+                for R_old, t_old in zip(self.hand_eye_calibrator.R_base2gripper,
+                                         self.hand_eye_calibrator.t_base2gripper):
+                    rot_diff = np.linalg.norm(r_flange - R_old, 'fro')
+                    min_rot_diff = min(min_rot_diff, rot_diff)
+                    pos_diff = np.linalg.norm(np.array(flange_position) - t_old.flatten())
+                    min_pos_diff = min(min_pos_diff, pos_diff)
+
+                if min_rot_diff < 0.1 and min_pos_diff < 0.01:
+                    print(f" 跳过(相似 r={min_rot_diff:.2f} p={min_pos_diff*1000:.0f}mm)")
+                    consecutive_skips += 1
+                    if consecutive_skips > 5:
+                        range_multiplier = min(range_multiplier * 1.5, 3.0)
+                        consecutive_skips = 0
+                    continue
+
+            consecutive_skips = 0
+            range_multiplier = max(range_multiplier * 0.9, 1.0)
+
+            # 存储
+            if self.hand_eye_calibrator.capture_pose(image, flange_position, flange_rotation):
+                new_count = self.hand_eye_calibrator.get_capture_count()
+                print(f" ✓ ({new_count - initial_count}/{target_count})")
+                if new_count >= initial_count + target_count:
+                    print(f"\n✓ 已采集目标数量")
+                    break
+            else:
+                print(" 存储失败")
+
+        # 恢复基准位置
+        print("  恢复基准位置...")
+        self.controller._smooth_move_all_joints(base_joints, steps=20)
+        time.sleep(0.3)
+
+        final_count = self.hand_eye_calibrator.get_capture_count()
+        print(f"\n  自动采集完成: +{final_count - initial_count} 个 (总共 {final_count})")
 
     def reprojection_verification(self):
         """重投影验证 - 验证手眼标定精度"""
