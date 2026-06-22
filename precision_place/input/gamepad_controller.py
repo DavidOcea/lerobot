@@ -85,6 +85,9 @@ class GamepadReader:
         self._state = GamepadState()
         self._lock = threading.Lock()
         self._device_name = ""
+        self._pyusb_device = None  # (usb_dev, (vid, pid)) 后备
+        self._report_size = 20
+        self._use_pyusb = False
 
     def _find_device(self) -> Optional[str]:
         """自动检测 /dev/input/event* 中的游戏手柄"""
@@ -109,18 +112,31 @@ class GamepadReader:
         return None
 
     def start(self):
+        # 方案1: evdev (标准路径)
         device = self._find_device()
-        if device is None:
-            raise RuntimeError(
-                "未检测到游戏手柄。请连接手柄后重试。\n"
-                "  如果已连接, 可能需要 sudo usermod -a -G input $USER 后重新登录。"
-            )
-        self._device_path = device
-        print(f"✓ 检测到手柄: {self._device_name} ({device})")
+        if device is not None:
+            self._device_path = device
+            self._use_pyusb = False
+            print(f"✓ 检测到手柄(evdev): {self._device_name} ({device})")
+            self._running = True
+            self._thread = threading.Thread(target=self._read_loop, daemon=True)
+            self._thread.start()
+            return
 
-        self._running = True
-        self._thread = threading.Thread(target=self._read_loop, daemon=True)
-        self._thread.start()
+        # 方案2: pyusb 后备 (绕过内核驱动问题, 如 Jetson 的 logitech 驱动冲突)
+        pyusb_dev = self._find_device_pyusb()
+        if pyusb_dev is not None:
+            self._pyusb_device = pyusb_dev
+            self._use_pyusb = True
+            self._running = True
+            self._thread = threading.Thread(target=self._read_loop_pyusb, daemon=True)
+            self._thread.start()
+            return
+
+        raise RuntimeError(
+            "未检测到游戏手柄。请连接手柄后重试。\n"
+            "  如果已连接, 可能需要 sudo usermod -a -G input $USER 后重新登录。"
+        )
 
     def stop(self):
         self._running = False
@@ -172,6 +188,164 @@ class GamepadReader:
                     self._handle_axis(event.code, event.value)
                 elif event.type == evdev.ecodes.EV_KEY:
                     self._handle_button(event.code, event.value)
+
+    # ==================== pyusb 后备 ====================
+
+    # 已知游戏手柄 VID/PID (按优先级排列)
+    _KNOWN_GAMEPADS = [
+        (0x046D, 0xC219),  # F710 DirectInput
+        (0x046D, 0xC21F),  # F710 XInput (用 hid-generic 时)
+        (0x054C, 0x09CC),  # PS4 DualShock 4
+        (0x054C, 0x05C4),  # PS4 DualShock 4 (alternate)
+        (0x054C, 0x0CE6),  # PS5 DualSense
+        (0x045E, 0x028E),  # Xbox 360
+    ]
+
+    def _find_device_pyusb(self):
+        """用 pyusb 查找游戏手柄 (绕过内核驱动问题)"""
+        try:
+            import usb.core
+        except ImportError:
+            return None
+
+        for vid, pid in self._KNOWN_GAMEPADS:
+            try:
+                dev = usb.core.find(idVendor=vid, idProduct=pid)
+                if dev is not None:
+                    return dev, (vid, pid)
+            except Exception:
+                continue
+        return None
+
+    def _unbind_kernel_driver(self, usb_dev):
+        """分离所有接口的内核驱动"""
+        import usb.core
+        import usb.util
+        for cfg in usb_dev:
+            for intf in cfg:
+                try:
+                    if usb_dev.is_kernel_driver_active(intf.bInterfaceNumber):
+                        usb_dev.detach_kernel_driver(intf.bInterfaceNumber)
+                except Exception:
+                    pass
+
+    def _read_loop_pyusb(self):
+        """后台线程: 用 pyusb 直接读 USB 中断端点"""
+        import usb.core
+        import usb.util
+
+        usb_dev, (vid, pid) = self._pyusb_device
+
+        try:
+            self._unbind_kernel_driver(usb_dev)
+        except usb.core.USBError as e:
+            if "Access denied" in str(e) or "LIBUSB_ERROR_ACCESS" in str(e):
+                print("✗ USB 设备访问被拒绝, pyusb 后备需要 root 权限")
+                print("  运行: sudo python precision_place/gamepad_teleop.py ...")
+            self._running = False
+            return
+
+        try:
+            usb_dev.set_configuration()
+        except Exception:
+            pass
+
+        # 查找 IN 端点
+        try:
+            cfg = usb_dev.get_active_configuration()
+            intf = cfg[(0, 0)]
+            ep = usb.util.find_descriptor(
+                intf,
+                custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
+            )
+        except Exception:
+            print("✗ 无法读取 USB 配置")
+            self._running = False
+            return
+        if ep is None:
+            print("✗ 未找到 USB IN 端点")
+            return
+
+        self._report_size = ep.wMaxPacketSize
+        self._device_name = f"Gamepad ({vid:04X}:{pid:04X} via pyusb)"
+        print(f"✓ 通过 USB 直连手柄: {self._device_name} (端点0x{ep.bEndpointAddress:02X}, {self._report_size}B)")
+
+        while self._running:
+            try:
+                data = usb_dev.read(ep.bEndpointAddress, self._report_size, timeout=200)
+                with self._lock:
+                    self._parse_hid_report(data)
+            except usb.core.USBTimeoutError:
+                pass
+            except Exception:
+                time.sleep(0.1)
+
+    def _parse_hid_report(self, data: bytes):
+        """解析 HID 游戏手柄原始报告 → GamepadState
+
+        支持常见格式的自适应解析:
+        - 检测 report ID 前缀 (0x01)
+        - 检测数据偏移 (F710 D模式 1字节偏移)
+        """
+        s = self._state
+        raw = list(data)
+        size = len(raw)
+
+        # 跳过可能的 report ID
+        offset = 0
+        if size > 0 and raw[0] <= 0x08:
+            offset = 1
+
+        payload = raw[offset:]
+        psize = len(payload)
+
+        if psize < 8:
+            return  # 太短，无法解析
+
+        def read_u16_le(idx):
+            if idx + 1 < psize:
+                return payload[idx] | (payload[idx + 1] << 8)
+            return 0
+
+        def axis_to_float(val, center=32768, dead=1500):
+            """16-bit 轴值 → [-1, 1]"""
+            v = (val - center) / (32767.0 - center) if val >= center else -(center - val) / center
+            if abs(v) < dead / center:
+                return 0.0
+            return max(-1.0, min(1.0, v))
+
+        # 尝试多个已知布局
+        if psize >= 10:
+            # 标准 HID gamepad: X, Y, Z, Rz (16-bit LE each)
+            s.left_stick_x = axis_to_float(read_u16_le(0))
+            s.left_stick_y = axis_to_float(read_u16_le(2))
+            s.right_stick_x = axis_to_float(read_u16_le(4))
+            s.right_stick_y = axis_to_float(read_u16_le(6))
+
+            # Hat switch / D-pad
+            hat = read_u16_le(8)
+            s.dpad_up = (hat >= 0 and hat <= 1000) or (hat >= 34000)
+            s.dpad_right = (hat >= 900 and hat <= 2700)
+            s.dpad_down = (hat >= 1800 and hat <= 9000)
+            s.dpad_left = (hat >= 2700 and hat <= 8100)
+
+        # Buttons bitmask (通常从 offset 10-12 开始)
+        btn_offset = 10
+        if btn_offset + 1 < psize:
+            btns = payload[btn_offset] | (payload[btn_offset + 1] << 8)
+            s.cross = bool(btns & (1 << 0))
+            s.circle = bool(btns & (1 << 1))
+            s.triangle = bool(btns & (1 << 2))
+            s.square = bool(btns & (1 << 3))
+            s.l1 = bool(btns & (1 << 4))
+            s.r1 = bool(btns & (1 << 5))
+            s.l2 = 1.0 if bool(btns & (1 << 6)) else 0.0
+            s.r2 = 1.0 if bool(btns & (1 << 7)) else 0.0
+            s.select = bool(btns & (1 << 8))
+            s.start = bool(btns & (1 << 9))
+            s.l3 = bool(btns & (1 << 10))
+            s.r3 = bool(btns & (1 << 11))
+            s.ps_button = bool(btns & (1 << 12))
 
     def _handle_axis(self, code: int, value: int):
         """处理摇杆/扳机事件"""
