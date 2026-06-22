@@ -97,9 +97,9 @@ def main():
         system.controller = PrecisionPlaceController(
             robot=system.robot,
             camera=system.cameras[arm_config.camera_name],
-            arm_config=arm_config,
+            arm=args.arm,
             camera2=system.cameras.get(arm_config.camera2_name),
-            passive=False,
+            passive_mode=False,
         )
         print(f"  ✓ 控制器已创建 ({args.arm}手)")
     else:
