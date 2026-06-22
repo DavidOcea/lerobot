@@ -64,25 +64,21 @@ def main():
 
     # 1. 连接机器人
     print("\n[1/3] 连接机器人...")
-    robot_config = SupreRobotFollowerConfig(use_trunk=False)
+    robot_config = SupreRobotFollowerConfig(
+        joint_config_file="trunk_config_supre_robot_joint.yaml"
+    )
     system.robot = SupreRobotFollower(robot_config)
     system.robot.connect()
     print("  ✓ 机器人已连接")
 
     # 2. 连接相机 (可选，SimpleIBVS需要)
     print("\n[2/3] 连接相机...")
-    camera_indices = {}
-    for arm_name, arm_cfg in ARM_CONFIGS.items():
-        camera_indices[arm_cfg.camera_name] = arm_cfg.camera_index
-    # 去重
-    seen = set()
-    unique_cameras = {}
+    camera_indices = {
+        'head': 0,
+        'left_wrist': 2,
+        'right_wrist': 4,
+    }
     for name, idx in camera_indices.items():
-        if idx not in seen:
-            unique_cameras[name] = idx
-            seen.add(idx)
-
-    for name, idx in unique_cameras.items():
         try:
             from lerobot.cameras.opencv.configuration_opencv import ColorMode
             config = OpenCVCameraConfig(
