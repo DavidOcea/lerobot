@@ -5540,6 +5540,36 @@ Z轴控制关节 (全部6个):
 
         print(f"{'='*72}\n")
 
+    def _ensure_fk_for_arms(self, urdf_path: str = None):
+        """确保正运动学已初始化（支持双臂）
+
+        若 urdf_path 已缓存或传入，尝试为 left/right 分别创建 FK。
+        返回: (fk_left, fk_right) 或 (None, None)
+        """
+        from precision_place.models.calibration_data import DEFAULT_URDF_PATH
+
+        if urdf_path is None:
+            urdf_path = self.urdf_path or DEFAULT_URDF_PATH
+
+        if urdf_path is None:
+            return None, None
+
+        if not _has_fk:
+            return None, None
+
+        # 为双臂分别创建 FK
+        fks = {}
+        for arm in ['left', 'right']:
+            try:
+                fks[arm] = create_fk_from_urdf(urdf_path, arm)
+            except Exception:
+                fks[arm] = None
+
+        # 缓存到 system 上供 gamepad controller 使用
+        self._fk_left = fks.get('left')
+        self._fk_right = fks.get('right')
+        return self._fk_left, self._fk_right
+
     def gamepad_control(self):
         """手柄笛卡尔空间遥操作"""
         if not self.controller:
@@ -5549,6 +5579,54 @@ Z轴控制关节 (全部6个):
         print("\n" + "="*60)
         print("手柄笛卡尔空间遥操作")
         print("="*60)
+
+        # 初始化 FK（用于无 SimpleIBVS 标定时的后备方案）
+        from precision_place.models.calibration_data import DEFAULT_URDF_PATH
+        urdf_path = self.urdf_path or DEFAULT_URDF_PATH
+        if not self.forward_kinematics and not urdf_path:
+            print("\n提示: 无 SimpleIBVS 标定时需要 URDF 做 FK 数值雅可比后备")
+            print("  可用 URDF 文件:")
+            # 自动搜索常见路径
+            search_dirs = [
+                Path("/home/smai/dc_dir/urdf"),
+                Path("/home/smai/dc_dir/tools"),
+                Path(__file__).parent.parent,
+            ]
+            found_urdfs = []
+            for sd in search_dirs:
+                if sd.exists():
+                    for f in sd.rglob("*.urdf"):
+                        found_urdfs.append(str(f))
+            for i, f in enumerate(found_urdfs[:10]):
+                print(f"    [{i+1}] {f}")
+            choice = input("输入URDF路径 (或序号, 按Enter跳过): ").strip()
+            if choice:
+                try:
+                    idx = int(choice) - 1
+                    if 0 <= idx < len(found_urdfs):
+                        urdf_path = found_urdfs[idx]
+                    else:
+                        urdf_path = choice
+                except ValueError:
+                    urdf_path = choice
+                self.urdf_path = urdf_path
+
+        if urdf_path:
+            self._ensure_fk_for_arms(urdf_path)
+            if self._fk_left or self._fk_right:
+                arms_ok = []
+                if self._fk_left:
+                    arms_ok.append('左')
+                if self._fk_right:
+                    arms_ok.append('右')
+                print(f"✓ FK已初始化 ({'/'.join(arms_ok)}臂) — 无标定也可使用XY控制")
+            else:
+                print("⚠ FK初始化失败, XY控制需要SimpleIBVS标定")
+        else:
+            print("⚠ 无URDF — XY控制需要SimpleIBVS标定, Z/Yaw/Roll仅FK后备")
+
+        print("\n双臂模式说明: 按SELECT切换 left → right → dual")
+        print("  DUAL模式下左右摇杆分别控制左右臂XY, L2/R2控制Z")
 
         try:
             ctrl = GamepadRobotController(self)

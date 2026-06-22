@@ -65,6 +65,10 @@ class ArmConfig:
 
 GRIPPER_ENABLED = True  # 手柄控制/手动控制夹爪
 
+# 手柄笛卡尔控制默认URDF路径（设为 None 则每次提示输入）
+# 示例: "/home/smai/dc_dir/urdf/RJ2506/urdf/RJ2506.urdf"
+DEFAULT_URDF_PATH = None
+
 # ================================================
 
 

@@ -477,6 +477,17 @@ class GamepadRobotController:
                 result[jidx] = float(delta[i])
         return result
 
+    def _get_fk(self, arm: str):
+        """获取指定手臂的 FK 计算器"""
+        # 优先使用 arm-specific FK (run.py 中 _ensure_fk_for_arms 设置的)
+        fk_attr = f'_fk_{arm}'
+        if hasattr(self.system, fk_attr):
+            fk = getattr(self.system, fk_attr)
+            if fk is not None:
+                return fk
+        # 回退到通用 FK
+        return self.system.forward_kinematics
+
     # ==================== Jacobian 构造 ====================
 
     def _build_xy_jacobian(self, joints: np.ndarray, j_indices: List[int],
@@ -502,11 +513,12 @@ class GamepadRobotController:
             pass
 
         # 方案2: FK 数值微分 (后备, 无需标定)
-        if self.system.forward_kinematics:
-            J_base = self._fk_numerical_xy_jacobian(joints, j_indices)
+        fk = self._get_fk(arm)
+        if fk is not None:
+            J_base = self._fk_numerical_xy_jacobian(fk, joints, j_indices)
             if J_base is not None:
                 # 旋转到相机坐标系
-                R_base_to_cam = self._get_base_to_cam_rotation(joints)
+                R_base_to_cam = self._get_base_to_cam_rotation(fk, joints, arm)
                 if R_base_to_cam is not None:
                     # J_cam = R_cam_base @ J_base
                     J_cam = (R_base_to_cam.T @ np.vstack([J_base, np.zeros(len(j_indices))]))[:2]
@@ -516,11 +528,10 @@ class GamepadRobotController:
                     return J_base[:2], j_indices
         return None
 
-    def _fk_numerical_xy_jacobian(self, joints: np.ndarray,
+    def _fk_numerical_xy_jacobian(self, fk, joints: np.ndarray,
                                    j_indices: List[int]) -> Optional[np.ndarray]:
         """FK 数值微分: 计算 flange 位置 (base frame, mm) 对每个关节的偏导"""
         try:
-            fk = self.system.forward_kinematics
             pose_base = fk.compute(joints)
             pos_base = pose_base.get_position() * 1000.0  # m → mm
             J = np.zeros((3, len(j_indices)))
@@ -535,12 +546,13 @@ class GamepadRobotController:
         except Exception:
             return None
 
-    def _get_base_to_cam_rotation(self, joints: np.ndarray) -> Optional[np.ndarray]:
+    def _get_base_to_cam_rotation(self, fk, joints: np.ndarray,
+                                   arm: str) -> Optional[np.ndarray]:
         """获取 base→camera 的旋转矩阵, 用于旋转 FK Jacobian"""
         try:
             import yaml
             he_path = (Path(__file__).parent.parent /
-                       f"hand_eye_extrinsic_{self.controller.arm_config.name}.yaml")
+                       f"hand_eye_extrinsic_{arm}.yaml")
             if not he_path.exists():
                 return None
             with open(he_path, 'r') as f:
@@ -548,7 +560,6 @@ class GamepadRobotController:
             T_flange_cam = np.array(data['extrinsic_matrix']['data']).reshape(4, 4)
             R_flange_cam = T_flange_cam[:3, :3]
 
-            fk = self.system.forward_kinematics
             pose = fk.compute(joints)
             R_base_flange = pose.rotation_matrix  # 3×3
 
@@ -578,9 +589,10 @@ class GamepadRobotController:
             pass
 
         # FK 数值雅可比
-        if self.system.forward_kinematics:
+        fk = self._get_fk(arm)
+        if fk is not None:
             return self._fk_numerical_jacobian(
-                joints, j_indices, lambda pos: pos[2] * 1000.0)
+                fk, joints, j_indices, lambda pos: pos[2] * 1000.0)
         return None
 
     def _build_rot_jacobian(self, joints: np.ndarray, j_indices: List[int],
@@ -604,17 +616,18 @@ class GamepadRobotController:
             pass
 
         # FK 数值雅可比
-        if self.system.forward_kinematics and axis == 'z':
+        fk = self._get_fk(arm)
+        if fk is not None and axis == 'z':
             return self._fk_numerical_jacobian(
-                joints, j_indices,
-                lambda pos: np.arctan2(
-                    self.system.forward_kinematics.compute(joints).rotation_matrix[1, 0],
-                    self.system.forward_kinematics.compute(joints).rotation_matrix[0, 0]
+                fk, joints, j_indices,
+                lambda j: np.arctan2(
+                    fk.compute(j).rotation_matrix[1, 0],
+                    fk.compute(j).rotation_matrix[0, 0]
                 ) * 180.0 / np.pi
             )
         return None
 
-    def _fk_numerical_jacobian(self, joints: np.ndarray,
+    def _fk_numerical_jacobian(self, fk, joints: np.ndarray,
                                 j_indices: List[int],
                                 metric_fn) -> Optional[np.ndarray]:
         """FK 数值微分 Jacobian"""
