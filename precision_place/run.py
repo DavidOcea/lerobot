@@ -74,6 +74,8 @@ except ImportError:
     _has_coord_transform = False
     CoordinateTransformer = None
 
+from precision_place.input.gamepad_controller import GamepadRobotController
+
 # 尝试导入TCP标定模块
 try:
     from precision_place.calibration.tcp_calibrator import TCPCalibrator, TCPCalibrationResult
@@ -5538,6 +5540,24 @@ Z轴控制关节 (全部6个):
 
         print(f"{'='*72}\n")
 
+    def gamepad_control(self):
+        """手柄笛卡尔空间遥操作"""
+        if not self.controller:
+            print("请先连接设备")
+            return
+
+        print("\n" + "="*60)
+        print("手柄笛卡尔空间遥操作")
+        print("="*60)
+
+        try:
+            ctrl = GamepadRobotController(self)
+            ctrl.run()
+        except Exception as e:
+            print(f"\n✗ 手柄控制异常: {e}")
+            import traceback
+            traceback.print_exc()
+
     def run_full(self):
         """完整流程"""
         if not self.controller:
@@ -5649,6 +5669,7 @@ def main():
             print("10. 连续运行 (10次)")
             print("11. 设置标记面积范围")
             print("12. 设置对齐参数 (视频显示等)")
+            print("G. 手柄控制 (笛卡尔空间遥操作)")
             print("0. 退出")
 
             choice = input("\n选项: ").strip()
@@ -5976,6 +5997,9 @@ def main():
 
             elif choice == "12":
                 system.configure_alignment_settings()
+
+            elif choice.upper() == "G":
+                system.gamepad_control()
 
             elif choice == "0":
                 break

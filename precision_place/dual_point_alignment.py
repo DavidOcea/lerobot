@@ -127,7 +127,7 @@ class ArmConfig:
 # 临时禁用某些硬件功能（如夹爪拆除时）
 # 修改此处即可，无需改动其他代码
 
-GRIPPER_ENABLED = False  # 夹爪已拆除时设为 False
+GRIPPER_ENABLED = True  # 手柄控制/手动控制夹爪
 
 # ================================================
 
