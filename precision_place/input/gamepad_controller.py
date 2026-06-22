@@ -481,22 +481,79 @@ class GamepadRobotController:
 
     def _build_xy_jacobian(self, joints: np.ndarray, j_indices: List[int],
                             arm: str) -> Optional[Tuple[np.ndarray, List[int]]]:
-        """从 SimpleIBVS 灵敏度构造 XY Jacobian (mm/deg)"""
+        """XY Jacobian (mm/deg) — 优先 SimpleIBVS 灵敏度, 其次 FK 数值微分"""
+        # 方案1: SimpleIBVS 灵敏度标定
         try:
             from precision_place.calibration.simple_ibvs import SimpleIBVSController
             ctrl = SimpleIBVSController(arm=arm)
             sens_list, _ = ctrl.get_interpolated_sensitivities(joints)
-            if not sens_list:
-                return None
+            if sens_list:
+                sens_map = {s.joint_idx: s for s in sens_list}
+                has_mm_data = any(abs(s.mm_dx_per_deg) > 0.001 or abs(s.mm_dy_per_deg) > 0.001
+                                  for s in sens_list)
+                if has_mm_data:
+                    J = np.zeros((2, len(j_indices)))
+                    for i, jidx in enumerate(j_indices):
+                        if jidx in sens_map:
+                            J[0, i] = sens_map[jidx].mm_dx_per_deg
+                            J[1, i] = sens_map[jidx].mm_dy_per_deg
+                    return J, j_indices
+        except Exception:
+            pass
 
-            # 建立 joint_idx → sensitivity 的映射
-            sens_map = {s.joint_idx: s for s in sens_list}
-            J = np.zeros((2, len(j_indices)))
+        # 方案2: FK 数值微分 (后备, 无需标定)
+        if self.system.forward_kinematics:
+            J_base = self._fk_numerical_xy_jacobian(joints, j_indices)
+            if J_base is not None:
+                # 旋转到相机坐标系
+                R_base_to_cam = self._get_base_to_cam_rotation(joints)
+                if R_base_to_cam is not None:
+                    # J_cam = R_cam_base @ J_base
+                    J_cam = (R_base_to_cam.T @ np.vstack([J_base, np.zeros(len(j_indices))]))[:2]
+                    return J_cam, j_indices
+                else:
+                    # 没有手眼标定, 直接用 base-frame XY
+                    return J_base[:2], j_indices
+        return None
+
+    def _fk_numerical_xy_jacobian(self, joints: np.ndarray,
+                                   j_indices: List[int]) -> Optional[np.ndarray]:
+        """FK 数值微分: 计算 flange 位置 (base frame, mm) 对每个关节的偏导"""
+        try:
+            fk = self.system.forward_kinematics
+            pose_base = fk.compute(joints)
+            pos_base = pose_base.get_position() * 1000.0  # m → mm
+            J = np.zeros((3, len(j_indices)))
+            delta = 0.2  # 度
             for i, jidx in enumerate(j_indices):
-                if jidx in sens_map:
-                    J[0, i] = sens_map[jidx].mm_dx_per_deg
-                    J[1, i] = sens_map[jidx].mm_dy_per_deg
-            return J, j_indices
+                perturbed = joints.copy().astype(float)
+                perturbed[jidx] += delta
+                pose = fk.compute(perturbed)
+                pos = pose.get_position() * 1000.0
+                J[:, i] = (pos - pos_base) / delta
+            return J
+        except Exception:
+            return None
+
+    def _get_base_to_cam_rotation(self, joints: np.ndarray) -> Optional[np.ndarray]:
+        """获取 base→camera 的旋转矩阵, 用于旋转 FK Jacobian"""
+        try:
+            import yaml
+            he_path = (Path(__file__).parent.parent /
+                       f"hand_eye_extrinsic_{self.controller.arm_config.name}.yaml")
+            if not he_path.exists():
+                return None
+            with open(he_path, 'r') as f:
+                data = yaml.safe_load(f)
+            T_flange_cam = np.array(data['extrinsic_matrix']['data']).reshape(4, 4)
+            R_flange_cam = T_flange_cam[:3, :3]
+
+            fk = self.system.forward_kinematics
+            pose = fk.compute(joints)
+            R_base_flange = pose.rotation_matrix  # 3×3
+
+            # R_base→cam = R_base→flange @ R_flange→cam
+            return R_base_flange @ R_flange_cam
         except Exception:
             return None
 
