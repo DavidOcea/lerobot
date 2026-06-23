@@ -292,7 +292,7 @@ class GamepadReader:
                 data = usb_dev.read(ep.bEndpointAddress, self._report_size, timeout=200)
                 self._packet_count += 1
                 self._last_raw_hex = ' '.join(f'{b:02X}' for b in data)
-                if self._debug_packet_count < 10:
+                if self._debug_packet_count < 2:
                     print(f"  [DEBUG] raw({len(data)}B): {self._last_raw_hex}")
                     self._debug_packet_count += 1
                 with self._lock:
@@ -504,6 +504,9 @@ class GamepadRobotController:
         self._last_cross = False
         self._last_square = False
         self._running = False
+        # PS 键长按退出 (F710 D-mode 无 PS 键, 但保留安全退出机制)
+        self._ps_hold_start = None
+        self.PS_HOLD_DURATION = 2.0
 
     # ==================== 主循环 ====================
 
@@ -521,19 +524,22 @@ class GamepadRobotController:
         self._debug_counter = 0
 
         print(f"\n  手柄控制已启动 — 当前模式: {self.mode.upper()}")
-        print("  [SELECT]切换模式  [PS键]退出\n")
+        print("  [SELECT]切换模式  [START键长按2秒]退出\n")
 
         while self._running:
             loop_start = time.time()
             state = reader.get_state()
 
-            # 调试: 每秒打印一次解析后的摇杆/按钮状态
+            # 调试: 仅当有摇杆活动或按键时打印 (每秒最多1次)
+            has_activity = (abs(state.left_stick_x) > 0.05 or abs(state.left_stick_y) > 0.05 or
+                           abs(state.right_stick_x) > 0.05 or abs(state.right_stick_y) > 0.05 or
+                           state.cross or state.circle or state.triangle or state.square or
+                           state.l1 or state.r1 or state.select or state.start or
+                           state.dpad_up or state.dpad_down)
             self._debug_counter += 1
-            if self._debug_counter % 30 == 0:
+            if has_activity and self._debug_counter % 15 == 0:
                 pkt_count, timeout_count, err_count, last_err, last_raw = reader.get_debug_info()
                 print(f"  [STATE] pkts={pkt_count} timeouts={timeout_count} errs={err_count} raw=[{last_raw}]")
-                if last_err:
-                    print(f"          last_error: {last_err}")
                 print(f"          LX:{state.left_stick_x:+.2f} LY:{state.left_stick_y:+.2f} "
                       f"RX:{state.right_stick_x:+.2f} RY:{state.right_stick_y:+.2f} "
                       f"L2:{state.l2:.1f} R2:{state.r2:.1f}")
@@ -541,10 +547,15 @@ class GamepadRobotController:
                       f"L1:{state.l1} R1:{state.r1} SEL:{state.select} "
                       f"START:{state.start} PS:{state.ps_button}")
 
-            # PS 键退出
-            if state.ps_button:
-                print("\n  手柄控制结束")
-                break
+            # START 键长按退出 (F710 D-mode 无 PS 键)
+            if state.start:
+                if self._ps_hold_start is None:
+                    self._ps_hold_start = time.time()
+                elif time.time() - self._ps_hold_start >= self.PS_HOLD_DURATION:
+                    print("\n  手柄控制结束")
+                    break
+            else:
+                self._ps_hold_start = None
 
             # 模式切换
             self._check_mode_switch(state)
@@ -1010,6 +1021,6 @@ class GamepadRobotController:
   │    R1+R2     → 右手 Z↑                               │
   ├──────────────────────────────────────────────────────┤
   │  [SELECT] 切换模式 (LEFT → RIGHT → DUAL)              │
-  │  [PS键]   退出                                        │
+  │  [START长按2秒] 退出                                        │
   └──────────────────────────────────────────────────────┘
   """)
