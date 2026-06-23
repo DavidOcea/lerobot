@@ -258,8 +258,16 @@ class GamepadReader:
                 intf,
                 custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
             )
-        except Exception:
-            print("✗ 无法读取 USB 配置")
+        except usb.core.USBError as e:
+            if "Access" in str(e) or "LIBUSB_ERROR_ACCESS" in str(e):
+                print("✗ USB 访问被拒绝, pyusb 需要 root 权限")
+                print("  请用 sudo 运行: sudo python3 ... gamepad_teleop.py ...")
+            else:
+                print(f"✗ USB 错误: {e}")
+            self._running = False
+            return
+        except Exception as e:
+            print(f"✗ 无法读取 USB 配置: {e}")
             self._running = False
             return
         if ep is None:
@@ -270,9 +278,15 @@ class GamepadReader:
         self._device_name = f"Gamepad ({vid:04X}:{pid:04X} via pyusb)"
         print(f"✓ 通过 USB 直连手柄: {self._device_name} (端点0x{ep.bEndpointAddress:02X}, {self._report_size}B)")
 
+        # 调试: 打印前10个原始 HID 报告以确认字节布局
+        self._debug_packet_count = 0
+
         while self._running:
             try:
                 data = usb_dev.read(ep.bEndpointAddress, self._report_size, timeout=200)
+                if self._debug_packet_count < 10:
+                    print(f"  [DEBUG] raw({len(data)}B): {' '.join(f'{b:02X}' for b in data)}")
+                    self._debug_packet_count += 1
                 with self._lock:
                     self._parse_hid_report(data)
             except usb.core.USBTimeoutError:
@@ -309,8 +323,11 @@ class GamepadReader:
 
         def axis_to_float(val, center=32768, dead=1500):
             """16-bit 轴值 → [-1, 1]"""
-            v = (val - center) / (32767.0 - center) if val >= center else -(center - val) / center
-            if abs(v) < dead / center:
+            if val >= center:
+                v = (val - center) / (65535.0 - center)
+            else:
+                v = -(center - val) / float(center)
+            if abs(v) < dead / float(center):
                 return 0.0
             return max(-1.0, min(1.0, v))
 
