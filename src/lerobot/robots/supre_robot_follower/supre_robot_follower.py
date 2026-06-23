@@ -298,9 +298,12 @@ class SupreRobotFollower(Robot):
         
         # 如果有任何关节被限制了，打印一条总的警告信息
         if warnings:
-            # 可以在这里使用 logging.warning 来代替 print
+            details = ", ".join(
+                f"{name}: {w['original']:.2f}→{w['clamped']:.2f} (limit=[{w['limits'][0]:.1f}, {w['limits'][1]:.1f}])"
+                for name, w in warnings.items()
+            )
             logger.warning(
-                "One or more joint positions were clamped to their absolute limits:"
+                f"Joint positions clamped ({len(warnings)} joints): {details}"
             )
         
         # 使用经过两层安全检查后的最终位置

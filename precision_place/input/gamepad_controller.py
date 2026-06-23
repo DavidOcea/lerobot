@@ -501,7 +501,6 @@ class GamepadRobotController:
         self.step_profile = 'medium'
         self._last_dpad_up = False
         self._last_dpad_down = False
-        self._last_select = False
         self._last_triangle = False
         self._last_cross = False
         self._last_square = False
@@ -528,7 +527,7 @@ class GamepadRobotController:
         self._debug_counter = 0
 
         print(f"\n  手柄控制已启动 — 当前模式: {self.mode.upper()}")
-        print("  [SELECT]切换模式  [START键长按2秒]退出\n")
+        print("  [START短按]切换模式  [START长按2秒]退出\n")
 
         while self._running:
             loop_start = time.time()
@@ -551,7 +550,7 @@ class GamepadRobotController:
                       f"L1:{state.l1} R1:{state.r1} SEL:{state.select} "
                       f"START:{state.start} PS:{state.ps_button}")
 
-            # START 键长按退出 (F710 D-mode 无 PS 键)
+            # START 键: 短按切换模式, 长按2秒退出 (F710 D-mode 无 SELECT/PS 键)
             if state.start:
                 if self._ps_hold_start is None:
                     self._ps_hold_start = time.time()
@@ -559,10 +558,11 @@ class GamepadRobotController:
                     print("\n  手柄控制结束")
                     break
             else:
+                if self._ps_hold_start is not None:
+                    hold_duration = time.time() - self._ps_hold_start
+                    if hold_duration < self.PS_HOLD_DURATION:
+                        self._switch_mode()
                 self._ps_hold_start = None
-
-            # 模式切换
-            self._check_mode_switch(state)
 
             # 步长切换
             self._check_step_switch(state)
@@ -586,16 +586,15 @@ class GamepadRobotController:
 
     # ==================== 模式/步长 ====================
 
-    def _check_mode_switch(self, state: GamepadState):
-        if state.select and not self._last_select:
-            if self.mode == 'left':
-                self.mode = 'right'
-            elif self.mode == 'right':
-                self.mode = 'dual'
-            else:
-                self.mode = 'left'
-            print(f"  → 模式: {self.mode.upper()}")
-        self._last_select = state.select
+    def _switch_mode(self):
+        """START 短按: 循环切换控制模式"""
+        if self.mode == 'left':
+            self.mode = 'right'
+        elif self.mode == 'right':
+            self.mode = 'dual'
+        else:
+            self.mode = 'left'
+        print(f"  → 模式: {self.mode.upper()}")
 
     def _check_step_switch(self, state: GamepadState):
         profiles = list(self.SPEED_PROFILES.keys())
@@ -971,19 +970,57 @@ class GamepadRobotController:
     # ==================== 发送命令 ====================
 
     def _send_joint_deltas(self, deltas: Dict[int, float]):
-        """将关节增量叠加到当前位置并发送"""
+        """将关节增量叠加到当前位置并发送, 跳过会超限的关节"""
         joints = self.controller.get_joint_states()
         if joints is None:
             return
 
         target = joints.copy()
+        skipped = []
+        limits = self._get_joint_limits()
         for jidx, d in deltas.items():
-            target[jidx] += d
+            new_val = joints[jidx] + d
+            if jidx in limits:
+                lo, hi = limits[jidx]
+                if new_val < lo or new_val > hi:
+                    skipped.append((jidx, joints[jidx], d, lo, hi))
+                    continue
+            target[jidx] = new_val
+
+        if skipped:
+            names = [self._joint_name(j) for j, _, _, _, _ in skipped[:3]]
+            print(f"  ⚠ 跳过超限关节: {', '.join(names)}... (共{len(skipped)}个)")
+
+        if not any(abs(target[i] - joints[i]) > 0.005 for i in deltas if i not in [s[0] for s in skipped]):
+            return
 
         try:
             self.controller._smooth_move_all_joints(target, steps=3)
         except Exception:
             pass
+
+    def _get_joint_limits(self) -> Dict[int, Tuple[float, float]]:
+        """获取关节索引 → (min, max) 限位映射"""
+        try:
+            robot = self.controller.robot
+            if hasattr(robot, 'calibration_limits'):
+                name_to_limits = robot.calibration_limits
+                limits = {}
+                for i, name in enumerate(robot.observation_joint_names):
+                    if name in name_to_limits:
+                        cal = name_to_limits[name]
+                        limits[i] = (cal.min_position, cal.max_position)
+                return limits
+        except Exception:
+            pass
+        return {}
+
+    def _joint_name(self, jidx: int) -> str:
+        """获取关节索引对应的名称"""
+        try:
+            return self.controller.robot.observation_joint_names[jidx]
+        except Exception:
+            return f"J{jidx}"
 
     # ==================== 夹爪 / 记录 ====================
 
@@ -1070,7 +1107,7 @@ class GamepadRobotController:
   │    R1+R2     → 右手 Z↑                               │
   │    十字键    → 右手 XY 后备                           │
   ├──────────────────────────────────────────────────────┤
-  │  [SELECT] 切换模式 (LEFT → RIGHT → DUAL)              │
+  │  [START短按] 切换模式 (LEFT → RIGHT → DUAL)            │
   │  [START长按2秒] 退出                                   │
   └──────────────────────────────────────────────────────┘
   """)
