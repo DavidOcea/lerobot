@@ -357,12 +357,22 @@ class GamepadReader:
             return max(-1.0, min(1.0, v))
 
         # === F710 D-mode 8字节格式 (report ID 0x01) ===
-        # F710 只有左摇杆+十字键+按钮, 无右摇杆
+        # HID描述符: 4×8bit轴 (X,Y,Z,Rz), 实际: 左摇杆16bit, 右摇杆8bit共享bytes2-3
         if psize == 7:
             # bytes 0-1: left stick X (16-bit LE, center=0x8000)
             s.left_stick_x = axis_to_float(read_u16_le(0), dead=300)
             # bytes 2-3: left stick Y (16-bit LE, center=0x8000)
             s.left_stick_y = axis_to_float(read_u16_le(2), dead=300)
+            # bytes 2-3 同时也是右摇杆 (8-bit, center=128, range=[0,255])
+            rx8 = payload[2]
+            ry8 = payload[3]
+            s.right_stick_x = (rx8 - 128) / 128.0
+            s.right_stick_y = (ry8 - 128) / 128.0
+            # 死区
+            if abs(s.right_stick_x) < 20.0 / 128.0:
+                s.right_stick_x = 0.0
+            if abs(s.right_stick_y) < 20.0 / 128.0:
+                s.right_stick_y = 0.0
             # byte 4: D-pad 在低4位 (0=N,1=NE,2=E,3=SE,4=S,5=SW,6=W,7=NW, 8/0xF=center)
             dpad = payload[4] & 0x0F
             s.dpad_up = dpad in (0, 1, 7)
@@ -615,27 +625,45 @@ class GamepadRobotController:
 
     def _apply_single_velocity(self, state: GamepadState, dt: float,
                                 v_mm: float, v_deg: float, arm: str):
-        """SINGLE 模式: 左摇杆XY, 十字键Z+Yaw, L1/R1=Roll (F710无右摇杆)"""
+        """SINGLE 模式: 左摇杆XY, 右摇杆Z+Yaw, 十字键后备, L1/R1=Roll
+
+        注意: F710 D-mode 左右摇杆共享 bytes 2-3, 同时推动会互相干扰。
+        采用互斥策略: 左摇杆活动时忽略右摇杆数据, 反之亦然。
+        """
         lx = self._deadzone(state.left_stick_x)
         ly = self._deadzone(state.left_stick_y)
+        rx = self._deadzone(state.right_stick_x)
+        ry = self._deadzone(state.right_stick_y)
+
+        # 互斥: 左右摇杆共享 bytes 2-3, 同时活动时数据相互干扰
+        left_active = abs(lx) > 0.001 or abs(ly) > 0.001
+        right_active = abs(rx) > 0.001 or abs(ry) > 0.001
+        if left_active and right_active:
+            # 左摇杆优先级更高 (16-bit > 8-bit), 忽略右摇杆
+            rx = 0.0
+            ry = 0.0
+        # 注: 右摇杆活动时, 左摇杆Y (ly) 已被 bytes 2-3 干扰,
+        # 但此时左摇杆已回中 (left_active=False), ly 自然为0, 不需要额外处理
 
         # 笛卡尔增量 (相机坐标系)
         dx_mm = lx * v_mm * dt
         dy_mm = -ly * v_mm * dt   # 摇杆Y: ↑为正, 屏幕Y: ↓为正, 取反
 
-        # Z: 十字键↑↓ (替代右摇杆Y)
-        dz_mm = 0.0
-        if state.dpad_up:
-            dz_mm = v_mm * dt       # ↑ = Z+ (升)
-        elif state.dpad_down:
-            dz_mm = -v_mm * dt      # ↓ = Z- (降)
+        # Z: 右摇杆Y优先, 十字键↑↓后备
+        dz_mm = -ry * v_mm * dt   # 右摇杆↑ = Z+
+        if abs(dz_mm) < 0.001:
+            if state.dpad_up:
+                dz_mm = v_mm * dt
+            elif state.dpad_down:
+                dz_mm = -v_mm * dt
 
-        # Yaw: 十字键←→ (替代右摇杆X)
-        dyaw = 0.0
-        if state.dpad_left:
-            dyaw = v_deg * dt       # ← = Yaw-
-        elif state.dpad_right:
-            dyaw = -v_deg * dt      # → = Yaw+
+        # Yaw: 右摇杆X优先, 十字键←→后备
+        dyaw = rx * v_deg * dt
+        if abs(dyaw) < 0.01:
+            if state.dpad_left:
+                dyaw = v_deg * dt
+            elif state.dpad_right:
+                dyaw = -v_deg * dt
 
         # Roll: L1/R1
         droll = 0.0
@@ -655,9 +683,20 @@ class GamepadRobotController:
         self._send_joint_deltas(deltas)
 
     def _apply_dual_velocity(self, state: GamepadState, dt: float, v_mm: float):
-        """DUAL 模式: 左摇杆→左手XY, 十字键→右手XY, L2/R2→Z (F710无右摇杆)"""
+        """DUAL 模式: 左摇杆→左手XY, 右摇杆(8bit)→右手XY, 十字键后备, L2/R2→Z
+
+        互斥: 左右摇杆共享 bytes 2-3, 同时推动时左摇杆优先, 右手自动降级为十字键.
+        """
         lx = self._deadzone(state.left_stick_x)
         ly = self._deadzone(state.left_stick_y)
+        rx = self._deadzone(state.right_stick_x)
+        ry = self._deadzone(state.right_stick_y)
+
+        # 互斥: 左摇杆活动时忽略右摇杆 (bytes 2-3 被左摇杆Y占用)
+        left_active = abs(lx) > 0.001 or abs(ly) > 0.001
+        if left_active:
+            rx = 0.0
+            ry = 0.0
 
         # 左手: 左摇杆 + L2
         l_dx = lx * v_mm * dt
@@ -666,11 +705,14 @@ class GamepadRobotController:
         if state.l1:
             l_dz = state.l2 * v_mm * dt  # L1+L2 = Z+
 
-        # 右手: 十字键 + R2 (替代右摇杆)
-        r_dx = (1.0 if state.dpad_right else 0.0) - (1.0 if state.dpad_left else 0.0)
-        r_dx *= v_mm * dt
-        r_dy = (1.0 if state.dpad_down else 0.0) - (1.0 if state.dpad_up else 0.0)
-        r_dy *= v_mm * dt
+        # 右手: 右摇杆优先, 十字键后备 + R2
+        r_dx = rx * v_mm * dt
+        r_dy = -ry * v_mm * dt
+        if abs(r_dx) < 0.001 and abs(r_dy) < 0.001:
+            r_dx = (1.0 if state.dpad_right else 0.0) - (1.0 if state.dpad_left else 0.0)
+            r_dx *= v_mm * dt
+            r_dy = (1.0 if state.dpad_down else 0.0) - (1.0 if state.dpad_up else 0.0)
+            r_dy *= v_mm * dt
         r_dz = -state.r2 * v_mm * dt
         if state.r1:
             r_dz = state.r2 * v_mm * dt  # R1+R2 = Z+
@@ -1010,21 +1052,23 @@ class GamepadRobotController:
   ├──────────────────────────────────────────────────────┤
   │  SINGLE 模式:                                         │
   │    左摇杆    → XY 平移                                │
-  │    十字键↑↓  → Z 升降                                │
-  │    十字键←→  → Yaw 旋转                              │
+  │    右摇杆↑↓  → Z 升降                                │
+  │    右摇杆←→  → Yaw 旋转                              │
   │    L1/R1     → Roll 滚转                             │
   │    △         → 夹爪 开                               │
   │    ×         → 夹爪 关                               │
   │    □         → 记录当前位姿                           │
   │    L2/R2     → 步长 +/-                              │
+  │    十字键    → Z/Yaw 后备 (数字步进)                │
   ├──────────────────────────────────────────────────────┤
   │  DUAL 模式:                                           │
   │    左摇杆    → 左手 XY                                │
-  │    十字键    → 右手 XY                                │
+  │    右摇杆    → 右手 XY                                │
   │    L2        → 左手 Z↓                               │
   │    R2        → 右手 Z↓                               │
   │    L1+L2     → 左手 Z↑                               │
   │    R1+R2     → 右手 Z↑                               │
+  │    十字键    → 右手 XY 后备                           │
   ├──────────────────────────────────────────────────────┤
   │  [SELECT] 切换模式 (LEFT → RIGHT → DUAL)              │
   │  [START长按2秒] 退出                                   │
