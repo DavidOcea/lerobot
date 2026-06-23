@@ -297,9 +297,11 @@ class GamepadReader:
     def _parse_hid_report(self, data: bytes):
         """解析 HID 游戏手柄原始报告 → GamepadState
 
-        支持常见格式的自适应解析:
-        - 检测 report ID 前缀 (0x01)
-        - 检测数据偏移 (F710 D模式 1字节偏移)
+        F710 D-mode: 8字节紧凑格式 (report ID 0x01)
+          [0] report_id, [1-2] X_LE, [3-4] Y_LE, [5] dpad, [6-7] buttons_LE
+
+        标准 HID gamepad: 20+ 字节
+          [0] report_id, [1-2] X, [3-4] Y, [5-6] Z/Rx, [7-8] Rz/Ry, [9-10] hat, [11+] buttons
         """
         s = self._state
         raw = list(data)
@@ -307,22 +309,28 @@ class GamepadReader:
 
         # 跳过可能的 report ID
         offset = 0
+        report_id = 0
         if size > 0 and raw[0] <= 0x08:
+            report_id = raw[0]
             offset = 1
 
         payload = raw[offset:]
         psize = len(payload)
-
-        if psize < 8:
-            return  # 太短，无法解析
 
         def read_u16_le(idx):
             if idx + 1 < psize:
                 return payload[idx] | (payload[idx + 1] << 8)
             return 0
 
+        def read_s16_le(idx):
+            """有符号 16-bit LE (用于以 0 为中心的轴)"""
+            val = read_u16_le(idx)
+            if val >= 0x8000:
+                return val - 0x10000
+            return val
+
         def axis_to_float(val, center=32768, dead=1500):
-            """16-bit 轴值 → [-1, 1]"""
+            """16-bit 轴值 (0-65535, center≈32768) → [-1, 1]"""
             if val >= center:
                 v = (val - center) / (65535.0 - center)
             else:
@@ -331,25 +339,27 @@ class GamepadReader:
                 return 0.0
             return max(-1.0, min(1.0, v))
 
-        # 尝试多个已知布局
-        if psize >= 10:
-            # 标准 HID gamepad: X, Y, Z, Rz (16-bit LE each)
+        def signed_axis_to_float(val, dead=1000):
+            """有符号 16-bit 轴值 (-32768~32767, center=0) → [-1, 1]"""
+            v = val / 32768.0
+            if abs(val) < dead:
+                return 0.0
+            return max(-1.0, min(1.0, v))
+
+        # === F710 D-mode 8字节格式 (report ID 0x01) ===
+        if psize == 7:
+            # bytes 0-1: left stick X (16-bit LE, center=0x8000)
             s.left_stick_x = axis_to_float(read_u16_le(0))
+            # bytes 2-3: left stick Y (16-bit LE, center=0x8000)
             s.left_stick_y = axis_to_float(read_u16_le(2))
-            s.right_stick_x = axis_to_float(read_u16_le(4))
-            s.right_stick_y = axis_to_float(read_u16_le(6))
-
-            # Hat switch / D-pad
-            hat = read_u16_le(8)
-            s.dpad_up = (hat >= 0 and hat <= 1000) or (hat >= 34000)
-            s.dpad_right = (hat >= 900 and hat <= 2700)
-            s.dpad_down = (hat >= 1800 and hat <= 9000)
-            s.dpad_left = (hat >= 2700 and hat <= 8100)
-
-        # Buttons bitmask (通常从 offset 10-12 开始)
-        btn_offset = 10
-        if btn_offset + 1 < psize:
-            btns = payload[btn_offset] | (payload[btn_offset + 1] << 8)
+            # byte 4: d-pad (0=N,1=NE,2=E,3=SE,4=S,5=SW,6=W,7=NW, 8/0xF=center)
+            dpad = payload[4]
+            s.dpad_up = dpad in (0, 1, 7)
+            s.dpad_right = dpad in (1, 2, 3)
+            s.dpad_down = dpad in (3, 4, 5)
+            s.dpad_left = dpad in (5, 6, 7)
+            # bytes 5-6: buttons bitmask (16-bit LE)
+            btns = read_u16_le(5)
             s.cross = bool(btns & (1 << 0))
             s.circle = bool(btns & (1 << 1))
             s.triangle = bool(btns & (1 << 2))
@@ -363,6 +373,45 @@ class GamepadReader:
             s.l3 = bool(btns & (1 << 10))
             s.r3 = bool(btns & (1 << 11))
             s.ps_button = bool(btns & (1 << 12))
+            return
+
+        # === F710 D-mode right stick report (report ID 0x02 or 0x03) ===
+        if psize == 7 and report_id in (2, 3):
+            # 右摇杆可能在其他 report ID 中
+            s.right_stick_x = axis_to_float(read_u16_le(0))
+            s.right_stick_y = axis_to_float(read_u16_le(2))
+            return
+
+        # === 标准 HID gamepad (≥10 字节 payload) ===
+        if psize >= 10:
+            s.left_stick_x = axis_to_float(read_u16_le(0))
+            s.left_stick_y = axis_to_float(read_u16_le(2))
+            s.right_stick_x = axis_to_float(read_u16_le(4))
+            s.right_stick_y = axis_to_float(read_u16_le(6))
+            # Hat switch / D-pad
+            hat = read_u16_le(8)
+            s.dpad_up = (hat >= 0 and hat <= 1000) or (hat >= 34000)
+            s.dpad_right = (hat >= 900 and hat <= 2700)
+            s.dpad_down = (hat >= 1800 and hat <= 9000)
+            s.dpad_left = (hat >= 2700 and hat <= 8100)
+
+            # Buttons bitmask
+            btn_offset = 10
+            if btn_offset + 1 < psize:
+                btns = payload[btn_offset] | (payload[btn_offset + 1] << 8)
+                s.cross = bool(btns & (1 << 0))
+                s.circle = bool(btns & (1 << 1))
+                s.triangle = bool(btns & (1 << 2))
+                s.square = bool(btns & (1 << 3))
+                s.l1 = bool(btns & (1 << 4))
+                s.r1 = bool(btns & (1 << 5))
+                s.l2 = 1.0 if bool(btns & (1 << 6)) else 0.0
+                s.r2 = 1.0 if bool(btns & (1 << 7)) else 0.0
+                s.select = bool(btns & (1 << 8))
+                s.start = bool(btns & (1 << 9))
+                s.l3 = bool(btns & (1 << 10))
+                s.r3 = bool(btns & (1 << 11))
+                s.ps_button = bool(btns & (1 << 12))
 
     def _handle_axis(self, code: int, value: int):
         """处理摇杆/扳机事件"""
@@ -458,6 +507,7 @@ class GamepadRobotController:
         self._print_help()
         self._running = True
         dt = 1.0 / 30.0  # 30Hz
+        self._debug_counter = 0
 
         print(f"\n  手柄控制已启动 — 当前模式: {self.mode.upper()}")
         print("  [SELECT]切换模式  [PS键]退出\n")
@@ -465,6 +515,15 @@ class GamepadRobotController:
         while self._running:
             loop_start = time.time()
             state = reader.get_state()
+
+            # 调试: 每秒打印一次解析后的摇杆/按钮状态
+            self._debug_counter += 1
+            if self._debug_counter % 30 == 0:
+                print(f"  [STATE] LX:{state.left_stick_x:+.2f} LY:{state.left_stick_y:+.2f} "
+                      f"RX:{state.right_stick_x:+.2f} RY:{state.right_stick_y:+.2f} "
+                      f"L2:{state.l2:.1f} R2:{state.r2:.1f} "
+                      f"btn:△{state.triangle} ×{state.cross} □{state.square} ○{state.circle} "
+                      f"L1:{state.l1} R1:{state.r1} SEL:{state.select}")
 
             # PS 键退出
             if state.ps_button:
