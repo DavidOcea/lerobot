@@ -501,13 +501,11 @@ class GamepadRobotController:
         self.step_profile = 'medium'
         self._last_dpad_up = False
         self._last_dpad_down = False
+        self._last_dpad_left = False
         self._last_triangle = False
         self._last_cross = False
         self._last_square = False
-        self._last_l2_step = False
-        self._last_r2_step = False
-        self._last_l1r1_together = False  # L1+R1 同时按 = 模式切换
-        self._last_circle = False  # ○ 模式切换 (主要方式)
+        self._last_circle = False  # B 按钮 模式切换
         self._running = False
         # PS 键长按退出 (F710 D-mode 无 PS 键, 但保留安全退出机制)
         self._ps_hold_start = None
@@ -529,7 +527,7 @@ class GamepadRobotController:
         self._debug_counter = 0
 
         print(f"\n  手柄控制已启动 — 当前模式: {self.mode.upper()}")
-        print("  [○]切换模式  [L1+R1]切换模式  [START长按2秒]退出\n")
+        print("  [十字键←]切换模式  [十字键↑↓]调速  [Ctrl+C]退出\n")
 
         while self._running:
             loop_start = time.time()
@@ -552,7 +550,15 @@ class GamepadRobotController:
                       f"L1:{state.l1} R1:{state.r1} SEL:{state.select} "
                       f"START:{state.start} PS:{state.ps_button}")
 
-            # START 键: 短按切换模式, 长按2秒退出 (F710 D-mode 无 SELECT/PS 键)
+            # 模式切换: 十字键← 或 ○(B键/右边那颗)
+            if state.dpad_left and not self._last_dpad_left:
+                self._switch_mode()
+            self._last_dpad_left = state.dpad_left
+            if state.circle and not self._last_circle:
+                self._switch_mode()
+            self._last_circle = state.circle
+
+            # START 长按2秒退出 (如果找得到的话)
             if state.start:
                 if self._ps_hold_start is None:
                     self._ps_hold_start = time.time()
@@ -560,24 +566,7 @@ class GamepadRobotController:
                     print("\n  手柄控制结束")
                     break
             else:
-                if self._ps_hold_start is not None:
-                    hold_duration = time.time() - self._ps_hold_start
-                    if hold_duration < self.PS_HOLD_DURATION:
-                        self._switch_mode()
                 self._ps_hold_start = None
-
-            # L1+R1 同时按 → 模式切换 (F710 START/SELECT 按钮难找时的替代方案)
-            if state.l1 and state.r1:
-                if not self._last_l1r1_together:
-                    self._switch_mode()
-                self._last_l1r1_together = True
-            else:
-                self._last_l1r1_together = False
-
-            # ○ (circle) 切换模式 — F710 L1不灵时的主要方式
-            if state.circle and not self._last_circle:
-                self._switch_mode()
-            self._last_circle = state.circle
 
             # 步长切换
             self._check_step_switch(state)
@@ -614,18 +603,19 @@ class GamepadRobotController:
     def _check_step_switch(self, state: GamepadState):
         profiles = list(self.SPEED_PROFILES.keys())
         idx = profiles.index(self.step_profile)
-        if state.l2 > 0.5 and not self._last_l2_step:
+        # 十字键↑ 加速, 十字键↓ 减速
+        if state.dpad_up and not self._last_dpad_up:
             idx = min(idx + 1, len(profiles) - 1)
             self.step_profile = profiles[idx]
             v, w = self.SPEED_PROFILES[self.step_profile]
             print(f"  → 步长: {self.step_profile} ({v}mm/s, {w}deg/s)")
-        elif state.r2 > 0.5 and not self._last_r2_step:
+        elif state.dpad_down and not self._last_dpad_down:
             idx = max(idx - 1, 0)
             self.step_profile = profiles[idx]
             v, w = self.SPEED_PROFILES[self.step_profile]
             print(f"  → 步长: {self.step_profile} ({v}mm/s, {w}deg/s)")
-        self._last_l2_step = (state.l2 > 0.5)
-        self._last_r2_step = (state.r2 > 0.5)
+        self._last_dpad_up = state.dpad_up
+        self._last_dpad_down = state.dpad_down
 
     # ==================== 速度 → 关节 ====================
 
@@ -663,12 +653,12 @@ class GamepadRobotController:
         dx_mm = lx * v_mm * dt
         dy_mm = -ly * v_mm * dt   # 摇杆Y: ↑为正, 屏幕Y: ↓为正, 取反
 
-        # Z: 右摇杆Y优先, 十字键↑↓后备
+        # Z: 右摇杆Y优先, L2/R2后备 (L2=升, R2=降)
         dz_mm = -ry * v_mm * dt   # 右摇杆↑ = Z+
         if abs(dz_mm) < 0.001:
-            if state.dpad_up:
+            if state.l2 > 0.5:
                 dz_mm = v_mm * dt
-            elif state.dpad_down:
+            elif state.r2 > 0.5:
                 dz_mm = -v_mm * dt
 
         # Yaw: 右摇杆X优先, 十字键←→后备
@@ -719,14 +709,9 @@ class GamepadRobotController:
         if state.l1:
             l_dz = state.l2 * v_mm * dt  # L1+L2 = Z+
 
-        # 右手: 右摇杆优先, 十字键后备 + R2
+        # 右手: 右摇杆 + R2 (十字键已用于模式/调速, 不再做XY后备)
         r_dx = rx * v_mm * dt
         r_dy = -ry * v_mm * dt
-        if abs(r_dx) < 0.001 and abs(r_dy) < 0.001:
-            r_dx = (1.0 if state.dpad_right else 0.0) - (1.0 if state.dpad_left else 0.0)
-            r_dx *= v_mm * dt
-            r_dy = (1.0 if state.dpad_down else 0.0) - (1.0 if state.dpad_up else 0.0)
-            r_dy *= v_mm * dt
         r_dz = -state.r2 * v_mm * dt
         if state.r1:
             r_dz = state.r2 * v_mm * dt  # R1+R2 = Z+
@@ -1100,29 +1085,42 @@ class GamepadRobotController:
     def _print_help(self):
         print(f"""
   ┌──────────────────────────────────────────────────────┐
-  │  手柄笛卡尔控制 (F710 D-mode)                        │
+  │  手柄笛卡尔控制 — F710 按键说明                       │
   ├──────────────────────────────────────────────────────┤
-  │  SINGLE 模式:                                         │
-  │    左摇杆    → XY 平移                                │
-  │    右摇杆↑↓  → Z 升降                                │
-  │    右摇杆←→  → Yaw 旋转                              │
-  │    L1/R1     → Roll 滚转                             │
-  │    △         → 夹爪 开                               │
-  │    ×         → 夹爪 关                               │
-  │    □         → 记录当前位姿                           │
-  │    L2/R2     → 步长 +/-                              │
-  │    十字键    → Z/Yaw 后备 (数字步进)                │
+  │  SINGLE 模式 (单臂):                                   │
+  │    左摇杆        → XY 平移                            │
+  │    右摇杆 ↑↓     → Z 升降                             │
+  │    右摇杆 ←→     → Yaw 旋转                           │
+  │    LB / RB       → Roll 滚转 (左肩键/右肩键)          │
+  │    LT            → Z 升 (左扳机, 后备)                 │
+  │    RT            → Z 降 (右扳机, 后备)                 │
+  │    X (上)        → 夹爪 开                            │
+  │    A (下)        → 夹爪 关                            │
+  │    Y (左)        → 记录当前位姿                        │
   ├──────────────────────────────────────────────────────┤
-  │  DUAL 模式:                                           │
-  │    左摇杆    → 左手 XY                                │
-  │    右摇杆    → 右手 XY                                │
-  │    L2        → 左手 Z↓                               │
-  │    R2        → 右手 Z↓                               │
-  │    L1+L2     → 左手 Z↑                               │
-  │    R1+R2     → 右手 Z↑                               │
-  │    十字键    → 右手 XY 后备                           │
+  │  DUAL 模式 (双臂):                                     │
+  │    左摇杆        → 左手 XY                             │
+  │    右摇杆        → 右手 XY                             │
+  │    LT            → 左手 Z↓                             │
+  │    RT            → 右手 Z↓                             │
+  │    LB+LT         → 左手 Z↑                             │
+  │    RB+RT         → 右手 Z↑                             │
   ├──────────────────────────────────────────────────────┤
-  │  [○] 切换模式 (LEFT → RIGHT → DUAL)                   │
-  │  [L1+R1同时按] 切换模式  [START长按2秒] 退出          │
+  │  全局控制:                                             │
+  │    十字键 ←      → 切换模式 (LEFT→RIGHT→DUAL)          │
+  │    B (右)        → 切换模式 (右边那颗红色按钮)          │
+  │    十字键 ↑      → 加速 (fine→medium→coarse)           │
+  │    十字键 ↓      → 减速                                │
+  │    LT / RT       → 加速/减速 (扳机也可调速)             │
+  │    START长按2秒  → 退出                                │
+  │    Ctrl+C        → 强制退出                            │
   └──────────────────────────────────────────────────────┘
+
+  F710 按钮位置:
+      LB(L1)          RB(R1)        ← 肩键(凸起)
+      LT(L2)          RT(R2)        ← 扳机(凹陷, 食指)
+     ┌──────┐       ┌──────┐
+     │  X   │       │  Y   │        X=上=△, Y=左=□
+     │  A   │       │  B   │        A=下=×, B=右=○(红)
+     └──────┘       └──────┘
   """)
