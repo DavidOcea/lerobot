@@ -507,6 +507,7 @@ class GamepadRobotController:
         self._last_l2_step = False
         self._last_r2_step = False
         self._last_l1r1_together = False  # L1+R1 同时按 = 模式切换
+        self._last_circle = False  # ○ 模式切换 (主要方式)
         self._running = False
         # PS 键长按退出 (F710 D-mode 无 PS 键, 但保留安全退出机制)
         self._ps_hold_start = None
@@ -528,7 +529,7 @@ class GamepadRobotController:
         self._debug_counter = 0
 
         print(f"\n  手柄控制已启动 — 当前模式: {self.mode.upper()}")
-        print("  [L1+R1同时按]切换模式  [START长按2秒]退出\n")
+        print("  [○]切换模式  [L1+R1]切换模式  [START长按2秒]退出\n")
 
         while self._running:
             loop_start = time.time()
@@ -572,6 +573,11 @@ class GamepadRobotController:
                 self._last_l1r1_together = True
             else:
                 self._last_l1r1_together = False
+
+            # ○ (circle) 切换模式 — F710 L1不灵时的主要方式
+            if state.circle and not self._last_circle:
+                self._switch_mode()
+            self._last_circle = state.circle
 
             # 步长切换
             self._check_step_switch(state)
@@ -1116,7 +1122,7 @@ class GamepadRobotController:
   │    R1+R2     → 右手 Z↑                               │
   │    十字键    → 右手 XY 后备                           │
   ├──────────────────────────────────────────────────────┤
-  │  [L1+R1同时按] 切换模式 (LEFT → RIGHT → DUAL)          │
-  │  [START短按] 切换模式  [START长按2秒] 退出              │
+  │  [○] 切换模式 (LEFT → RIGHT → DUAL)                   │
+  │  [L1+R1同时按] 切换模式  [START长按2秒] 退出          │
   └──────────────────────────────────────────────────────┘
   """)
