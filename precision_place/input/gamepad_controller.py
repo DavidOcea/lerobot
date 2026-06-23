@@ -358,12 +358,13 @@ class GamepadReader:
 
         # === F710 D-mode 8字节格式 (report ID 0x01) ===
         if psize == 7:
-            # bytes 0-1: left stick X (16-bit LE, center=0x8000), dead=300 用于调试
+            # bytes 0-1: left stick X (16-bit LE, center=0x8000)
             s.left_stick_x = axis_to_float(read_u16_le(0), dead=300)
             # bytes 2-3: left stick Y (16-bit LE, center=0x8000)
             s.left_stick_y = axis_to_float(read_u16_le(2), dead=300)
-            # byte 4: d-pad (0=N,1=NE,2=E,3=SE,4=S,5=SW,6=W,7=NW, 8/0xF=center)
-            dpad = payload[4]
+            # byte 4: D-pad 在低4位 (0=N,1=NE,2=E,3=SE,4=S,5=SW,6=W,7=NW, 8/0xF=center)
+            # 高4位可能是其他标志或按钮, 用 &0x0F 取低4位
+            dpad = payload[4] & 0x0F
             s.dpad_up = dpad in (0, 1, 7)
             s.dpad_right = dpad in (1, 2, 3)
             s.dpad_down = dpad in (3, 4, 5)

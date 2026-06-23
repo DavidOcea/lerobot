@@ -40,7 +40,10 @@ print("推摇杆/按键看数据变化, Ctrl+C 退出\n")
 pkt = 0
 try:
     while True:
-        data = dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, timeout=500)
+        try:
+            data = dev.read(ep.bEndpointAddress, ep.wMaxPacketSize, timeout=1000)
+        except usb.core.USBTimeoutError:
+            continue  # 无状态变化，继续等
         pkt += 1
         raw_hex = ' '.join(f'{b:02X}' for b in data)
         # 解析
