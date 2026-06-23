@@ -169,6 +169,10 @@ class GamepadReader:
                 ps_button=self._state.ps_button,
             )
 
+    def get_debug_info(self):
+        """返回调试信息: (packet_count, last_raw_hex)"""
+        return self._packet_count, self._last_raw_hex
+
     def _read_loop(self):
         """后台线程: 持续读取 evdev 事件"""
         import evdev
@@ -280,12 +284,16 @@ class GamepadReader:
 
         # 调试: 打印前10个原始 HID 报告以确认字节布局
         self._debug_packet_count = 0
+        self._packet_count = 0
+        self._last_raw_hex = ""
 
         while self._running:
             try:
                 data = usb_dev.read(ep.bEndpointAddress, self._report_size, timeout=200)
+                self._packet_count += 1
+                self._last_raw_hex = ' '.join(f'{b:02X}' for b in data)
                 if self._debug_packet_count < 10:
-                    print(f"  [DEBUG] raw({len(data)}B): {' '.join(f'{b:02X}' for b in data)}")
+                    print(f"  [DEBUG] raw({len(data)}B): {self._last_raw_hex}")
                     self._debug_packet_count += 1
                 with self._lock:
                     self._parse_hid_report(data)
@@ -348,10 +356,10 @@ class GamepadReader:
 
         # === F710 D-mode 8字节格式 (report ID 0x01) ===
         if psize == 7:
-            # bytes 0-1: left stick X (16-bit LE, center=0x8000)
-            s.left_stick_x = axis_to_float(read_u16_le(0))
+            # bytes 0-1: left stick X (16-bit LE, center=0x8000), dead=300 用于调试
+            s.left_stick_x = axis_to_float(read_u16_le(0), dead=300)
             # bytes 2-3: left stick Y (16-bit LE, center=0x8000)
-            s.left_stick_y = axis_to_float(read_u16_le(2))
+            s.left_stick_y = axis_to_float(read_u16_le(2), dead=300)
             # byte 4: d-pad (0=N,1=NE,2=E,3=SE,4=S,5=SW,6=W,7=NW, 8/0xF=center)
             dpad = payload[4]
             s.dpad_up = dpad in (0, 1, 7)
@@ -378,8 +386,8 @@ class GamepadReader:
         # === F710 D-mode right stick report (report ID 0x02 or 0x03) ===
         if psize == 7 and report_id in (2, 3):
             # 右摇杆可能在其他 report ID 中
-            s.right_stick_x = axis_to_float(read_u16_le(0))
-            s.right_stick_y = axis_to_float(read_u16_le(2))
+            s.right_stick_x = axis_to_float(read_u16_le(0), dead=300)
+            s.right_stick_y = axis_to_float(read_u16_le(2), dead=300)
             return
 
         # === 标准 HID gamepad (≥10 字节 payload) ===
@@ -519,11 +527,14 @@ class GamepadRobotController:
             # 调试: 每秒打印一次解析后的摇杆/按钮状态
             self._debug_counter += 1
             if self._debug_counter % 30 == 0:
-                print(f"  [STATE] LX:{state.left_stick_x:+.2f} LY:{state.left_stick_y:+.2f} "
+                pkt_count, last_raw = reader.get_debug_info()
+                print(f"  [STATE] pkts={pkt_count} raw=[{last_raw}]")
+                print(f"          LX:{state.left_stick_x:+.2f} LY:{state.left_stick_y:+.2f} "
                       f"RX:{state.right_stick_x:+.2f} RY:{state.right_stick_y:+.2f} "
-                      f"L2:{state.l2:.1f} R2:{state.r2:.1f} "
-                      f"btn:△{state.triangle} ×{state.cross} □{state.square} ○{state.circle} "
-                      f"L1:{state.l1} R1:{state.r1} SEL:{state.select}")
+                      f"L2:{state.l2:.1f} R2:{state.r2:.1f}")
+                print(f"          btn:△{state.triangle} ×{state.cross} □{state.square} ○{state.circle} "
+                      f"L1:{state.l1} R1:{state.r1} SEL:{state.select} "
+                      f"START:{state.start} PS:{state.ps_button}")
 
             # PS 键退出
             if state.ps_button:
