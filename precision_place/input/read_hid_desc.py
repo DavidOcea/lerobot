@@ -127,8 +127,16 @@ def parse_hid_rd(data):
 
 items = parse_hid_rd(data)
 
+# 先打印原始描述符
+print(f"Raw descriptor ({len(data)} bytes):")
+print(' '.join(f'{b:02X}' for b in data))
+
 # 按 Report ID 分组显示
 current_rid = '0x00'
+current_size = 0
+current_count = 0
+current_lmin = 0
+current_lmax = 0
 for tag, val in items:
     if tag == 'REPORT_ID':
         current_rid = val
@@ -160,5 +168,4 @@ for tag, val in items:
     elif tag == 'END_COLLECTION':
         print(f"  [End Collection]")
 
-print(f"\nRaw descriptor ({len(data)} bytes):")
-print(' '.join(f'{b:02X}' for b in data))
+print(f"\n解析完成")
