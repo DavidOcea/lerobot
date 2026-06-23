@@ -235,55 +235,51 @@ class GamepadReader:
                     pass
 
     def _read_loop_pyusb(self):
-        """后台线程: 用 pyusb 直接读 USB 中断端点"""
+        """后台线程: 用 pyusb 直接读 USB 中断端点
+
+        注意: 不调用 detach_kernel_driver 和 set_configuration,
+        以避免重置 F710 导致设备停止发送 HID 报告。
+        """
         import usb.core
         import usb.util
 
         usb_dev, (vid, pid) = self._pyusb_device
 
+        # 不 detach: 内核驱动已因 probe 失败而释放接口
+        # 不 set_configuration: 设备已有有效配置, 重置会导致停发数据
+
+        # 获取当前活跃配置 (不做任何修改)
         try:
-            self._unbind_kernel_driver(usb_dev)
+            cfg = usb_dev.get_active_configuration()
         except usb.core.USBError as e:
-            if "Access denied" in str(e) or "LIBUSB_ERROR_ACCESS" in str(e):
-                print("✗ USB 设备访问被拒绝, pyusb 后备需要 root 权限")
-                print("  运行: sudo python precision_place/gamepad_teleop.py ...")
+            err_msg = str(e)
+            if "Access" in err_msg or "LIBUSB_ERROR_ACCESS" in err_msg:
+                print("✗ USB 访问被拒绝, pyusb 需要设备权限")
+                print("  运行: sudo chmod 666 /dev/bus/usb/009/003")
+            else:
+                print(f"✗ 无法读取 USB 配置: {e}")
             self._running = False
             return
 
-        try:
-            usb_dev.set_configuration()
-        except Exception:
-            pass
-
-        # 查找 IN 端点
-        try:
-            cfg = usb_dev.get_active_configuration()
-            intf = cfg[(0, 0)]
+        # 找 IN 端点 (中断传输)
+        ep = None
+        for intf in cfg:
             ep = usb.util.find_descriptor(
                 intf,
                 custom_match=lambda e: usb.util.endpoint_direction(e.bEndpointAddress) == usb.util.ENDPOINT_IN
             )
-        except usb.core.USBError as e:
-            if "Access" in str(e) or "LIBUSB_ERROR_ACCESS" in str(e):
-                print("✗ USB 访问被拒绝, pyusb 需要 root 权限")
-                print("  请用 sudo 运行: sudo python3 ... gamepad_teleop.py ...")
-            else:
-                print(f"✗ USB 错误: {e}")
-            self._running = False
-            return
-        except Exception as e:
-            print(f"✗ 无法读取 USB 配置: {e}")
-            self._running = False
-            return
+            if ep is not None:
+                break
         if ep is None:
             print("✗ 未找到 USB IN 端点")
+            self._running = False
             return
 
         self._report_size = ep.wMaxPacketSize
         self._device_name = f"Gamepad ({vid:04X}:{pid:04X} via pyusb)"
         print(f"✓ 通过 USB 直连手柄: {self._device_name} (端点0x{ep.bEndpointAddress:02X}, {self._report_size}B)")
 
-        # 调试: 打印前10个原始 HID 报告以确认字节布局
+        # 调试
         self._debug_packet_count = 0
         self._packet_count = 0
         self._timeout_count = 0
