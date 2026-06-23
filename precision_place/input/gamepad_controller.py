@@ -170,8 +170,9 @@ class GamepadReader:
             )
 
     def get_debug_info(self):
-        """返回调试信息: (packet_count, last_raw_hex)"""
-        return self._packet_count, self._last_raw_hex
+        """返回调试信息: (packet_count, timeout_count, error_count, last_error, last_raw_hex)"""
+        return (self._packet_count, self._timeout_count, self._error_count,
+                self._last_error, self._last_raw_hex)
 
     def _read_loop(self):
         """后台线程: 持续读取 evdev 事件"""
@@ -285,6 +286,9 @@ class GamepadReader:
         # 调试: 打印前10个原始 HID 报告以确认字节布局
         self._debug_packet_count = 0
         self._packet_count = 0
+        self._timeout_count = 0
+        self._error_count = 0
+        self._last_error = ""
         self._last_raw_hex = ""
 
         while self._running:
@@ -298,9 +302,11 @@ class GamepadReader:
                 with self._lock:
                     self._parse_hid_report(data)
             except usb.core.USBTimeoutError:
-                pass
-            except Exception:
-                time.sleep(0.1)
+                self._timeout_count += 1
+            except Exception as e:
+                self._error_count += 1
+                self._last_error = str(e)[:80]
+                time.sleep(0.5)
 
     def _parse_hid_report(self, data: bytes):
         """解析 HID 游戏手柄原始报告 → GamepadState
@@ -527,8 +533,10 @@ class GamepadRobotController:
             # 调试: 每秒打印一次解析后的摇杆/按钮状态
             self._debug_counter += 1
             if self._debug_counter % 30 == 0:
-                pkt_count, last_raw = reader.get_debug_info()
-                print(f"  [STATE] pkts={pkt_count} raw=[{last_raw}]")
+                pkt_count, timeout_count, err_count, last_err, last_raw = reader.get_debug_info()
+                print(f"  [STATE] pkts={pkt_count} timeouts={timeout_count} errs={err_count} raw=[{last_raw}]")
+                if last_err:
+                    print(f"          last_error: {last_err}")
                 print(f"          LX:{state.left_stick_x:+.2f} LY:{state.left_stick_y:+.2f} "
                       f"RX:{state.right_stick_x:+.2f} RY:{state.right_stick_y:+.2f} "
                       f"L2:{state.l2:.1f} R2:{state.r2:.1f}")
