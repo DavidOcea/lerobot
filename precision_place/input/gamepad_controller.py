@@ -477,9 +477,9 @@ class GamepadRobotController:
 
     # 速度档位: (mm/s, deg/s)
     SPEED_PROFILES = {
-        'fine':   (2.0, 1.0),
-        'medium': (10.0, 5.0),
-        'coarse': (30.0, 15.0),
+        'fine':   (2.0, 2.0),
+        'medium': (10.0, 10.0),
+        'coarse': (30.0, 30.0),
     }
 
     # DUAL 模式每臂的关节索引
@@ -506,6 +506,7 @@ class GamepadRobotController:
         self._last_square = False
         self._last_l2_step = False
         self._last_r2_step = False
+        self._last_l1r1_together = False  # L1+R1 同时按 = 模式切换
         self._running = False
         # PS 键长按退出 (F710 D-mode 无 PS 键, 但保留安全退出机制)
         self._ps_hold_start = None
@@ -527,7 +528,7 @@ class GamepadRobotController:
         self._debug_counter = 0
 
         print(f"\n  手柄控制已启动 — 当前模式: {self.mode.upper()}")
-        print("  [START短按]切换模式  [START长按2秒]退出\n")
+        print("  [L1+R1同时按]切换模式  [START长按2秒]退出\n")
 
         while self._running:
             loop_start = time.time()
@@ -563,6 +564,14 @@ class GamepadRobotController:
                     if hold_duration < self.PS_HOLD_DURATION:
                         self._switch_mode()
                 self._ps_hold_start = None
+
+            # L1+R1 同时按 → 模式切换 (F710 START/SELECT 按钮难找时的替代方案)
+            if state.l1 and state.r1:
+                if not self._last_l1r1_together:
+                    self._switch_mode()
+                self._last_l1r1_together = True
+            else:
+                self._last_l1r1_together = False
 
             # 步长切换
             self._check_step_switch(state)
@@ -1107,7 +1116,7 @@ class GamepadRobotController:
   │    R1+R2     → 右手 Z↑                               │
   │    十字键    → 右手 XY 后备                           │
   ├──────────────────────────────────────────────────────┤
-  │  [START短按] 切换模式 (LEFT → RIGHT → DUAL)            │
-  │  [START长按2秒] 退出                                   │
+  │  [L1+R1同时按] 切换模式 (LEFT → RIGHT → DUAL)          │
+  │  [START短按] 切换模式  [START长按2秒] 退出              │
   └──────────────────────────────────────────────────────┘
   """)
