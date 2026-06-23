@@ -357,19 +357,20 @@ class GamepadReader:
             return max(-1.0, min(1.0, v))
 
         # === F710 D-mode 8字节格式 (report ID 0x01) ===
+        # F710 只有左摇杆+十字键+按钮, 无右摇杆
         if psize == 7:
             # bytes 0-1: left stick X (16-bit LE, center=0x8000)
             s.left_stick_x = axis_to_float(read_u16_le(0), dead=300)
             # bytes 2-3: left stick Y (16-bit LE, center=0x8000)
             s.left_stick_y = axis_to_float(read_u16_le(2), dead=300)
             # byte 4: D-pad 在低4位 (0=N,1=NE,2=E,3=SE,4=S,5=SW,6=W,7=NW, 8/0xF=center)
-            # 高4位可能是其他标志或按钮, 用 &0x0F 取低4位
             dpad = payload[4] & 0x0F
             s.dpad_up = dpad in (0, 1, 7)
             s.dpad_right = dpad in (1, 2, 3)
             s.dpad_down = dpad in (3, 4, 5)
             s.dpad_left = dpad in (5, 6, 7)
             # bytes 5-6: buttons bitmask (16-bit LE)
+            # bit 10-15 是 HID 常量填充位, 始终为高, 忽略
             btns = read_u16_le(5)
             s.cross = bool(btns & (1 << 0))
             s.circle = bool(btns & (1 << 1))
@@ -381,16 +382,7 @@ class GamepadReader:
             s.r2 = 1.0 if bool(btns & (1 << 7)) else 0.0
             s.select = bool(btns & (1 << 8))
             s.start = bool(btns & (1 << 9))
-            s.l3 = bool(btns & (1 << 10))
-            s.r3 = bool(btns & (1 << 11))
-            s.ps_button = bool(btns & (1 << 12))
-            return
-
-        # === F710 D-mode right stick report (report ID 0x02 or 0x03) ===
-        if psize == 7 and report_id in (2, 3):
-            # 右摇杆可能在其他 report ID 中
-            s.right_stick_x = axis_to_float(read_u16_le(0), dead=300)
-            s.right_stick_y = axis_to_float(read_u16_le(2), dead=300)
+            # F710 D-mode 无 L3/R3/PS 按钮 (对应 bit 10-12 为常量填充)
             return
 
         # === 标准 HID gamepad (≥10 字节 payload) ===
@@ -503,6 +495,8 @@ class GamepadRobotController:
         self._last_triangle = False
         self._last_cross = False
         self._last_square = False
+        self._last_l2_step = False
+        self._last_r2_step = False
         self._running = False
         # PS 键长按退出 (F710 D-mode 无 PS 键, 但保留安全退出机制)
         self._ps_hold_start = None
@@ -596,18 +590,18 @@ class GamepadRobotController:
     def _check_step_switch(self, state: GamepadState):
         profiles = list(self.SPEED_PROFILES.keys())
         idx = profiles.index(self.step_profile)
-        if state.dpad_up and not self._last_dpad_up:
+        if state.l2 > 0.5 and not self._last_l2_step:
             idx = min(idx + 1, len(profiles) - 1)
             self.step_profile = profiles[idx]
             v, w = self.SPEED_PROFILES[self.step_profile]
             print(f"  → 步长: {self.step_profile} ({v}mm/s, {w}deg/s)")
-        elif state.dpad_down and not self._last_dpad_down:
+        elif state.r2 > 0.5 and not self._last_r2_step:
             idx = max(idx - 1, 0)
             self.step_profile = profiles[idx]
             v, w = self.SPEED_PROFILES[self.step_profile]
             print(f"  → 步长: {self.step_profile} ({v}mm/s, {w}deg/s)")
-        self._last_dpad_up = state.dpad_up
-        self._last_dpad_down = state.dpad_down
+        self._last_l2_step = (state.l2 > 0.5)
+        self._last_r2_step = (state.r2 > 0.5)
 
     # ==================== 速度 → 关节 ====================
 
@@ -621,17 +615,29 @@ class GamepadRobotController:
 
     def _apply_single_velocity(self, state: GamepadState, dt: float,
                                 v_mm: float, v_deg: float, arm: str):
-        """SINGLE 模式: 左摇杆XY, 右摇杆Z+Yaw, L1/R1=Roll"""
+        """SINGLE 模式: 左摇杆XY, 十字键Z+Yaw, L1/R1=Roll (F710无右摇杆)"""
         lx = self._deadzone(state.left_stick_x)
         ly = self._deadzone(state.left_stick_y)
-        rx = self._deadzone(state.right_stick_x)
-        ry = self._deadzone(state.right_stick_y)
 
         # 笛卡尔增量 (相机坐标系)
         dx_mm = lx * v_mm * dt
         dy_mm = -ly * v_mm * dt   # 摇杆Y: ↑为正, 屏幕Y: ↓为正, 取反
-        dz_mm = -ry * v_mm * dt   # 右摇杆Y: ↑=Z+, ↓=Z-
-        dyaw = rx * v_deg * dt
+
+        # Z: 十字键↑↓ (替代右摇杆Y)
+        dz_mm = 0.0
+        if state.dpad_up:
+            dz_mm = v_mm * dt       # ↑ = Z+ (升)
+        elif state.dpad_down:
+            dz_mm = -v_mm * dt      # ↓ = Z- (降)
+
+        # Yaw: 十字键←→ (替代右摇杆X)
+        dyaw = 0.0
+        if state.dpad_left:
+            dyaw = v_deg * dt       # ← = Yaw-
+        elif state.dpad_right:
+            dyaw = -v_deg * dt      # → = Yaw+
+
+        # Roll: L1/R1
         droll = 0.0
         if state.l1:
             droll -= v_deg * dt
@@ -649,11 +655,9 @@ class GamepadRobotController:
         self._send_joint_deltas(deltas)
 
     def _apply_dual_velocity(self, state: GamepadState, dt: float, v_mm: float):
-        """DUAL 模式: 左摇杆→左手XY, 右摇杆→右手XY, L2/R2→Z"""
+        """DUAL 模式: 左摇杆→左手XY, 十字键→右手XY, L2/R2→Z (F710无右摇杆)"""
         lx = self._deadzone(state.left_stick_x)
         ly = self._deadzone(state.left_stick_y)
-        rx = self._deadzone(state.right_stick_x)
-        ry = self._deadzone(state.right_stick_y)
 
         # 左手: 左摇杆 + L2
         l_dx = lx * v_mm * dt
@@ -662,9 +666,11 @@ class GamepadRobotController:
         if state.l1:
             l_dz = state.l2 * v_mm * dt  # L1+L2 = Z+
 
-        # 右手: 右摇杆 + R2
-        r_dx = rx * v_mm * dt
-        r_dy = -ry * v_mm * dt
+        # 右手: 十字键 + R2 (替代右摇杆)
+        r_dx = (1.0 if state.dpad_right else 0.0) - (1.0 if state.dpad_left else 0.0)
+        r_dx *= v_mm * dt
+        r_dy = (1.0 if state.dpad_down else 0.0) - (1.0 if state.dpad_up else 0.0)
+        r_dy *= v_mm * dt
         r_dz = -state.r2 * v_mm * dt
         if state.r1:
             r_dz = state.r2 * v_mm * dt  # R1+R2 = Z+
@@ -1000,27 +1006,27 @@ class GamepadRobotController:
     def _print_help(self):
         print(f"""
   ┌──────────────────────────────────────────────────────┐
-  │  手柄笛卡尔控制                                       │
+  │  手柄笛卡尔控制 (F710 D-mode)                        │
   ├──────────────────────────────────────────────────────┤
   │  SINGLE 模式:                                         │
   │    左摇杆    → XY 平移                                │
-  │    右摇杆↑↓  → Z 升降                                │
-  │    右摇杆←→  → Yaw 旋转                              │
+  │    十字键↑↓  → Z 升降                                │
+  │    十字键←→  → Yaw 旋转                              │
   │    L1/R1     → Roll 滚转                             │
   │    △         → 夹爪 开                               │
   │    ×         → 夹爪 关                               │
   │    □         → 记录当前位姿                           │
-  │    十字键↑↓  → 步长 +/-                              │
+  │    L2/R2     → 步长 +/-                              │
   ├──────────────────────────────────────────────────────┤
   │  DUAL 模式:                                           │
   │    左摇杆    → 左手 XY                                │
-  │    右摇杆    → 右手 XY                                │
+  │    十字键    → 右手 XY                                │
   │    L2        → 左手 Z↓                               │
   │    R2        → 右手 Z↓                               │
   │    L1+L2     → 左手 Z↑                               │
   │    R1+R2     → 右手 Z↑                               │
   ├──────────────────────────────────────────────────────┤
   │  [SELECT] 切换模式 (LEFT → RIGHT → DUAL)              │
-  │  [START长按2秒] 退出                                        │
+  │  [START长按2秒] 退出                                   │
   └──────────────────────────────────────────────────────┘
   """)
