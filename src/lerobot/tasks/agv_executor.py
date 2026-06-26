@@ -333,12 +333,12 @@ class AGVTaskExecutor:
                 elif nav_mode == "translate":
                     arrived = self.agv.wait_for_translate_complete(
                         timeout=arrival_timeout,
-                        poll_interval=0.5,
+                        poll_interval=0.2,
                     )
                 elif nav_mode == "turn":
                     arrived = self.agv.wait_for_turn_complete(
                         timeout=arrival_timeout,
-                        poll_interval=0.5,
+                        poll_interval=0.2,
                     )
 
                 if not arrived:
@@ -545,7 +545,7 @@ class AGVTaskExecutor:
         target_y: float,
         timeout: float,
         tolerance: float,
-        poll_interval: float = 1.0,
+        poll_interval: float = 0.2,
     ) -> bool:
         """等待到达目标坐标并完成姿态调整.
 

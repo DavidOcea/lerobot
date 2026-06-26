@@ -991,7 +991,7 @@ class SeerAGVController:
     def wait_for_translate_complete(
         self,
         timeout: float = 30.0,
-        poll_interval: float = 0.5,
+        poll_interval: float = 0.2,
     ) -> bool:
         """等待平动完成 — AGV移动完距离后变为空闲状态.
 
@@ -1033,7 +1033,7 @@ class SeerAGVController:
     def wait_for_turn_complete(
         self,
         timeout: float = 30.0,
-        poll_interval: float = 0.5,
+        poll_interval: float = 0.2,
     ) -> bool:
         """等待转动完成 — AGV旋转完角度后变为空闲状态.
 
@@ -1415,7 +1415,7 @@ class SeerAGVController:
         self,
         target_station: str,
         timeout: float = 60.0,
-        poll_interval: float = 1.0,
+        poll_interval: float = 0.2,
         tolerance: float = 0.3,
         wait_for_orientation: bool = True,
     ) -> bool:
