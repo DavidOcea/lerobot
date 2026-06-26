@@ -159,6 +159,7 @@ class AGVTaskExecutor:
         emergency_stop_on_error: bool = True,
         angle_correction: bool = False,
         angle_correction_tolerance: float = 0.03,
+        angle_correction_reference: str = "initial",
     ) -> AGVExecutionResult:
         """执行AGV导航任务.
 
@@ -360,13 +361,34 @@ class AGVTaskExecutor:
 
             # ========== Phase 5.5: 角度修正 (闭环, 最多 5 次) ==========
             if angle_correction and nav_mode == "translate":
+                # Resolve target angle based on reference
+                ref_angle = initial_status.position.theta  # default: "initial"
+                if angle_correction_reference == "station" and target_station:
+                    station_pos = self.agv._station_map.get(target_station)
+                    if station_pos is not None:
+                        ref_angle = station_pos.theta
+                        logger.warning(
+                            f"[AGVExecutor] Angle reference: station '{target_station}' "
+                            f"theta={ref_angle*57.3:.1f}°"
+                        )
+                    else:
+                        logger.warning(
+                            f"[AGVExecutor] Station '{target_station}' not in station_map, "
+                            f"falling back to initial angle"
+                        )
+                elif angle_correction_reference == "station" and not target_station:
+                    logger.warning(
+                        f"[AGVExecutor] angle_correction_reference='station' but no "
+                        f"target_station set, falling back to initial angle"
+                    )
+
                 max_attempts = 5
                 for corr_attempt in range(max_attempts):
                     try:
                         cur_status = self.agv.get_status(use_cache=False)
                         if not (initial_status.position and cur_status.position):
                             break
-                        delta = cur_status.position.theta - initial_status.position.theta
+                        delta = cur_status.position.theta - ref_angle
                         if abs(delta) <= angle_correction_tolerance:
                             logger.warning(
                                 f"[AGVExecutor] Angle correction converged: "

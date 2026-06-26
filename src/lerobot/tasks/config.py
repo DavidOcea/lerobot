@@ -113,6 +113,7 @@ class AGVTaskConfig:
     # ===== 角度修正 =====
     angle_correction: bool = False  # 平移后自动修正角度偏差
     angle_correction_tolerance: float = 0.03  # 角度修正阈值 (弧度, ~1.7°)
+    angle_correction_reference: str = "initial"  # 修正目标: "initial"(保持初始角) | "station"(对齐站点theta)
 
     def validate(self) -> bool:
         """验证配置有效性.

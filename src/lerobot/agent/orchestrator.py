@@ -1619,6 +1619,7 @@ class TaskAgentOrchestrator:
             emergency_stop_on_error=agv_config.emergency_stop_on_error,
             angle_correction=agv_config.angle_correction,
             angle_correction_tolerance=agv_config.angle_correction_tolerance,
+            angle_correction_reference=agv_config.angle_correction_reference,
         )
 
         # Convert to TaskResult
