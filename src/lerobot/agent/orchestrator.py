@@ -1449,6 +1449,20 @@ class TaskAgentOrchestrator:
                 delattr(task, 'speed_multiplier')
             return result
 
+        # Handle parallel tasks (concurrent sub-tasks)
+        if task.task_type == "parallel":
+            self._add_monitor_event("info", task.name, f"Parallel: {len(task.parallel_tasks)} sub-tasks")
+            result = self._execute_parallel_task(task)
+            self._add_monitor_event(
+                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                f"{result.status.value} ({result.duration:.1f}s)"
+                + (f" — {result.error_message}" if result.error_message else ""))
+            task.max_retries = original_max_retries
+            task.max_duration = original_max_duration
+            if hasattr(task, 'speed_multiplier'):
+                delattr(task, 'speed_multiplier')
+            return result
+
         # Handle policy tasks (existing logic)
         # Apply speed_multiplier to policy task timeout
         if multiplier != 1.0:
@@ -1876,6 +1890,105 @@ class TaskAgentOrchestrator:
             duration=time.time() - start_time,
             success=True,
             next_task=next_task,
+        )
+
+    def _execute_parallel_task(self, task: TaskConfig) -> TaskResult:
+        """Execute sub-tasks concurrently in separate threads.
+
+        Each sub-task dict is parsed into a TaskConfig and dispatched to
+        _execute_single_task in its own thread.  All threads run independently
+        (AGV uses its own TCP socket, robot uses CAN bus — no shared resource).
+
+        If any sub-task returns FATAL_FAILURE the AGV navigation is cancelled
+        via cancel_navigation() to halt the other AGV sub-task gracefully.
+        """
+        import threading
+        from lerobot.tasks.config import parse_task_dict
+
+        logger.info(f"Parallel task '{task.name}': launching {len(task.parallel_tasks)} sub-tasks")
+
+        # Parse sub-task dicts into TaskConfig objects
+        sub_tasks = []
+        named_positions = self.config.named_positions or {}
+        default_arm_safe = self.config.agv_config.default_arm_safe_positions if self.config.agv_config else {}
+        default_arm_home = self.config.agv_config.default_arm_home_positions if self.config.agv_config else {}
+
+        for st_dict in task.parallel_tasks:
+            try:
+                st = parse_task_dict(st_dict, named_positions, default_arm_safe, default_arm_home)
+                sub_tasks.append(st)
+            except Exception as e:
+                logger.error(f"Failed to parse parallel sub-task '{st_dict.get('name', '?')}': {e}")
+
+        if not sub_tasks:
+            return TaskResult(
+                task_name=task.name, status=TaskStatus.FAILED,
+                duration=0.0, error_message="No valid sub-tasks to execute",
+            )
+
+        results = [None] * len(sub_tasks)
+        fatal_event = threading.Event()
+
+        def _run_subtask(idx: int, st: TaskConfig):
+            try:
+                results[idx] = self._execute_single_task(st)
+            except Exception as e:
+                results[idx] = TaskResult(
+                    task_name=st.name, status=TaskStatus.FATAL_FAILURE,
+                    duration=0.0, error_message=str(e),
+                )
+            # If fatal, signal other thread to cancel
+            if results[idx] and results[idx].status == TaskStatus.FATAL_FAILURE:
+                fatal_event.set()
+
+        start_time = time.time()
+        threads = []
+        for i, st in enumerate(sub_tasks):
+            t = threading.Thread(target=_run_subtask, args=(i, st), name=f"parallel_{st.name}")
+            t.start()
+            threads.append(t)
+            logger.info(f"  Sub-task [{i}]: {st.name} ({st.task_type}) started")
+
+        # Wait for all threads — if a fatal occurs kill AGV on any still-running
+        for t in threads:
+            remaining = max(0, task.max_duration - (time.time() - start_time))
+            t.join(timeout=remaining)
+            if fatal_event.is_set() and t.is_alive():
+                logger.warning(f"  Parallel: fatal in another sub-task, cancelling AGV navigation")
+                try:
+                    self.agv_controller.cancel_navigation()
+                except Exception:
+                    pass
+                t.join(timeout=5.0)
+
+        elapsed = time.time() - start_time
+
+        # Aggregate results
+        completed = sum(1 for r in results if r and r.status == TaskStatus.COMPLETED)
+        failed = sum(1 for r in results if r and r.status in (TaskStatus.FAILED, TaskStatus.FATAL_FAILURE))
+        fatal = sum(1 for r in results if r and r.status == TaskStatus.FATAL_FAILURE)
+
+        if fatal > 0 or any(not r for r in results):
+            status = TaskStatus.FATAL_FAILURE
+            success = False
+        elif failed > 0:
+            status = TaskStatus.FAILED
+            success = False
+        else:
+            status = TaskStatus.COMPLETED
+            success = True
+
+        msg = f"{completed}/{len(sub_tasks)} ok"
+        if failed > 0:
+            msg += f", {failed} failed"
+        logger.info(f"Parallel task '{task.name}' done: {msg} ({elapsed:.1f}s)")
+
+        errors = "; ".join(r.error_message for r in results if r and r.error_message)
+
+        return TaskResult(
+            task_name=task.name, status=status,
+            duration=elapsed, success=success,
+            error_message=errors,
         )
 
     def _execute_system_command_task(self, task: TaskConfig) -> TaskResult:
