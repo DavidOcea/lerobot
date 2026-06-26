@@ -1956,7 +1956,7 @@ class TaskAgentOrchestrator:
             if fatal_event.is_set() and t.is_alive():
                 logger.warning(f"  Parallel: fatal in another sub-task, cancelling AGV navigation")
                 try:
-                    self.agv_controller.cancel_navigation()
+                    self.agv_controller.cancel_navigation() if self.agv_controller else None
                 except Exception:
                     pass
                 t.join(timeout=5.0)
