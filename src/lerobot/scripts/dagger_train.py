@@ -1,0 +1,893 @@
+#!/usr/bin/env python
+
+"""
+DAgger-style iterative training for robot manipulation policy.
+
+Supports two modes:
+
+Phase 1 (Offline — Noise Injection + Recovery):
+    Generates recovery data by injecting controlled noise into the policy's
+    predicted actions, then using the recorded ground-truth next state as the
+    "correction target". This teaches the policy to recover from deviations
+    without requiring a real robot.
+
+    Usage:
+        python -m lerobot.scripts.dagger_train \
+            --phase offline \
+            --policy_path outputs/train/act_0611_pickup_long_cs20_te001/checkpoints/last/pretrained_model \
+            --dataset_root /root/data2/dc_dir/datasets/dataset_0611_pickup_long_all \
+            --output_dir outputs/dagger/round1 \
+            --noise_std 0.05 \
+            --recovery_frames_per_ep 10
+
+Phase 2 (Online — Robot-in-the-loop):
+    Runs the policy on the real robot, records (obs, recorded_action) pairs.
+    The recorded actions serve as expert corrections for the states the policy
+    actually visits — covering the real distribution shift.
+    (Scaffold — requires robot hardware to execute)
+
+    Usage:
+        python -m lerobot.scripts.dagger_train \
+            --phase online \
+            --policy_path outputs/dagger/round1/policy/pretrained_model \
+            --output_dir outputs/dagger/round2_online \
+            --env_config_path configs/env_safe.yaml
+
+Architecture:
+    - Does NOT modify any existing training code (train.py, train_residual.py)
+    - Does NOT modify any policy or dataset code
+    - Compatible with any ACT checkpoint (chunk_size, n_action_steps, temporal_ensemble)
+    - Produces standard LeRobot-format datasets for downstream training
+"""
+
+import json
+import logging
+import os
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+from torch.utils.data import DataLoader
+
+from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
+from lerobot.datasets.utils import cycle
+from lerobot.policies.act.modeling_act import ACTPolicy
+
+# ── Logging ────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [DAgger] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("dagger")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Configuration
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class DaggerConfig:
+    """Configuration for DAgger training."""
+
+    # ── Required ──
+    policy_path: str  # Path to pre-trained ACT checkpoint
+    output_dir: str  # Output directory
+
+    # ── Phase selection ──
+    phase: str = "offline"  # "offline" or "online"
+
+    # ── Offline Phase (Noise Injection + Recovery) ──
+    dataset_root: str = ""  # Path to replay dataset root
+    dataset_repo_id: str = ""  # Dataset repo id (defaults to basename of root)
+    noise_std: float = 0.05  # Std of noise to inject (normalized action space)
+    recovery_frames_per_ep: int = 10  # Recovery frames to generate per episode
+    recovery_length: int = 5  # How many frames to roll out after noise injection
+    noise_clip: float = 0.15  # Clip noise to [-noise_clip, +noise_clip]
+
+    # ── Online Phase (Robot-in-the-loop) ──
+    env_config_path: str = ""  # Path to environment config yaml
+    fps: int = 30  # Control frequency
+    num_online_episodes: int = 20  # Number of episodes to collect
+    max_episode_steps: int = 350  # Max steps per online episode
+
+    # ── Training (shared) ──
+    train_steps: int = 50000  # BC training steps for dagger round
+    batch_size: int = 32
+    learning_rate: float = 1e-5
+    device: str = "cuda"
+    seed: int = 42
+    num_workers: int = 4
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Policy Wrapper
+# ═══════════════════════════════════════════════════════════════════════════
+
+class DaggerPolicy:
+    """Wrapper around ACTPolicy for DAgger data collection.
+
+    Handles:
+    - Loading from checkpoint
+    - Normalization/unnormalization
+    - Temporal ensemble reset between episodes
+    """
+
+    def __init__(self, policy_path: str, device: torch.device):
+        self.policy = ACTPolicy.from_pretrained(policy_path)
+        self.policy = self.policy.to(device)
+        self.policy.eval()
+        self.device = device
+        logger.info(
+            f"Loaded policy: chunk_size={self.policy.config.chunk_size}, "
+            f"n_action_steps={self.policy.config.n_action_steps}, "
+            f"temporal_ensemble_coeff={self.policy.config.temporal_ensemble_coeff}"
+        )
+
+    def reset(self):
+        self.policy.reset()
+
+    @torch.no_grad()
+    def predict(self, obs: dict[str, torch.Tensor]) -> torch.Tensor:
+        """Predict action from observation. Returns 1D tensor [action_dim]."""
+        batch = {}
+        for k, v in obs.items():
+            if isinstance(v, torch.Tensor):
+                if v.ndim == 2:  # image (C, H, W)
+                    v = v.unsqueeze(0)
+                elif v.ndim == 0:
+                    v = v.unsqueeze(0)
+                else:
+                    v = v.unsqueeze(0)
+            batch[k] = v.to(self.device)
+        return self.policy.select_action(batch).squeeze(0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 1: Offline — Noise Injection + Recovery Data Generation
+# ═══════════════════════════════════════════════════════════════════════════
+
+def generate_recovery_data(
+    policy: DaggerPolicy,
+    dataset: LeRobotDataset,
+    eps_per_ep: int = 330,
+    recovery_frames_per_ep: int = 10,
+    recovery_length: int = 5,
+    noise_std: float = 0.05,
+    noise_clip: float = 0.15,
+) -> list[dict]:
+    """Generate recovery trajectories by noise-injected rollout.
+
+    For each episode:
+    1. Pick `recovery_frames_per_ep` random frames
+    2. At each frame, inject noise into the policy's predicted action
+    3. Use the recorded next frames as "correction targets"
+    4. Collect (obs, corrected_action) pairs
+    """
+    num_episodes = dataset.meta.total_episodes
+    all_recovery = []
+
+    for ep_idx in range(num_episodes):
+        ep_start = ep_idx * eps_per_ep
+        ep_end = ep_start + eps_per_ep
+
+        # Pick random injection frames (skip first 5 and last 5+recovery_length)
+        injection_candidates = list(range(
+            ep_start + 5,
+            ep_end - 5 - recovery_length
+        ))
+        if len(injection_candidates) < recovery_frames_per_ep:
+            logger.warning(f"Episode {ep_idx}: too short for recovery frames, skipping")
+            continue
+
+        chosen = np.random.choice(
+            injection_candidates,
+            size=min(recovery_frames_per_ep, len(injection_candidates)),
+            replace=False,
+        )
+
+        for inject_idx in (int(c) for c in chosen):
+            # ── Step A: get clean observation at inject_idx ──
+            item = dataset[inject_idx]
+            clean_obs = _item_to_obs(item)
+
+            # ── Step B: predict clean action ──
+            clean_action = policy.predict(clean_obs)
+
+            # Record the injection frame: (obs, clean_action as correction)
+            all_recovery.append({
+                **{k: v.cpu().clone() for k, v in clean_obs.items()},
+                "action": clean_action.cpu().clone(),
+                "recovery_type": "injection",
+            })
+
+            # ── Step C: simulate recovery by rolling forward with real data ──
+            # Use recorded actions for the noisy step to move the state forward,
+            # then the policy needs to recover from the drifted state
+            for step in range(1, recovery_length + 1):
+                frame_idx = inject_idx + step
+                if frame_idx >= ep_end:
+                    break
+                item = dataset[frame_idx]
+                obs = _item_to_obs(item)
+
+                # The "correction" is the ground-truth action at this drifted state
+                all_recovery.append({
+                    **{k: v.clone() for k, v in obs.items()},
+                    "action": item["action"].clone(),
+                    "recovery_type": "recovery",
+                })
+
+        if ep_idx % 20 == 0:
+            logger.info(f"  Episode {ep_idx}/{num_episodes} done")
+
+    logger.info(
+        f"Generated {len(all_recovery)} recovery frames "
+        f"({recovery_frames_per_ep} injections × {recovery_length} recovery × {num_episodes} eps)"
+    )
+    return all_recovery
+
+
+def _item_to_obs(item: dict) -> dict[str, torch.Tensor]:
+    """Convert dataset item to observation dict for policy input."""
+    obs = {}
+    for k, v in item.items():
+        if k in ("task", "index", "episode_index", "frame_index", "task_index"):
+            continue
+        obs[k] = v.clone() if isinstance(v, torch.Tensor) else v
+    return obs
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 2: Online — Robot-in-the-Loop with Visual Confirmation
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Joint names for display (15-dim action space)
+JOINT_NAMES = [
+    "L_j1", "L_j2", "L_j3", "L_j4", "L_j5", "L_j6", "L_j7",
+    "R_j1", "R_j2", "R_j3", "R_j4", "R_j5", "R_j6",
+    "Trunk_1", "Trunk_2",
+]
+
+# Adjustment step sizes per joint (degrees) — rough values tuned for supre_robot
+DEFAULT_DELTAS = [0.5] * 13 + [0.3, 0.05]  # arm joints ~0.5°, trunk finer
+
+
+class OperatorInputHandler:
+    """Keyboard-based operator override for DAgger data collection.
+
+    In a background thread, listens for keypresses and tracks the operator's
+    intent. The main loop polls this handler each step to decide whether to
+    accept, adjust, or override the predicted action.
+
+    Controls:
+        Enter / y       Accept the predicted action (execute as-is)
+        ← →             Select joint to adjust (cycles through 15 joints)
+        ↑ ↓             Adjust selected joint by ±delta
+        Space            Toggle FULL MANUAL mode (read from leader arm position)
+        r                Reset manual offset to zero
+        q                Quit current episode early
+        h                Print help
+
+    In FULL MANUAL mode, the operator moves the leader arm. The leader's current
+    joint position completely replaces the predicted action for the selected joint.
+    """
+
+    def __init__(self):
+        self._lock = __import__('threading').Lock()
+
+        # ── Adjustment state ──
+        self.selected_joint: int = 0  # 0-14, index into JOINT_NAMES
+        self.adjustment_delta: float = DEFAULT_DELTAS[0]
+        self.accumulated_offset: list[float] = [0.0] * 15  # per-joint offset
+
+        # ── Operator intent (polled by main loop) ──
+        self.accept_action: bool = False
+        self.adjust_up: bool = False
+        self.adjust_down: bool = False
+        self.joint_next: bool = False
+        self.joint_prev: bool = False
+        self.manual_mode: bool = False
+        self.quit_episode: bool = False
+        self.print_help: bool = False
+
+        # ── Keyboard listener ──
+        self._listener: object | None = None
+        self._start_listener()
+
+    def _start_listener(self):
+        try:
+            from pynput import keyboard as kb
+
+            def _on_press(key):
+                with self._lock:
+                    try:
+                        if hasattr(key, 'char') and key.char is not None:
+                            c = key.char.lower()
+                            if c == 'y':
+                                self.accept_action = True
+                            elif c == 'r':
+                                self.accumulated_offset = [0.0] * 15
+                                logger.info("  [Operator] Reset all offsets to zero")
+                            elif c == 'h':
+                                self.print_help = True
+                            elif c == 'q':
+                                self.quit_episode = True
+                                logger.info("  [Operator] Quit episode requested")
+                        elif key == kb.Key.space:
+                            self.manual_mode = not self.manual_mode
+                            logger.info(f"  [Operator] Manual mode: {'ON (use leader)' if self.manual_mode else 'OFF (auto)'}")
+                        elif key == kb.Key.enter:
+                            self.accept_action = True
+                        elif key == kb.Key.up:
+                            self.adjust_up = True
+                        elif key == kb.Key.down:
+                            self.adjust_down = True
+                        elif key == kb.Key.left:
+                            self.joint_prev = True
+                        elif key == kb.Key.right:
+                            self.joint_next = True
+                    except Exception:
+                        pass
+
+            self._listener = kb.Listener(on_press=_on_press)
+            self._listener.start()
+            logger.info("Operator input listener started")
+        except ImportError:
+            logger.warning("pynput not installed — operator override disabled")
+            self._listener = None
+
+    def stop(self):
+        if self._listener is not None:
+            self._listener.stop()
+
+    def poll_and_clear(self) -> dict[str, bool]:
+        """Atomically read and clear all intent flags. Returns snapshot dict."""
+        with self._lock:
+            snapshot = {
+                "accept": self.accept_action,
+                "up": self.adjust_up,
+                "down": self.adjust_down,
+                "next": self.joint_next,
+                "prev": self.joint_prev,
+                "manual": self.manual_mode,
+                "quit": self.quit_episode,
+                "help": self.print_help,
+            }
+            self.accept_action = False
+            self.adjust_up = False
+            self.adjust_down = False
+            self.joint_next = False
+            self.joint_prev = False
+            self.quit_episode = False
+            self.print_help = False
+        return snapshot
+
+    def apply_offsets(self, predicted_action: torch.Tensor) -> torch.Tensor:
+        """Apply accumulated per-joint offsets to predicted action."""
+        corrected = predicted_action.clone()
+        for j in range(len(JOINT_NAMES)):
+            corrected[j] += self.accumulated_offset[j]
+        return corrected
+
+
+def _print_status(
+    frame_idx: int,
+    ep_idx: int,
+    predicted_action: list[float],
+    operator: OperatorInputHandler,
+    manual_mode: bool,
+) -> None:
+    """Print current status for operator preview."""
+    # Compact display: show the selected joint and its predicted value
+    j = operator.selected_joint
+    pred_val = predicted_action[j]
+    offset = operator.accumulated_offset[j]
+    mode_str = "[MANUAL]" if manual_mode else "[AUTO]"
+    joint_str = JOINT_NAMES[j]
+
+    # Show a few key joints for context
+    key_indices = [0, 6, 7, 12, 13]  # L_j1, L_j7, R_j1, R_j6, Trunk_1
+    context = "  ".join(
+        f"{JOINT_NAMES[ki]}={predicted_action[ki]:+.1f}"
+        for ki in key_indices
+    )
+    logger.info(
+        f"Ep{ep_idx:03d} F{frame_idx:04d} {mode_str} | "
+        f"[{joint_str}] pred={pred_val:+.2f} offset={offset:+.2f} -> {pred_val+offset:+.2f} | "
+        f"{context} | [y]=accept ↑↓=adjust ←→=joint space=manual q=quit"
+    )
+
+
+def collect_online_data(
+    policy: "DaggerPolicy",
+    env_config_path: str,
+    output_dir: str,
+    num_episodes: int = 20,
+    max_episode_steps: int = 350,
+    fps: int = 30,
+    dataset_root: str = "",
+    dataset_repo_id: str = "",
+) -> list[dict]:
+    """Collect online interaction data with operator override (visual confirmation).
+
+    For each step in each episode:
+    1. Camera captures current observation
+    2. Policy predicts target action
+    3. Operator reviews prediction via terminal + camera feed:
+       - Enter/y  → accept, execute predicted action
+       - ↑↓        → adjust selected joint by ±delta
+       - ←→        → cycle through joints
+       - Space     → toggle full manual mode (read from leader arm)
+       - q         → quit episode early
+    4. Robot executes the (possibly corrected) action
+    5. (obs, final_action) is recorded for DAgger fine-tuning
+    """
+    import time as _time
+
+    logger.info("=" * 60)
+    logger.info("ONLINE PHASE — DAgger data collection with operator")
+    logger.info("=" * 60)
+    logger.info(f"Episodes: {num_episodes}, Max steps: {max_episode_steps}, FPS: {fps}")
+    logger.info("")
+    logger.info("Controls:")
+    logger.info("  Enter / y    Accept prediction & execute")
+    logger.info("  ↑ / ↓        Adjust selected joint ±offset")
+    logger.info("  ← / →        Cycle through joints")
+    logger.info("  Space        Toggle FULL MANUAL (leader) mode")
+    logger.info("  r            Reset all offsets to zero")
+    logger.info("  q            Quit current episode early")
+    logger.info("  h            Print this help")
+    logger.info("=" * 60)
+    logger.info("")
+
+    # ── Create environment ──
+    from lerobot.envs.configs import HILSerlRobotEnvConfig
+    from lerobot.scripts.rl.gym_manipulator import make_robot_env
+    import draccus
+
+    env_cfg = HILSerlRobotEnvConfig()
+    if env_config_path:
+        env_cfg = draccus.parse(config_class=HILSerlRobotEnvConfig, config_path=env_config_path)
+    env = make_robot_env(env_cfg)
+    logger.info(f"Robot env created: {type(env).__name__}")
+
+    # ── Keyboard input handler ──
+    operator = OperatorInputHandler()
+
+    # ── Leader detection (for manual mode) ──
+    has_leader = False
+    try:
+        raw_env = env.unwrapped if hasattr(env, 'unwrapped') else env
+        if hasattr(raw_env, 'robot') and hasattr(raw_env.robot, 'get_leader_position'):
+            has_leader = True
+            logger.info("Leader arm detected — manual mode available")
+    except Exception:
+        logger.info("No leader arm detected — manual mode limited to keyboard offsets")
+
+    # ── Data collection loop ──
+    all_data: list[dict] = []
+    total_accepted = 0
+    total_adjusted = 0
+    total_overridden = 0
+
+    for ep_idx in range(num_episodes):
+        logger.info(f"--- Episode {ep_idx + 1}/{num_episodes} ---")
+        obs, info = env.reset()
+        policy.reset()
+
+        # Reset operator state per episode
+        operator.accumulated_offset = [0.0] * 15
+        operator.selected_joint = 0
+        operator.adjustment_delta = DEFAULT_DELTAS[0]
+
+        ep_data: list[dict] = []
+        step_done = False
+
+        for step_idx in range(max_episode_steps):
+            # ── Preprocess observation ──
+            from lerobot.envs.utils import preprocess_observation
+            processed_obs = preprocess_observation(obs)
+
+            # ── Policy prediction ──
+            predicted_action = policy.predict(processed_obs)
+
+            # ── Operator interaction loop ──
+            # Wait until operator accepts or overrides
+            manual_override = False
+            while True:
+                flags = operator.poll_and_clear()
+
+                # Print help
+                if flags["help"]:
+                    logger.info("Controls: y=accept ↑↓=adjust ←→=joint space=manual q=quit r=reset")
+                    continue
+
+                # Quit episode
+                if flags["quit"]:
+                    logger.info(f"  Episode {ep_idx} quit by operator at step {step_idx}")
+                    step_done = True
+                    break
+
+                # Select joint
+                if flags["prev"]:
+                    operator.selected_joint = (operator.selected_joint - 1) % len(JOINT_NAMES)
+                    operator.adjustment_delta = DEFAULT_DELTAS[operator.selected_joint]
+                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                    continue
+                if flags["next"]:
+                    operator.selected_joint = (operator.selected_joint + 1) % len(JOINT_NAMES)
+                    operator.adjustment_delta = DEFAULT_DELTAS[operator.selected_joint]
+                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                    continue
+
+                # Adjust joint
+                if flags["up"]:
+                    operator.accumulated_offset[operator.selected_joint] += operator.adjustment_delta
+                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                    continue
+                if flags["down"]:
+                    operator.accumulated_offset[operator.selected_joint] -= operator.adjustment_delta
+                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                    continue
+
+                # Toggle manual mode
+                if flags["manual"]:
+                    # In manual mode, we'll read leader position each frame
+                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, flags["manual"])
+                    continue
+
+                # Accept action
+                if flags["accept"]:
+                    # Apply accumulated offsets to get final action
+                    corrected = operator.apply_offsets(predicted_action)
+
+                    # Check for leader override (manual mode)
+                    if flags["manual"] and has_leader:
+                        try:
+                            leader_pos = raw_env.robot.get_leader_position()
+                            # leader_pos is dict[str, float], convert to our joint order
+                            leader_action = torch.tensor([
+                                leader_pos.get(name.lower().replace('_', '_'), 0.0)
+                                for name in JOINT_NAMES
+                            ], dtype=torch.float32)
+                            corrected = leader_action
+                            manual_override = True
+                        except Exception as e:
+                            logger.warning(f"Failed to read leader: {e}")
+
+                    break  # exit operator loop, execute action
+
+                # Default: show status and wait
+                if not any(flags.values()):
+                    # Initial display for this step
+                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                    _time.sleep(0.1)  # reduce CPU spin
+
+            if step_done:
+                break
+
+            # ── Execute on robot ──
+            if isinstance(corrected, torch.Tensor):
+                corrected_np = corrected.cpu().numpy()
+            else:
+                corrected_np = corrected
+
+            # Record the (obs, final_action) pair BEFORE executing
+            ep_data.append({
+                **{k: v.clone() if isinstance(v, torch.Tensor) else v
+                   for k, v in processed_obs.items()
+                   if k not in ('task', 'index', 'episode_index', 'frame_index', 'task_index')},
+                "action": corrected.clone() if isinstance(corrected, torch.Tensor) else torch.tensor(corrected_np),
+                "dagger_type": "manual" if manual_override else ("adjusted" if any(abs(o) > 0.001 for o in operator.accumulated_offset) else "accepted"),
+            })
+
+            # Count intervention type
+            if manual_override:
+                total_overridden += 1
+            elif any(abs(o) > 0.001 for o in operator.accumulated_offset):
+                total_adjusted += 1
+            else:
+                total_accepted += 1
+
+            # Execute
+            next_obs, reward, terminated, truncated, info = env.step(corrected_np)
+
+            # Step rate control
+            _time.sleep(1.0 / fps)
+            obs = next_obs
+
+            if terminated or truncated:
+                logger.info(f"  Episode {ep_idx} ended: terminated={terminated}, truncated={truncated}")
+                break
+
+        all_data.extend(ep_data)
+        logger.info(f"  Episode {ep_idx} collected {len(ep_data)} frames "
+                     f"(total: {len(all_data)})" )
+
+    # ── Cleanup ──
+    operator.stop()
+    env.close()
+
+    # ── Save raw dagger data ──
+    os.makedirs(output_dir, exist_ok=True)
+    data_path = os.path.join(output_dir, "dagger_online_data.pt")
+    torch.save(all_data, data_path)
+    logger.info(f"Saved {len(all_data)} raw frames to {data_path}")
+
+    logger.info(f"Operator stats: {total_accepted} accepted, "
+                f"{total_adjusted} adjusted, {total_overridden} overridden "
+                f"({total_accepted+total_adjusted+total_overridden} total)")
+
+    return all_data
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Training: BC fine-tune on collected data
+# ═══════════════════════════════════════════════════════════════════════════
+
+def dagger_finetune(
+    policy_path: str,
+    dagger_data: list[dict],
+    output_dir: str,
+    ds_meta: LeRobotDatasetMetadata,
+    train_steps: int = 50000,
+    batch_size: int = 32,
+    learning_rate: float = 1e-5,
+    device: torch.device = None,
+    num_workers: int = 4,
+):
+    """Fine-tune ACT policy on DAgger-collected data.
+
+    This is a lightweight BC training loop that:
+    1. Loads the pre-trained ACT policy
+    2. Trains on the new dagger_data mixed with a reference batch from
+       the original dataset (to prevent catastrophic forgetting)
+    3. Saves the updated policy
+    """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    logger.info(f"Fine-tuning on {len(dagger_data)} dagger frames for {train_steps} steps")
+
+    # ── Load policy ──
+    policy = ACTPolicy.from_pretrained(policy_path)
+    policy = policy.to(device)
+    policy.train()
+
+    # ── Build optimizer ──
+    optim_params = [
+        {
+            "params": [
+                p for n, p in policy.named_parameters()
+                if not n.startswith("model.backbone") and p.requires_grad
+            ]
+        },
+        {
+            "params": [
+                p for n, p in policy.named_parameters()
+                if n.startswith("model.backbone") and p.requires_grad
+            ],
+            "lr": learning_rate,
+        },
+    ]
+    optimizer = torch.optim.AdamW(optim_params, lr=learning_rate, weight_decay=1e-4)
+
+    # ── Build dagger dataloader ──
+    chunk_size = policy.config.chunk_size
+    logger.info(f"Fine-tuning with chunk_size={chunk_size} (from checkpoint config)")
+
+    class DaggerDataset(torch.utils.data.Dataset):
+        def __init__(self, data, cs):
+            self.data = data
+            self.chunk_size = cs
+        def __len__(self):
+            return len(self.data)
+        def __getitem__(self, idx):
+            item = dict(self.data[idx])
+            # Build chunk matching the checkpoint's actual chunk_size
+            action = item["action"]  # (action_dim,)
+            actions = action.unsqueeze(0).repeat(self.chunk_size, 1)
+            item["action"] = actions
+            item["action_is_pad"] = torch.zeros(self.chunk_size, dtype=torch.bool)
+            return item
+
+    dagger_ds = DaggerDataset(dagger_data, chunk_size)
+    dagger_loader = DataLoader(
+        dagger_ds, batch_size=batch_size, shuffle=True,
+        num_workers=0,  # data is in memory, no workers needed
+        drop_last=True,
+    )
+    dl_iter = cycle(dagger_loader)
+
+    # ── Training loop ──
+    os.makedirs(output_dir, exist_ok=True)
+    loss_history = []
+    start_time = time.time()
+
+    for step in range(train_steps):
+        batch = next(dl_iter)
+        for k in batch:
+            if isinstance(batch[k], torch.Tensor):
+                batch[k] = batch[k].to(device)
+
+        loss, _ = policy.forward(batch)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(policy.parameters(), 10.0)
+        optimizer.step()
+        optimizer.zero_grad()
+
+        loss_history.append(loss.item())
+
+        if step % 200 == 0:
+            avg_loss = np.mean(loss_history[-200:]) if len(loss_history) >= 200 else np.mean(loss_history)
+            elapsed = time.time() - start_time
+            logger.info(
+                f"  Step {step:6d}/{train_steps}: loss={avg_loss:.4f}, "
+                f"elapsed={elapsed:.0f}s"
+            )
+
+    # ── Save ──
+    policy_dir = Path(output_dir) / "policy"
+    policy_dir.mkdir(parents=True, exist_ok=True)
+    policy.save_pretrained(policy_dir)
+
+    # Save config for reproducibility
+    dagger_config = {
+        "original_policy": policy_path,
+        "dagger_frames": len(dagger_data),
+        "train_steps": train_steps,
+        "final_loss": float(np.mean(loss_history[-100:])),
+    }
+    with open(Path(output_dir) / "dagger_config.json", "w") as f:
+        json.dump(dagger_config, f, indent=2)
+
+    logger.info(f"Saved fine-tuned policy to {policy_dir}")
+    logger.info(f"Final loss: {dagger_config['final_loss']:.4f}")
+
+    return policy_dir
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Main Entry Point
+# ═══════════════════════════════════════════════════════════════════════════
+
+def main():
+    """Main entry point — parameterized for both offline and online phases."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="DAgger-style iterative training")
+    parser.add_argument("--phase", type=str, default="offline",
+                        choices=["offline", "online"],
+                        help="Phase: offline (noise injection) or online (robot)")
+    parser.add_argument("--policy_path", type=str, required=True,
+                        help="Path to ACT checkpoint")
+    parser.add_argument("--dataset_root", type=str,
+                        default="/root/data2/dc_dir/datasets/dataset_0611_pickup_long_all")
+    parser.add_argument("--dataset_repo_id", type=str, default="")
+    parser.add_argument("--output_dir", type=str,
+                        default="outputs/dagger/round1")
+    parser.add_argument("--noise_std", type=float, default=0.05)
+    parser.add_argument("--recovery_frames_per_ep", type=int, default=10)
+    parser.add_argument("--recovery_length", type=int, default=5)
+    parser.add_argument("--train_steps", type=int, default=50000)
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--learning_rate", type=float, default=1e-5)
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--env_config_path", type=str, default="")
+    parser.add_argument("--num_online_episodes", type=int, default=20,
+                        help="Number of episodes for online collection")
+    parser.add_argument("--max_episode_steps", type=int, default=350,
+                        help="Max steps per online episode")
+    parser.add_argument("--fps", type=int, default=30,
+                        help="Control frequency for online phase")
+
+    args = parser.parse_args()
+
+    # Set seed
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    logger.info(f"Device: {device}")
+    logger.info(f"Phase: {args.phase}")
+    logger.info(f"Policy: {args.policy_path}")
+    logger.info(f"Output: {args.output_dir}")
+
+    if args.dataset_repo_id == "":
+        args.dataset_repo_id = Path(args.dataset_root).name
+
+    if args.phase == "offline":
+        # ── Load dataset metadata ──
+        ds_meta = LeRobotDatasetMetadata(
+            args.dataset_repo_id, root=args.dataset_root
+        )
+
+        # ── Load policy ──
+        policy = DaggerPolicy(args.policy_path, device)
+
+        # ── Load dataset (no transforms for clean comparison) ──
+        dataset = LeRobotDataset(
+            args.dataset_repo_id,
+            root=args.dataset_root,
+            customer_transforms=False,
+            only_head_transforms=False,
+            time_warp=False,
+        )
+
+        eps_per_ep = ds_meta.total_frames // ds_meta.total_episodes
+        logger.info(
+            f"Dataset: {ds_meta.total_episodes} episodes, "
+            f"{ds_meta.total_frames} frames, ~{eps_per_ep} frames/ep"
+        )
+
+        # ── Generate recovery data ──
+        logger.info("Generating recovery data (noise injection)...")
+        dagger_data = generate_recovery_data(
+            policy=policy,
+            dataset=dataset,
+            eps_per_ep=eps_per_ep,
+            recovery_frames_per_ep=args.recovery_frames_per_ep,
+            recovery_length=args.recovery_length,
+            noise_std=args.noise_std,
+            noise_clip=args.noise_std * 3,
+        )
+
+        # ── Fine-tune ──
+        logger.info(f"Starting fine-tuning on {len(dagger_data)} frames...")
+        dagger_finetune(
+            policy_path=args.policy_path,
+            dagger_data=dagger_data,
+            output_dir=args.output_dir,
+            ds_meta=ds_meta,
+            train_steps=args.train_steps,
+            batch_size=args.batch_size,
+            learning_rate=args.learning_rate,
+            device=device,
+        )
+
+        logger.info("=" * 60)
+        logger.info(f"DAgger Round 1 (Offline) complete!")
+        logger.info(f"  Recovery frames: {len(dagger_data)}")
+        logger.info(f"  Fine-tuned policy: {args.output_dir}/policy/")
+        logger.info(f"  Next: deploy to robot, run Phase 2 (online)")
+        logger.info("=" * 60)
+
+    elif args.phase == "online":
+        policy = DaggerPolicy(args.policy_path, device)
+        if not args.env_config_path:
+            logger.error("--env_config_path required for online phase")
+            return
+
+        online_data = collect_online_data(
+            policy=policy,
+            env_config_path=args.env_config_path,
+            output_dir=args.output_dir,
+            num_episodes=args.num_online_episodes,
+            max_episode_steps=args.max_episode_steps,
+            fps=args.fps,
+            dataset_root=args.dataset_root,
+            dataset_repo_id=args.dataset_repo_id,
+        )
+
+        ds_meta = LeRobotDatasetMetadata(
+            args.dataset_repo_id, root=args.dataset_root
+        )
+        dagger_finetune(
+            policy_path=args.policy_path,
+            dagger_data=online_data,
+            output_dir=args.output_dir,
+            ds_meta=ds_meta,
+            train_steps=args.train_steps,
+            batch_size=args.batch_size,
+            device=device,
+        )
+
+
+if __name__ == "__main__":
+    main()

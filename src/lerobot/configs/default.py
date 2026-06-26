@@ -40,6 +40,11 @@ class DatasetConfig:
     customer_transforms: bool = False
     # 仅对头部图像坐增强
     only_head_transforms: bool = False
+    # 时间扭曲增强: 对帧索引做随机加速/减速，模拟不同的执行速度
+    # time_warp_speed ∈ [time_warp_min, time_warp_max]: min=慢放, max=快进
+    time_warp: bool = False
+    time_warp_speed_min: float = 0.85
+    time_warp_speed_max: float = 1.15
     # 图像数据增强，为了适应相机角度可能变化。
     customer_transforms_cfg: dict = field(default_factory=lambda:{
         # "random_resize_crop":{ # 随机缩放裁剪

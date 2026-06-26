@@ -99,6 +99,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             customer_transforms_cfg = cfg.dataset.customer_transforms_cfg,
             only_head_transforms = cfg.dataset.only_head_transforms,
             tolerance_s=cfg.dataset.tolerance_s,  # 使用配置的容差
+            time_warp=cfg.dataset.time_warp,
+            time_warp_speed_min=cfg.dataset.time_warp_speed_min,
+            time_warp_speed_max=cfg.dataset.time_warp_speed_max,
         )
     else:
         raise NotImplementedError("The MultiLeRobotDataset isn't supported for now.")

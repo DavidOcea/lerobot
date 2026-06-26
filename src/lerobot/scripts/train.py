@@ -229,7 +229,10 @@ def train(cfg: TrainPipelineConfig):
         is_eval_step = cfg.eval_freq > 0 and step % cfg.eval_freq == 0
 
         if is_log_step:
-            logging.info(train_tracker)
+            log_msg = str(train_tracker)
+            if hasattr(dataset, "warp_stats") and dataset.warp_stats is not None:
+                log_msg += f" {dataset.warp_stats}"
+            logging.info(log_msg)
             if wandb_logger:
                 wandb_log_dict = train_tracker.to_dict()
                 if output_dict:

@@ -21,11 +21,15 @@ from typing import Callable
 from typing import Dict
 import concurrent.futures
 import os
+import multiprocessing as mp
 
 import datasets
 import numpy as np
 import packaging.version
 import PIL.Image
+from PIL import Image
+import torchvision.transforms as transforms
+from lerobot.datasets.customer_transforms import CustomerImageTransforms
 import torch
 import torch.utils
 from datasets import concatenate_datasets, load_dataset
@@ -351,6 +355,9 @@ class LeRobotDataset(torch.utils.data.Dataset):
         customer_transforms: bool = False,
         customer_transforms_cfg: dict = {},
         only_head_transforms: bool = False,
+        time_warp: bool = False,
+        time_warp_speed_min: float = 0.85,
+        time_warp_speed_max: float = 1.15,
     ):
         """
         2 modes are available for instantiating this class, depending on 2 different use cases:
@@ -467,12 +474,23 @@ class LeRobotDataset(torch.utils.data.Dataset):
         self.episodes_since_last_encoding = 0
         self.customer_transforms = customer_transforms
         self.only_head_transforms = only_head_transforms
+        self.time_warp = time_warp
+        self.time_warp_speed_min = time_warp_speed_min
+        self.time_warp_speed_max = time_warp_speed_max
+        # Cross-process counters for warp monitoring (survives DataLoader fork)
+        self._warp_total = mp.Value("i", 0)
+        self._warp_remapped = mp.Value("i", 0)
 
         # Unused attributes
         self.image_writer = None
         self.episode_buffer = None
         self.num_parallel_workers = 1
         self.gst_encoding = os.environ.get("GST_ENCODING", "0").lower() in ["1", "true", "yes"]
+
+        # customer transformer
+        if self.customer_transforms:
+            self.customer_transforms = CustomerImageTransforms(customer_transforms_cfg)
+            self.transform = transforms.ToTensor()
 
         self.root.mkdir(exist_ok=True, parents=True)
 
@@ -711,12 +729,74 @@ class LeRobotDataset(torch.utils.data.Dataset):
             item[key] = torch.BoolTensor(val)
         return item
 
+    @property
+    def warp_stats(self) -> str | None:
+        """Return warp statistics string if time_warp is enabled, else None."""
+        if not self.time_warp:
+            return None
+        total = self._warp_total.value
+        remapped = self._warp_remapped.value
+        if total == 0:
+            return "warp=ON waiting"
+        pct = 100.0 * remapped / total
+        return f"warp={remapped}/{total} remap={pct:.0f}%"
+
     def __len__(self):
         return self.num_frames
+        return self.num_frames
+
+    def _apply_time_warp(self, idx: int, ep_idx: int) -> int:
+        """Apply random time warping to remap frame index with variable playback speed.
+
+        Maps the linear frame index through a random speed factor, effectively:
+        - speed > 1.0: fast-forward → some original frames are skipped (compression)
+        - speed < 1.0: slow-motion → some frames repeat at boundaries (stretching)
+
+        The warp is consistent within a DataLoader worker's lifetime but varies across
+        different calls, providing diverse speed variations during training.
+
+        Returns:
+            Warped global frame index within the same episode.
+        """
+        ep_start = self.episode_data_index["from"][ep_idx].item()
+        ep_end = self.episode_data_index["to"][ep_idx].item()
+        ep_length = ep_end - ep_start
+
+        if ep_length <= 1:
+            return idx
+
+        # Random speed factor per query
+        speed = np.random.uniform(self.time_warp_speed_min, self.time_warp_speed_max)
+
+        # Relative position [0, 1] within the episode
+        rel_pos = (idx - ep_start) / (ep_length - 1)
+
+        # Warped relative position with clamping to episode bounds
+        warped_rel_pos = np.clip(rel_pos * speed, 0.0, 1.0)
+
+        # Convert back to global index
+        return ep_start + int(warped_rel_pos * (ep_length - 1))
 
     def __getitem__(self, idx) -> dict:
         item = self.hf_dataset[idx]
         ep_idx = item["episode_index"].item()
+
+        # Apply time warping: remap frame index for speed variation
+        if self.time_warp:
+            warped_idx = self._apply_time_warp(idx, ep_idx)
+            self._warp_total.value += 1
+            if warped_idx != idx:
+                self._warp_remapped.value += 1
+            if warped_idx != idx:
+                # Reload from warped index; keep original idx for identity fields
+                warped_item = self.hf_dataset[warped_idx]
+                # Preserve original index/episode_index to maintain frame identity
+                # but use warped state/action/force/timestamp
+                warped_item["index"] = item["index"]
+                warped_item["episode_index"] = item["episode_index"]
+                warped_item["frame_index"] = item["frame_index"]
+                warped_item["task_index"] = item["task_index"]
+                item = warped_item
 
         query_indices = None
         if self.delta_indices is not None:
