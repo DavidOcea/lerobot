@@ -1,0 +1,213 @@
+# ═══════════════════════════════════════════════════════════════
+# 并行任务示例: 手臂归位 + AGV返回 同时执行
+#
+# 取自 agv_class_ADC2.yaml, 把每个放置分支尾部的两段:
+#   - arm_home_after_place_XXX  (手臂归位, 3-5s)
+#   - agv_return_from_XXX_to_A  (AGV返回A点, 10-20s)
+# 合并为一个 parallel 任务组, 同时执行, 手臂先完成即等待AGV.
+#
+# 节省时间: 每个放置分支省 3-5s
+# ═══════════════════════════════════════════════════════════════
+
+# ========== Named Positions ==========
+named_positions:
+  home:
+    left_arm_joint_1: -40.3
+    left_arm_joint_2: -4.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -58.6
+    left_arm_joint_5: -2.0
+    left_arm_joint_6: 11.8
+    right_arm_joint_1: 40.3
+    right_arm_joint_2: 4.0
+    right_arm_joint_3: 0.8
+    right_arm_joint_4: 58.6
+    right_arm_joint_5: 2.0
+    right_arm_joint_6: -11.8
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+# ========== AGV Global Configuration ==========
+agv_config:
+  enabled: true
+  host: "192.168.2.31"
+  port: 19204
+  connection_timeout: 5.0
+  read_timeout: 2.0
+  auto_reconnect: true
+  auto_disconnect_after_task: false
+  emergency_stop_enabled: true
+  check_arm_before_move: true
+  station_map:
+    station_A: [0.168, 0.029, 0.650]
+    station_B1: [5.0, 0.0, 0.0]
+    station_B2: [0.0, 9.0, 0.0]
+  default_arm_safe_positions:
+    left_arm_joint_1: 5.0
+    left_arm_joint_2: 5.0
+    left_arm_joint_3: 5.0
+    left_arm_joint_4: 5.0
+    left_arm_joint_5: 5.0
+    left_arm_joint_6: 5.0
+    right_arm_joint_1: 5.0
+    right_arm_joint_2: 5.0
+    right_arm_joint_3: 5.0
+    right_arm_joint_4: 5.0
+    right_arm_joint_5: 5.0
+    right_arm_joint_6: 5.0
+    trunk_joint_1: 3.0
+    trunk_joint_2: 3.0
+
+# ========== Robot Configuration ==========
+robot_config:
+  type: "supre_robot_follower"
+  control_frequency: 50
+  prometheus_port: 8000
+  max_relative_joint_move: 2.0
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
+  cameras:
+    head_cam:
+      type: opencv
+      index: 0
+      width: 640
+      height: 480
+      fps: 30
+    left_wrist_cam:
+      type: opencv
+      index: 2
+      width: 640
+      height: 480
+      fps: 30
+    right_wrist_cam:
+      type: opencv
+      index: 4
+      width: 640
+      height: 480
+      fps: 30
+
+# ========== Collision Detection ==========
+collision_config:
+  collision_threshold: 2.0
+  detection_window: 5
+  adaptive_mode: true
+  velocity_compensation: true
+  auto_calibrate: true
+  calibration_samples: 8
+
+# ========== Monitoring ==========
+monitoring_config:
+  log_level: "INFO"
+  enable_prometheus: false
+  prometheus_port: 9090
+
+# ========== Task Sequence ==========
+tasks:
+  # ---- To A ----
+  - name: "agv_to_station_A"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM8"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # ---- Place long_1 (to B1) ----
+  - name: "place_long_1_sequence"
+    task_type: "position_sequence"
+    max_duration: 16.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "step_1"
+        position: {left_arm_joint_1: -67.8, left_arm_joint_2: -8.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.3, left_arm_joint_5: -99.2, left_arm_joint_6: -85.0, left_arm_joint_7: 1.0, right_arm_joint_1: 66.4, right_arm_joint_2: 7.5, right_arm_joint_3: 0.8, right_arm_joint_4: 25.3, right_arm_joint_5: 97.2, right_arm_joint_6: 88.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+        max_duration: 1.0
+        position_tolerance: 3.0
+
+  # ---- 并行: 手臂归位 + AGV返回A ----
+  - name: "home_and_return_A_after_long_1"
+    task_type: "parallel"
+    cycle_end: true
+    tasks:
+      - name: "arm_home_after_place"
+        task_type: "position"
+        max_duration: 10.0
+        max_retries: 1
+        enabled: true
+        completion_criteria:
+          type: "position"
+          position: home
+          position_tolerance: 3.0
+
+      - name: "agv_return_to_A"
+        task_type: "agv"
+        max_duration: 60.0
+        max_retries: 2
+        enabled: true
+        agv_config:
+          target_station: "LM8"
+          wait_for_arrival: true
+          arrival_timeout: 60.0
+          arrival_tolerance: 0.3
+          check_arm_safe_position: false
+          retry_on_timeout: true
+          retry_count: 2
+          emergency_stop_on_error: true
+
+  # ---- Place long_2 (to B1, position adjusted) ----
+  - name: "place_long_2_sequence"
+    task_type: "position_sequence"
+    max_duration: 16.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "step_1"
+        position: {left_arm_joint_1: -67.8, left_arm_joint_2: -8.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.3, left_arm_joint_5: -99.2, left_arm_joint_6: -85.0, left_arm_joint_7: 1.0, right_arm_joint_1: 66.4, right_arm_joint_2: 7.5, right_arm_joint_3: 0.8, right_arm_joint_4: 25.3, right_arm_joint_5: 97.2, right_arm_joint_6: 88.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+        max_duration: 1.0
+        position_tolerance: 3.0
+
+  # ---- 并行: 手臂归位 + AGV返回A (same group) ----
+  - name: "home_and_return_A_after_long_2"
+    task_type: "parallel"
+    cycle_end: true
+    tasks:
+      - name: "arm_home_after_place"
+        task_type: "position"
+        max_duration: 10.0
+        max_retries: 1
+        enabled: true
+        completion_criteria:
+          type: "position"
+          position: home
+          position_tolerance: 3.0
+
+      - name: "agv_return_to_A"
+        task_type: "agv"
+        max_duration: 60.0
+        max_retries: 2
+        enabled: true
+        agv_config:
+          target_station: "LM8"
+          wait_for_arrival: true
+          arrival_timeout: 60.0
+          arrival_tolerance: 0.3
+          check_arm_safe_position: false
+          retry_on_timeout: true
+          retry_count: 2
+          emergency_stop_on_error: true
+
+# ========== Cycle Execution Settings ==========
+max_cycles: 10
+cycle_delay: 1.0
+enable_cycle_prompt: true
+environment_dt: 1.0 / 30.0
+observation_timeout: 5.0
+action_timeout: 5.0
+reset_duration: 1.0
+reset_positions: {}

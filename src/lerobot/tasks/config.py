@@ -113,6 +113,7 @@ class AGVTaskConfig:
     # ===== 角度修正 =====
     angle_correction: bool = False  # 平移后自动修正角度偏差
     angle_correction_tolerance: float = 0.03  # 角度修正阈值 (弧度, ~1.7°)
+    angle_correction_reference: str = "initial"  # 修正目标: "initial"(保持初始角) | "station"(对齐站点theta)
 
     def validate(self) -> bool:
         """验证配置有效性.
@@ -283,7 +284,7 @@ class TaskConfig:
     name: str
 
     # 任务类型
-    task_type: Literal["policy", "agv", "position", "position_sequence", "visual_align", "classify", "system_command"] = "policy"
+    task_type: Literal["policy", "agv", "position", "position_sequence", "visual_align", "classify", "system_command", "parallel"] = "policy"
 
     # Policy任务字段 (现有)
     policy_path: str | None = None
@@ -310,6 +311,9 @@ class TaskConfig:
     next_tasks: dict[str, str] = field(default_factory=dict)
     # system_command task field
     command: str = ""  # shell command to run (for system_command task_type)
+
+    # Parallel task fields (execute sub-tasks concurrently)
+    parallel_tasks: list[dict] = field(default_factory=list)  # sub-task dicts, parsed lazily
 
     def validate(self) -> bool:
         """验证任务配置."""
@@ -522,6 +526,18 @@ def parse_task_dict(
     elif task_type == "system_command":
         task_kwargs["command"] = task_dict.get("command", "")
         task_kwargs["max_duration"] = task_dict.get("max_duration", 5.0)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
+        task_kwargs["enabled"] = task_dict.get("enabled", True)
+
+    elif task_type == "parallel":
+        task_kwargs["parallel_tasks"] = task_dict.get("tasks", [])
+        # max_duration = longest sub-task, or explicit override
+        sub_max = 0
+        for st in task_kwargs["parallel_tasks"]:
+            st_dur = st.get("max_duration", 30.0)
+            if st_dur > sub_max:
+                sub_max = st_dur
+        task_kwargs["max_duration"] = task_dict.get("max_duration", max(sub_max + 5, 30))
         task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
         task_kwargs["enabled"] = task_dict.get("enabled", True)
 

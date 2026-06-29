@@ -991,7 +991,7 @@ class SeerAGVController:
     def wait_for_translate_complete(
         self,
         timeout: float = 30.0,
-        poll_interval: float = 0.5,
+        poll_interval: float = 0.2,
     ) -> bool:
         """等待平动完成 — AGV移动完距离后变为空闲状态.
 
@@ -1033,7 +1033,7 @@ class SeerAGVController:
     def wait_for_turn_complete(
         self,
         timeout: float = 30.0,
-        poll_interval: float = 0.5,
+        poll_interval: float = 0.2,
     ) -> bool:
         """等待转动完成 — AGV旋转完角度后变为空闲状态.
 
@@ -1415,7 +1415,7 @@ class SeerAGVController:
         self,
         target_station: str,
         timeout: float = 60.0,
-        poll_interval: float = 1.0,
+        poll_interval: float = 0.2,
         tolerance: float = 0.3,
         wait_for_orientation: bool = True,
     ) -> bool:
@@ -1532,11 +1532,12 @@ class SeerAGVController:
             logger.warning(f"Timeout waiting for arrival at {target_station}")
         return False
 
-    def wait_for_idle(self, timeout: float = 30.0) -> bool:
+    def wait_for_idle(self, timeout: float = 30.0, poll_interval: float = 0.2) -> bool:
         """等待AGV变为空闲状态.
 
         Args:
             timeout: 最大等待时间
+            poll_interval: 状态轮询间隔 (秒)
 
         Returns:
             True if idle, False if timeout
@@ -1547,7 +1548,7 @@ class SeerAGVController:
             status = self.get_status(use_cache=False)
             if status.status_code == self.STATUS_IDLE and not status.is_moving:
                 return True
-            time.sleep(0.5)
+            time.sleep(poll_interval)
 
         logger.warning("Timeout waiting for AGV idle")
         return False
