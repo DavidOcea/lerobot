@@ -449,11 +449,10 @@ def collect_online_data(
 
     # ── Create environment ──
     # IMPORTANT: Save and clear sys.argv before lerobot imports.
-    # lerobot's draccus/argparse wrapper parses sys.argv at import time,
-    # and will choke on our custom args (--phase, --policy_path, etc.)
+    # lerobot's draccus/argparse wrapper parses sys.argv, and will choke
+    # on our custom args (--phase, --policy_path, etc.).
     import sys as _sys
     _saved_argv = _sys.argv
-    _sys.argv = [_sys.argv[0]]  # keep prog name only
 
     from lerobot.envs.configs import HILSerlRobotEnvConfig
     from lerobot.scripts.rl.gym_manipulator import make_robot_env
@@ -462,10 +461,18 @@ def collect_online_data(
     env_cfg = HILSerlRobotEnvConfig()
     if env_config_path:
         env_cfg = draccus.parse(config_class=HILSerlRobotEnvConfig, config_path=env_config_path)
-    env = make_robot_env(env_cfg)
 
-    # Restore original argv for any later use
-    _sys.argv = _saved_argv
+    # make_robot_env has @parser.wrap() which re-parses sys.argv.
+    # Swap argv to pass only --config_path so it uses the file.
+    if env_config_path:
+        _sys.argv = [_sys.argv[0], "--config_path", str(env_config_path)]
+    else:
+        _sys.argv = [_sys.argv[0]]
+    env = None
+    try:
+        env = make_robot_env(env_cfg)
+    finally:
+        _sys.argv = _saved_argv
 
     logger.info(f"Robot env created: {type(env).__name__}")
 
