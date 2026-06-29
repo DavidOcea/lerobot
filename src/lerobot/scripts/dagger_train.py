@@ -118,6 +118,8 @@ class DaggerPolicy:
     """
 
     def __init__(self, policy_path: str, device: torch.device):
+        # Resolve to absolute path — ACTPolicy.from_pretrained checks is_dir()
+        policy_path = str(Path(policy_path).resolve())
         self.policy = ACTPolicy.from_pretrained(policy_path)
         self.policy = self.policy.to(device)
         self.policy.eval()
@@ -655,7 +657,7 @@ def dagger_finetune(
     logger.info(f"Fine-tuning on {len(dagger_data)} dagger frames for {train_steps} steps")
 
     # ── Load policy ──
-    policy = ACTPolicy.from_pretrained(policy_path)
+    policy = ACTPolicy.from_pretrained(str(Path(policy_path).resolve()))
     policy = policy.to(device)
     policy.train()
 
@@ -756,65 +758,105 @@ def dagger_finetune(
 # Main Entry Point
 # ═══════════════════════════════════════════════════════════════════════════
 
+def _parse_args(argv: list[str]) -> dict:
+    """Simple CLI parser — avoids argparse/draccus conflicts in the lerobot env."""
+    defaults = {
+        "phase": "offline",
+        "dataset_root": "/root/data2/dc_dir/datasets/dataset_0611_pickup_long_all",
+        "dataset_repo_id": "",
+        "output_dir": "outputs/dagger/round1",
+        "noise_std": 0.05,
+        "recovery_frames_per_ep": 10,
+        "recovery_length": 5,
+        "train_steps": 50000,
+        "batch_size": 32,
+        "learning_rate": 1e-5,
+        "device": "cuda",
+        "seed": 42,
+        "env_config_path": "",
+        "num_online_episodes": 20,
+        "max_episode_steps": 350,
+        "fps": 30,
+    }
+    result = dict(defaults)
+    i = 1
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--") and "=" in a:
+            # --key=value
+            k, v = a[2:].split("=", 1)
+            result[k] = v
+            i += 1
+        elif a.startswith("--"):
+            k = a[2:]
+            if k in ("phase", "dataset_root", "dataset_repo_id", "output_dir",
+                     "env_config_path", "device"):
+                result[k] = argv[i + 1] if i + 1 < len(argv) and not argv[i + 1].startswith("--") else ""
+                i += 2
+            else:
+                result[k] = argv[i + 1] if i + 1 < len(argv) else ""
+                i += 2
+        else:
+            i += 1
+
+    # Type conversions
+    for k in ("seed", "train_steps", "batch_size", "recovery_frames_per_ep",
+              "recovery_length", "num_online_episodes", "max_episode_steps", "fps"):
+        result[k] = int(result[k])
+    for k in ("noise_std", "learning_rate"):
+        result[k] = float(result[k])
+    return result
+
+
 def main():
     """Main entry point — parameterized for both offline and online phases."""
-    import argparse
+    import sys as _sys
+    args = _parse_args(_sys.argv)
 
-    parser = argparse.ArgumentParser(description="DAgger-style iterative training")
-    parser.add_argument("--phase", type=str, default="offline",
-                        choices=["offline", "online"],
-                        help="Phase: offline (noise injection) or online (robot)")
-    parser.add_argument("--policy_path", type=str, required=True,
-                        help="Path to ACT checkpoint")
-    parser.add_argument("--dataset_root", type=str,
-                        default="/root/data2/dc_dir/datasets/dataset_0611_pickup_long_all")
-    parser.add_argument("--dataset_repo_id", type=str, default="")
-    parser.add_argument("--output_dir", type=str,
-                        default="outputs/dagger/round1")
-    parser.add_argument("--noise_std", type=float, default=0.05)
-    parser.add_argument("--recovery_frames_per_ep", type=int, default=10)
-    parser.add_argument("--recovery_length", type=int, default=5)
-    parser.add_argument("--train_steps", type=int, default=50000)
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--learning_rate", type=float, default=1e-5)
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--env_config_path", type=str, default="")
-    parser.add_argument("--num_online_episodes", type=int, default=20,
-                        help="Number of episodes for online collection")
-    parser.add_argument("--max_episode_steps", type=int, default=350,
-                        help="Max steps per online episode")
-    parser.add_argument("--fps", type=int, default=30,
-                        help="Control frequency for online phase")
-
-    args = parser.parse_args()
+    phase = args["phase"]
+    policy_path = args.get("policy_path", "")
+    if not policy_path:
+        logger.error("--policy_path is required")
+        return
+    output_dir = args["output_dir"]
+    dataset_root = args["dataset_root"]
+    dataset_repo_id = args["dataset_repo_id"] or Path(dataset_root).name
+    noise_std = args["noise_std"]
+    recovery_frames_per_ep = args["recovery_frames_per_ep"]
+    recovery_length = args["recovery_length"]
+    train_steps = args["train_steps"]
+    batch_size = args["batch_size"]
+    learning_rate = args["learning_rate"]
+    seed = args["seed"]
+    env_config_path = args["env_config_path"]
+    num_online_episodes = args["num_online_episodes"]
+    max_episode_steps = args["max_episode_steps"]
+    fps = args["fps"]
+    device_str = args["device"]
 
     # Set seed
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
 
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    device = torch.device(device_str if torch.cuda.is_available() else "cpu")
     logger.info(f"Device: {device}")
-    logger.info(f"Phase: {args.phase}")
-    logger.info(f"Policy: {args.policy_path}")
-    logger.info(f"Output: {args.output_dir}")
+    logger.info(f"Phase: {phase}")
+    logger.info(f"Policy: {policy_path}")
+    logger.info(f"Output: {output_dir}")
 
-    if args.dataset_repo_id == "":
-        args.dataset_repo_id = Path(args.dataset_root).name
-
-    if args.phase == "offline":
+    if phase == "offline":
         # ── Load dataset metadata ──
         ds_meta = LeRobotDatasetMetadata(
-            args.dataset_repo_id, root=args.dataset_root
+            dataset_repo_id, root=dataset_root
         )
 
         # ── Load policy ──
-        policy = DaggerPolicy(args.policy_path, device)
+        policy = DaggerPolicy(policy_path, device)
 
         # ── Load dataset (no transforms for clean comparison) ──
         dataset = LeRobotDataset(
-            args.dataset_repo_id,
-            root=args.dataset_root,
+            dataset_repo_id,
+            root=dataset_root,
             customer_transforms=False,
             only_head_transforms=False,
             time_warp=False,
@@ -832,59 +874,59 @@ def main():
             policy=policy,
             dataset=dataset,
             eps_per_ep=eps_per_ep,
-            recovery_frames_per_ep=args.recovery_frames_per_ep,
-            recovery_length=args.recovery_length,
-            noise_std=args.noise_std,
-            noise_clip=args.noise_std * 3,
+            recovery_frames_per_ep=recovery_frames_per_ep,
+            recovery_length=recovery_length,
+            noise_std=noise_std,
+            noise_clip=noise_std * 3,
         )
 
         # ── Fine-tune ──
         logger.info(f"Starting fine-tuning on {len(dagger_data)} frames...")
         dagger_finetune(
-            policy_path=args.policy_path,
+            policy_path=policy_path,
             dagger_data=dagger_data,
-            output_dir=args.output_dir,
+            output_dir=output_dir,
             ds_meta=ds_meta,
-            train_steps=args.train_steps,
-            batch_size=args.batch_size,
-            learning_rate=args.learning_rate,
+            train_steps=train_steps,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
             device=device,
         )
 
         logger.info("=" * 60)
         logger.info(f"DAgger Round 1 (Offline) complete!")
         logger.info(f"  Recovery frames: {len(dagger_data)}")
-        logger.info(f"  Fine-tuned policy: {args.output_dir}/policy/")
+        logger.info(f"  Fine-tuned policy: {output_dir}/policy/")
         logger.info(f"  Next: deploy to robot, run Phase 2 (online)")
         logger.info("=" * 60)
 
-    elif args.phase == "online":
-        policy = DaggerPolicy(args.policy_path, device)
-        if not args.env_config_path:
+    elif phase == "online":
+        policy = DaggerPolicy(policy_path, device)
+        if not env_config_path:
             logger.error("--env_config_path required for online phase")
             return
 
         online_data = collect_online_data(
             policy=policy,
-            env_config_path=args.env_config_path,
-            output_dir=args.output_dir,
-            num_episodes=args.num_online_episodes,
-            max_episode_steps=args.max_episode_steps,
-            fps=args.fps,
-            dataset_root=args.dataset_root,
-            dataset_repo_id=args.dataset_repo_id,
+            env_config_path=env_config_path,
+            output_dir=output_dir,
+            num_episodes=num_online_episodes,
+            max_episode_steps=max_episode_steps,
+            fps=fps,
+            dataset_root=dataset_root,
+            dataset_repo_id=dataset_repo_id,
         )
 
         ds_meta = LeRobotDatasetMetadata(
-            args.dataset_repo_id, root=args.dataset_root
+            dataset_repo_id, root=dataset_root
         )
         dagger_finetune(
-            policy_path=args.policy_path,
+            policy_path=policy_path,
             dagger_data=online_data,
-            output_dir=args.output_dir,
+            output_dir=output_dir,
             ds_meta=ds_meta,
-            train_steps=args.train_steps,
-            batch_size=args.batch_size,
+            train_steps=train_steps,
+            batch_size=batch_size,
             device=device,
         )
 
