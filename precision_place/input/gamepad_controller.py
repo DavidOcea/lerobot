@@ -513,8 +513,11 @@ class GamepadRobotController:
 
     # ==================== 主循环 ====================
 
-    def run(self):
-        reader = GamepadReader()
+    def run(self, reader=None):
+        own_reader = False
+        if reader is None:
+            reader = GamepadReader()
+            own_reader = True
         try:
             reader.start()
         except RuntimeError as e:
@@ -585,7 +588,8 @@ class GamepadRobotController:
             if elapsed < dt:
                 time.sleep(dt - elapsed)
 
-        reader.stop()
+        if own_reader:
+            reader.stop()
         self._running = False
 
     # ==================== 模式/步长 ====================
