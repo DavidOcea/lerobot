@@ -456,21 +456,17 @@ def collect_online_data(
     logger.info("")
 
     # ── Create robot and leader from yaml ──
+    # Follow resfit's pattern exactly: import modules first to trigger
+    # @CameraConfig.register_subclass / @TeleoperatorConfig.register_subclass,
+    # then let draccus.parse decode the yaml. Also import gym_manipulator
+    # for its side-effect of pulling in the full robot+camera import chain.
     import draccus as _draccus
     from lerobot.envs.configs import EnvConfig
+    from lerobot.scripts.rl.gym_manipulator import make_robot_env  # triggers camera register  # noqa: F401
+    from lerobot.teleoperators.supre_robot_leader.supre_robot_leader import SupreRobotLeader  # triggers teleop register  # noqa: F401
     from lerobot.robots.utils import make_robot_from_config
     from lerobot.teleoperators.utils import make_teleoperator_from_config
     from lerobot.envs.utils import preprocess_observation
-
-    # Camera config subclasses self-register via @CameraConfig.register_subclass
-    # at import time. draccus.parse needs them registered BEFORE parsing. Import
-    # here so that make_robot_from_config's later import hits the cached module
-    # and doesn't re-register (which would cause a ValueError).
-    import lerobot.cameras.opencv.configuration_opencv  # noqa: F401
-    try:
-        import lerobot.cameras.nv_opencv.configuration_opencv  # noqa: F401
-    except ImportError:
-        pass
 
     env_cfg = _draccus.parse(config_class=EnvConfig, config_path=env_config_path)
     robot = make_robot_from_config(env_cfg.robot)
