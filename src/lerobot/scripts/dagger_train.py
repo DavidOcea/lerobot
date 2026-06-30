@@ -462,6 +462,14 @@ def collect_online_data(
     from lerobot.envs.utils import preprocess_observation
     import draccus as _draccus
 
+    # Pre-import camera configs so draccus.decode can find registered types
+    # (the yaml says "type: opencv" for cameras, and the subclass must be
+    #  imported/registered before draccus.decode is called)
+    try:
+        from lerobot.cameras.nv_opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
+    except ImportError:
+        from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
+
     with open(env_config_path) as f:
         _raw = _yaml.safe_load(f)
     _robot_raw = _raw["robot"] if "robot" in _raw else _raw
