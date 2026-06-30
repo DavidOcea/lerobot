@@ -42,14 +42,14 @@ class FifoKeyboardReader:
     """通过 FIFO 读取按键, 输出 GamepadState"""
 
     KEY_MAP = {
-        'w': ('left_stick_y', 1.0),
-        's': ('left_stick_y', -1.0),
+        'w': ('left_stick_y', -1.0),  # W=前进, 匹配手柄上推=负
+        's': ('left_stick_y', 1.0),   # S=后退
         'a': ('left_stick_x', -1.0),
         'd': ('left_stick_x', 1.0),
-        'up':    ('right_stick_y', 1.0),    # ↑
-        'down':  ('right_stick_y', -1.0),   # ↓
-        'left':  ('right_stick_x', -1.0),   # ←
-        'right': ('right_stick_x', 1.0),    # →
+        'up':    ('right_stick_y', -1.0),  # ↑ = Z升
+        'down':  ('right_stick_y', 1.0),   # ↓ = Z降
+        'left':  ('right_stick_x', -1.0),  # ←
+        'right': ('right_stick_x', 1.0),   # →
         'q': ('l1', True),
         'e': ('r1', True),
         'z': ('l2', 1.0),
@@ -169,13 +169,31 @@ def _help_text():
   │  键盘笛卡尔控制 (FIFO方案)                             │
   ├──────────────────────────────────────────────────────┤
   │  在另一个SSH终端运行:                                  │
-  │    bash precision_place/input/key_sender.sh           │
+  │    python precision_place/input/key_sender.py         │
   ├──────────────────────────────────────────────────────┤
-  │  SINGLE: W/A/S/D=XY  ↑↓=Z  ←→=Yaw  Q/E=Roll         │
-  │          1=夹爪开  2=夹爪关  3=记录                     │
-  │  DUAL:   W/A/S/D=左手XY  ↑↓←→=右手XY                  │
-  │          Z/X=左手Z  ,/.=右手Z                          │
-  │  全局:  M=切换模式  ,=加速  .=减速  ESC=退出           │
+  │  SINGLE 模式 (单臂):                                   │
+  │    W/A/S/D   → XY 平移                                │
+  │    ↑↓        → Z 升降                                 │
+  │    ←→        → Yaw 偏航                               │
+  │    Q/E       → Roll 滚转 (←滚/→滚)                    │
+  │    Z/X       → Z 升降 (扳机后备)                       │
+  │    1         → 夹爪 开                                │
+  │    2         → 夹爪 关                                │
+  │    3         → 记录当前位姿                             │
+  ├──────────────────────────────────────────────────────┤
+  │  DUAL 模式 (双臂):                                     │
+  │    W/A/S/D   → 左手 XY                                │
+  │    ↑↓←→      → 右手 XY                                │
+  │    Z         → 左手 Z↓                                │
+  │    Q+Z       → 左手 Z↑  (Q=左shift键)                 │
+  │    X         → 右手 Z↓                                │
+  │    E+X       → 右手 Z↑  (E=右shift键)                 │
+  ├──────────────────────────────────────────────────────┤
+  │  全局控制:                                             │
+  │    M         → 切换模式 (RIGHT→DUAL→LEFT→RIGHT...)    │
+  │    ,         → 加速  (fine→medium→coarse)             │
+  │    .         → 减速                                    │
+  │    ESC       → 退出                                    │
   └──────────────────────────────────────────────────────┘
 """
 

@@ -510,6 +510,10 @@ class GamepadRobotController:
         # PS 键长按退出 (F710 D-mode 无 PS 键, 但保留安全退出机制)
         self._ps_hold_start = None
         self.PS_HOLD_DURATION = 2.0
+        # Z/Yaw 雅可比缺失警告 (只打印一次)
+        self._warned_missing_z = False
+        self._warned_missing_yaw = False
+        self._warned_fk = False
 
     # ==================== 主循环 ====================
 
@@ -921,6 +925,10 @@ class GamepadRobotController:
         if fk is not None:
             return self._fk_numerical_jacobian(
                 fk, joints, j_indices, lambda pos: pos[2] * 1000.0)
+        if not self._warned_missing_z:
+            self._warned_missing_z = True
+            print("\n  ⚠ Z轴不可用: 无4D标定数据且URDF未设置, Z升降无效果")
+            print("    解决方法: 1) 运行4D标定  2) 指定 --urdf 路径  3) 使用Z/X扳机键(后备)")
         return None
 
     def _build_rot_jacobian(self, joints: np.ndarray, j_indices: List[int],
@@ -953,6 +961,10 @@ class GamepadRobotController:
                     fk.compute(j).rotation_matrix[0, 0]
                 ) * 180.0 / np.pi
             )
+        if not self._warned_missing_yaw:
+            self._warned_missing_yaw = True
+            print("\n  ⚠ Yaw/Roll不可用: 无4D标定数据且URDF未设置, 旋转控制无效果")
+            print("    解决方法: 1) 运行4D标定  2) 指定 --urdf 路径")
         return None
 
     def _fk_numerical_jacobian(self, fk, joints: np.ndarray,
