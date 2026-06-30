@@ -466,30 +466,44 @@ def collect_online_data(
     from lerobot.teleoperators.supre_robot_leader.supre_robot_leader import SupreRobotLeader  # triggers teleop register  # noqa: F401
     from lerobot.robots.utils import make_robot_from_config
     from lerobot.teleoperators.utils import make_teleoperator_from_config
-    from lerobot.envs.utils import preprocess_observation
 
-    env_cfg = _draccus.parse(config_class=EnvConfig, config_path=env_config_path)
-    robot = make_robot_from_config(env_cfg.robot)
-    robot.connect()
-    logger.info(f"Robot connected: {type(robot).__name__}")
+    def _convert_robot_obs(raw_obs: dict, joint_names: list[str]) -> dict:
+        """Convert robot.get_observation() → policy input format.
 
-    # ── Create leader (optional) ──
-    has_leader = False
-    leader = None
-    if env_cfg.teleop is not None:
-        try:
-            leader_cfg = env_cfg.teleop
-            leader = make_teleoperator_from_config(leader_cfg)
-            leader.connect()
-            has_leader = True
-            logger.info(f"Leader connected: {type(leader).__name__}")
-        except Exception as e:
-            logger.warning(f"Leader creation failed (keyboard only): {e}")
+        raw_obs has keys like: left_arm_joint_1.pos, left_arm_joint_1.force,
+          observation.images.head_cam, etc.
+        Policy needs: observation.state (15,), observation.force (15,),
+          observation.images.head_cam (3,480,640), etc.
+        """
+        obs = {}
+        # ── State: stack all .pos readings in joint order ──
+        pos_values = [float(raw_obs.get(f"{name}.pos", 0.0)) for name in joint_names]
+        obs["observation.state"] = torch.tensor(pos_values, dtype=torch.float32)
 
-    if has_leader:
-        logger.info("Leader arm detected — manual mode available (move leader to override)")
-    else:
-        logger.info("No leader — manual mode limited to keyboard offsets")
+        # ── Force: stack all .force readings in joint order ──
+        force_values = [float(raw_obs.get(f"{name}.force", 0.0)) for name in joint_names]
+        obs["observation.force"] = torch.tensor(force_values, dtype=torch.float32)
+
+        # ── Cameras: copy as-is ──
+        for cam_key in ("observation.images.head_cam", "observation.images.left_wrist_cam",
+                        "observation.images.right_wrist_cam"):
+            if cam_key in raw_obs:
+                img = raw_obs[cam_key]
+                # Ensure CHW float32 tensor
+                if isinstance(img, np.ndarray):
+                    img = torch.from_numpy(img)
+                if img.ndim == 3:
+                    if img.shape[-1] == 3:  # HWC → CHW
+                        img = img.permute(2, 0, 1)
+                    elif img.shape[0] == 3:  # already CHW
+                        pass
+                obs[cam_key] = img.float() / 255.0 if img.max() > 1.0 else img.float()
+
+        return obs
+
+    # Read joint names from robot (same order as dataset's joint_names)
+    _robot_joint_names = list(robot.observation_joint_names)
+    logger.info(f"Robot joint names: {_robot_joint_names}")
 
     # ── Keyboard input handler ──
     operator = OperatorInputHandler()
@@ -521,7 +535,7 @@ def collect_online_data(
 
         for step_idx in range(max_episode_steps):
             # ── Preprocess observation ──
-            processed_obs = preprocess_observation(obs)
+            processed_obs = _convert_robot_obs(obs, _robot_joint_names)
 
             # ── Policy prediction ──
             predicted_action = policy.predict(processed_obs)
