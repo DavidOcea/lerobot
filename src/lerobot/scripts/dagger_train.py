@@ -455,41 +455,48 @@ def collect_online_data(
     logger.info("=" * 60)
     logger.info("")
 
-    # ── Create environment ──
-    # Read just the robot section from yaml; construct config directly
-    # to avoid draccus.parse() rejecting extra fields like 'type'
+    # ── Create robot ──
     import yaml as _yaml
-    from lerobot.envs.configs import HILSerlRobotEnvConfig
-    from lerobot.scripts.rl.gym_manipulator import make_robot_env
     from lerobot.robots.config import RobotConfig
+    from lerobot.robots.utils import make_robot_from_config
+    from lerobot.envs.utils import preprocess_observation
+    import draccus as _draccus
 
     with open(env_config_path) as f:
         _raw = _yaml.safe_load(f)
     _robot_raw = _raw["robot"] if "robot" in _raw else _raw
 
-    # Decode robot config (RobotConfig is a ChoiceRegistry, so it handles type: xxx)
-    import draccus as _draccus
     robot_cfg = _draccus.decode(RobotConfig, _robot_raw)
+    robot = make_robot_from_config(robot_cfg)
+    robot.connect()
+    logger.info(f"Robot connected: {type(robot).__name__}")
 
-    env_cfg = HILSerlRobotEnvConfig(robot=robot_cfg)
-    if "fps" in _raw:
-        env_cfg.fps = int(_raw["fps"])
-    env = make_robot_env(env_cfg)
+    # ── Create leader (optional, for manual override) ──
+    has_leader = False
+    leader = None
+    _teleop_raw = _raw.get("teleop", None)
+    if _teleop_raw:
+        try:
+            from lerobot.teleoperators.config import TeleoperatorConfig
+            from lerobot.teleoperators.utils import make_teleoperator_from_config
+            leader_cfg = _draccus.decode(TeleoperatorConfig, _teleop_raw)
+            leader = make_teleoperator_from_config(leader_cfg)
+            leader.connect()
+            has_leader = True
+            logger.info(f"Leader connected: {type(leader).__name__}")
+        except Exception as e:
+            logger.warning(f"Leader creation failed (will use keyboard only): {e}")
 
-    logger.info(f"Robot env created: {type(env).__name__}")
+    if has_leader:
+        logger.info("Leader arm detected — manual mode available (move leader to override)")
+    else:
+        logger.info("No leader — manual mode limited to keyboard offsets")
 
     # ── Keyboard input handler ──
     operator = OperatorInputHandler()
 
-    # ── Leader detection (for manual mode) ──
-    has_leader = False
-    try:
-        raw_env = env.unwrapped if hasattr(env, 'unwrapped') else env
-        if hasattr(raw_env, 'robot') and hasattr(raw_env.robot, 'get_leader_position'):
-            has_leader = True
-            logger.info("Leader arm detected — manual mode available")
-    except Exception:
-        logger.info("No leader arm detected — manual mode limited to keyboard offsets")
+    junk_keys = ('task', 'index', 'episode_index', 'frame_index', 'task_index',
+                 'action', 'action_is_pad')
 
     # ── Data collection loop ──
     all_data: list[dict] = []
@@ -499,8 +506,11 @@ def collect_online_data(
 
     for ep_idx in range(num_episodes):
         logger.info(f"--- Episode {ep_idx + 1}/{num_episodes} ---")
-        obs, info = env.reset()
+
+        # Reset episode
         policy.reset()
+        robot.reset()
+        obs = robot.get_observation()
 
         # Reset operator state per episode
         operator.accumulated_offset = [0.0] * 15
@@ -512,30 +522,23 @@ def collect_online_data(
 
         for step_idx in range(max_episode_steps):
             # ── Preprocess observation ──
-            from lerobot.envs.utils import preprocess_observation
             processed_obs = preprocess_observation(obs)
 
             # ── Policy prediction ──
             predicted_action = policy.predict(processed_obs)
 
             # ── Operator interaction loop ──
-            # Wait until operator accepts or overrides
             manual_override = False
             while True:
                 flags = operator.poll_and_clear()
 
-                # Print help
                 if flags["help"]:
                     logger.info("Controls: y=accept ↑↓=adjust ←→=joint space=manual q=quit r=reset")
                     continue
-
-                # Quit episode
                 if flags["quit"]:
                     logger.info(f"  Episode {ep_idx} quit by operator at step {step_idx}")
                     step_done = True
                     break
-
-                # Select joint
                 if flags["prev"]:
                     operator.selected_joint = (operator.selected_joint - 1) % len(JOINT_NAMES)
                     operator.adjustment_delta = DEFAULT_DELTAS[operator.selected_joint]
@@ -546,8 +549,6 @@ def collect_online_data(
                     operator.adjustment_delta = DEFAULT_DELTAS[operator.selected_joint]
                     _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
                     continue
-
-                # Adjust joint
                 if flags["up"]:
                     operator.accumulated_offset[operator.selected_joint] += operator.adjustment_delta
                     _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
@@ -556,28 +557,22 @@ def collect_online_data(
                     operator.accumulated_offset[operator.selected_joint] -= operator.adjustment_delta
                     _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
                     continue
-
-                # Toggle manual mode
                 if flags["manual"]:
-                    # In manual mode, we'll read leader position each frame
                     _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, flags["manual"])
                     continue
-
-                # Accept action
                 if flags["accept"]:
-                    # Apply accumulated offsets to get final action
                     corrected = operator.apply_offsets(predicted_action)
 
-                    # Check for leader override (manual mode)
+                    # Leader override in manual mode
                     if flags["manual"] and has_leader:
                         try:
-                            leader_pos = raw_env.robot.get_leader_position()
-                            # leader_pos is dict[str, float], convert to our joint order
-                            leader_action = torch.tensor([
-                                leader_pos.get(name.lower().replace('_', '_'), 0.0)
-                                for name in JOINT_NAMES
-                            ], dtype=torch.float32)
-                            corrected = leader_action
+                            leader_dict = leader.get_action()
+                            # leader returns {"joint_name.pos": value, ...}
+                            values = []
+                            for name in JOINT_NAMES:
+                                key = f"{name}.pos"
+                                values.append(float(leader_dict.get(key, 0.0)))
+                            corrected = torch.tensor(values, dtype=torch.float32)
                             manual_override = True
                         except Exception as e:
                             logger.warning(f"Failed to read leader: {e}")
@@ -586,29 +581,29 @@ def collect_online_data(
 
                 # Default: show status and wait
                 if not any(flags.values()):
-                    # Initial display for this step
                     _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
-                    _time.sleep(0.1)  # reduce CPU spin
+                    _time.sleep(0.1)
 
             if step_done:
                 break
 
             # ── Execute on robot ──
-            if isinstance(corrected, torch.Tensor):
-                corrected_np = corrected.cpu().numpy()
-            else:
-                corrected_np = corrected
+            corrected_np = corrected.cpu().numpy() if isinstance(corrected, torch.Tensor) else corrected
+
+            # Build action dict from tensor (matching robot's send_action format)
+            action_dict = {}
+            for j, name in enumerate(JOINT_NAMES):
+                action_dict[name] = float(corrected_np[j])
 
             # Record the (obs, final_action) pair BEFORE executing
-            ep_data.append({
-                **{k: v.clone() if isinstance(v, torch.Tensor) else v
-                   for k, v in processed_obs.items()
-                   if k not in ('task', 'index', 'episode_index', 'frame_index', 'task_index')},
-                "action": corrected.clone() if isinstance(corrected, torch.Tensor) else torch.tensor(corrected_np),
-                "dagger_type": "manual" if manual_override else ("adjusted" if any(abs(o) > 0.001 for o in operator.accumulated_offset) else "accepted"),
-            })
+            record = {}
+            for k, v in processed_obs.items():
+                if k in junk_keys:
+                    continue
+                record[k] = v.clone() if isinstance(v, torch.Tensor) else v
+            record["action"] = corrected.clone() if isinstance(corrected, torch.Tensor) else torch.tensor(corrected_np)
+            ep_data.append(record)
 
-            # Count intervention type
             if manual_override:
                 total_overridden += 1
             elif any(abs(o) > 0.001 for o in operator.accumulated_offset):
@@ -617,23 +612,20 @@ def collect_online_data(
                 total_accepted += 1
 
             # Execute
-            next_obs, reward, terminated, truncated, info = env.step(corrected_np)
-
-            # Step rate control
+            robot.send_action(action_dict)
             _time.sleep(1.0 / fps)
-            obs = next_obs
 
-            if terminated or truncated:
-                logger.info(f"  Episode {ep_idx} ended: terminated={terminated}, truncated={truncated}")
-                break
+            # Get next observation
+            obs = robot.get_observation()
 
         all_data.extend(ep_data)
-        logger.info(f"  Episode {ep_idx} collected {len(ep_data)} frames "
-                     f"(total: {len(all_data)})" )
+        logger.info(f"  Episode {ep_idx} collected {len(ep_data)} frames (total: {len(all_data)})")
 
     # ── Cleanup ──
     operator.stop()
-    env.close()
+    if leader is not None:
+        leader.disconnect()
+    robot.disconnect()
 
     # ── Save raw dagger data ──
     os.makedirs(output_dir, exist_ok=True)
