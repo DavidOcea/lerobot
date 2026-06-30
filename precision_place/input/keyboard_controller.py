@@ -183,6 +183,7 @@ def _help_text():
 def main():
     parser = argparse.ArgumentParser(description="键盘笛卡尔空间遥操作 (FIFO)")
     parser.add_argument("--arm", default="right", choices=["left", "right"])
+    parser.add_argument("--urdf", default=None, help="URDF 路径 (FK 后备, SimpleIBVS 标定可用时不需要)")
     args = parser.parse_args()
 
     print("\n" + "=" * 60)
@@ -238,7 +239,7 @@ def main():
         return
 
     print("\n[3/3] 初始化正运动学...")
-    urdf_path = DEFAULT_URDF_PATH
+    urdf_path = args.urdf or DEFAULT_URDF_PATH
     if urdf_path:
         try:
             from precision_place.calibration.forward_kinematics import create_fk_from_urdf
