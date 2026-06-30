@@ -456,13 +456,21 @@ def collect_online_data(
     logger.info("")
 
     # ── Create robot and leader from yaml ──
-    # The yaml has type: gym_manipulator → dispatches to HILSerlRobotEnvConfig
-    # which contains robot + teleop fields. Parse via EnvConfig (ChoiceRegistry parent).
     import draccus as _draccus
     from lerobot.envs.configs import EnvConfig
     from lerobot.robots.utils import make_robot_from_config
     from lerobot.teleoperators.utils import make_teleoperator_from_config
     from lerobot.envs.utils import preprocess_observation
+
+    # Camera config subclasses self-register via @CameraConfig.register_subclass
+    # at import time. draccus.parse needs them registered BEFORE parsing. Import
+    # here so that make_robot_from_config's later import hits the cached module
+    # and doesn't re-register (which would cause a ValueError).
+    import lerobot.cameras.opencv.configuration_opencv  # noqa: F401
+    try:
+        import lerobot.cameras.nv_opencv.configuration_opencv  # noqa: F401
+    except ImportError:
+        pass
 
     env_cfg = _draccus.parse(config_class=EnvConfig, config_path=env_config_path)
     robot = make_robot_from_config(env_cfg.robot)
