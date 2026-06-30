@@ -455,45 +455,32 @@ def collect_online_data(
     logger.info("=" * 60)
     logger.info("")
 
-    # ── Create robot ──
-    import yaml as _yaml
-    from lerobot.robots.config import RobotConfig
-    from lerobot.robots.utils import make_robot_from_config
-    from lerobot.envs.utils import preprocess_observation
+    # ── Create robot and leader from yaml ──
+    # The yaml has type: gym_manipulator → dispatches to HILSerlRobotEnvConfig
+    # which contains robot + teleop fields. Parse via EnvConfig (ChoiceRegistry parent).
     import draccus as _draccus
+    from lerobot.envs.configs import EnvConfig
+    from lerobot.robots.utils import make_robot_from_config
+    from lerobot.teleoperators.utils import make_teleoperator_from_config
+    from lerobot.envs.utils import preprocess_observation
 
-    # Pre-import camera configs so draccus.decode can find registered types
-    # (the yaml says "type: opencv" for cameras, and the subclass must be
-    #  imported/registered before draccus.decode is called)
-    try:
-        from lerobot.cameras.nv_opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
-    except ImportError:
-        from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig  # noqa: F401
-
-    with open(env_config_path) as f:
-        _raw = _yaml.safe_load(f)
-    _robot_raw = _raw["robot"] if "robot" in _raw else _raw
-
-    robot_cfg = _draccus.decode(RobotConfig, _robot_raw)
-    robot = make_robot_from_config(robot_cfg)
+    env_cfg = _draccus.parse(config_class=EnvConfig, config_path=env_config_path)
+    robot = make_robot_from_config(env_cfg.robot)
     robot.connect()
     logger.info(f"Robot connected: {type(robot).__name__}")
 
-    # ── Create leader (optional, for manual override) ──
+    # ── Create leader (optional) ──
     has_leader = False
     leader = None
-    _teleop_raw = _raw.get("teleop", None)
-    if _teleop_raw:
+    if env_cfg.teleop is not None:
         try:
-            from lerobot.teleoperators.config import TeleoperatorConfig
-            from lerobot.teleoperators.utils import make_teleoperator_from_config
-            leader_cfg = _draccus.decode(TeleoperatorConfig, _teleop_raw)
+            leader_cfg = env_cfg.teleop
             leader = make_teleoperator_from_config(leader_cfg)
             leader.connect()
             has_leader = True
             logger.info(f"Leader connected: {type(leader).__name__}")
         except Exception as e:
-            logger.warning(f"Leader creation failed (will use keyboard only): {e}")
+            logger.warning(f"Leader creation failed (keyboard only): {e}")
 
     if has_leader:
         logger.info("Leader arm detected — manual mode available (move leader to override)")
