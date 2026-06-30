@@ -40,6 +40,14 @@ Architecture:
     - Produces standard LeRobot-format datasets for downstream training
 """
 
+# ── CRITICAL: Save and clear sys.argv BEFORE any lerobot import ──
+# lerobot's draccus/parser.wrap infrastructure parses sys.argv at import time
+# in various modules (gym_manipulator, envs, etc.). We must hide our custom
+# args (--phase, --policy_path, etc.) from all downstream code.
+import sys as _sys
+_ORIG_ARGV = list(_sys.argv)
+_sys.argv = [_sys.argv[0]]
+
 import json
 import logging
 import os
@@ -448,12 +456,6 @@ def collect_online_data(
     logger.info("")
 
     # ── Create environment ──
-    # IMPORTANT: Save and clear sys.argv before lerobot imports.
-    # lerobot's draccus/argparse wrapper parses sys.argv, and will choke
-    # on our custom args (--phase, --policy_path, etc.).
-    import sys as _sys
-    _saved_argv = _sys.argv
-
     from lerobot.envs.configs import HILSerlRobotEnvConfig
     from lerobot.scripts.rl.gym_manipulator import make_robot_env
     import draccus
@@ -461,18 +463,7 @@ def collect_online_data(
     env_cfg = HILSerlRobotEnvConfig()
     if env_config_path:
         env_cfg = draccus.parse(config_class=HILSerlRobotEnvConfig, config_path=env_config_path)
-
-    # make_robot_env has @parser.wrap() which re-parses sys.argv.
-    # Swap argv to pass only --config_path so it uses the file.
-    if env_config_path:
-        _sys.argv = [_sys.argv[0], "--config_path", str(env_config_path)]
-    else:
-        _sys.argv = [_sys.argv[0]]
-    env = None
-    try:
-        env = make_robot_env(env_cfg)
-    finally:
-        _sys.argv = _saved_argv
+    env = make_robot_env(env_cfg)
 
     logger.info(f"Robot env created: {type(env).__name__}")
 
@@ -828,8 +819,7 @@ def _parse_args(argv: list[str]) -> dict:
 
 def main():
     """Main entry point — parameterized for both offline and online phases."""
-    import sys as _sys
-    args = _parse_args(_sys.argv)
+    args = _parse_args(_ORIG_ARGV)
 
     phase = args["phase"]
     policy_path = args.get("policy_path", "")
