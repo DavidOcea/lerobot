@@ -456,13 +456,24 @@ def collect_online_data(
     logger.info("")
 
     # ── Create environment ──
+    # Read just the robot section from yaml; construct config directly
+    # to avoid draccus.parse() rejecting extra fields like 'type'
+    import yaml as _yaml
     from lerobot.envs.configs import HILSerlRobotEnvConfig
     from lerobot.scripts.rl.gym_manipulator import make_robot_env
-    import draccus
+    from lerobot.robots.config import RobotConfig
 
-    env_cfg = HILSerlRobotEnvConfig()
-    if env_config_path:
-        env_cfg = draccus.parse(config_class=HILSerlRobotEnvConfig, config_path=env_config_path)
+    with open(env_config_path) as f:
+        _raw = _yaml.safe_load(f)
+    _robot_raw = _raw["robot"] if "robot" in _raw else _raw
+
+    # Decode robot config (RobotConfig is a ChoiceRegistry, so it handles type: xxx)
+    import draccus as _draccus
+    robot_cfg = _draccus.decode(RobotConfig, _robot_raw)
+
+    env_cfg = HILSerlRobotEnvConfig(robot=robot_cfg)
+    if "fps" in _raw:
+        env_cfg.fps = int(_raw["fps"])
     env = make_robot_env(env_cfg)
 
     logger.info(f"Robot env created: {type(env).__name__}")
