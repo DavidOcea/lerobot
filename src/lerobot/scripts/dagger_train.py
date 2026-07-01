@@ -564,8 +564,14 @@ def collect_online_data(
 
             # ── Operator interaction loop ──
             manual_override = False
+            _printed_status = False
             while True:
                 flags = operator.poll_and_clear()
+
+                # Print status once per step (first iteration only)
+                if not _printed_status:
+                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                    _printed_status = True
 
                 if flags["help"]:
                     logger.info("Controls: y=accept ↑↓=adjust ←→=joint space=manual q=quit r=reset")
@@ -602,11 +608,10 @@ def collect_online_data(
                     if flags["manual"] and has_leader:
                         try:
                             leader_dict = leader.get_action()
-                            # leader returns {"joint_name.pos": value, ...}
-                            values = []
-                            for name in JOINT_NAMES:
-                                key = f"{name}.pos"
-                                values.append(float(leader_dict.get(key, 0.0)))
+                            values = [
+                                float(leader_dict.get(f"{name}.pos", 0.0))
+                                for name in _robot_joint_names
+                            ]
                             corrected = torch.tensor(values, dtype=torch.float32)
                             manual_override = True
                         except Exception as e:
@@ -614,10 +619,8 @@ def collect_online_data(
 
                     break  # exit operator loop, execute action
 
-                # Default: show status and wait
-                if not any(flags.values()):
-                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
-                    _time.sleep(0.1)
+                # Wait for next keypress
+                _time.sleep(0.05)
 
             if step_done:
                 break
@@ -625,9 +628,9 @@ def collect_online_data(
             # ── Execute on robot ──
             corrected_np = corrected.cpu().numpy() if isinstance(corrected, torch.Tensor) else corrected
 
-            # Build action dict from tensor (matching robot's send_action format)
+            # Build action dict using robot's actual joint names
             action_dict = {}
-            for j, name in enumerate(JOINT_NAMES):
+            for j, name in enumerate(_robot_joint_names):
                 action_dict[name] = float(corrected_np[j])
 
             # Record the (obs, final_action) pair BEFORE executing
