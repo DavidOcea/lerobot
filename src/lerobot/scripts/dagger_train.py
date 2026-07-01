@@ -562,65 +562,85 @@ def collect_online_data(
             # ── Policy prediction ──
             predicted_action = policy.predict(processed_obs)
 
-            # ── Operator interaction loop ──
+            # ── Operator interaction ──
             manual_override = False
-            _printed_status = False
-            while True:
+
+            if operator.manual_mode and has_leader:
+                # ═══════════════════════════════════════════════
+                # CONTINUOUS MANUAL MODE — leader drives directly
+                # No per-frame confirmation needed. Operator
+                # teleoperates normally; every frame is recorded.
+                # Press Space again to exit back to AUTO mode.
+                # ═══════════════════════════════════════════════
                 flags = operator.poll_and_clear()
-
-                # Print status once per step (first iteration only)
-                if not _printed_status:
-                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
-                    _printed_status = True
-
-                if flags["help"]:
-                    logger.info("Controls: y=accept ↑↓=adjust ←→=joint space=manual q=quit r=reset")
+                if flags["manual"]:
+                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, False)
                     continue
                 if flags["quit"]:
                     logger.info(f"  Episode {ep_idx} quit by operator at step {step_idx}")
                     step_done = True
                     break
-                if flags["prev"]:
-                    operator.selected_joint = (operator.selected_joint - 1) % len(JOINT_NAMES)
-                    operator.adjustment_delta = DEFAULT_DELTAS[operator.selected_joint]
-                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
-                    continue
-                if flags["next"]:
-                    operator.selected_joint = (operator.selected_joint + 1) % len(JOINT_NAMES)
-                    operator.adjustment_delta = DEFAULT_DELTAS[operator.selected_joint]
-                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
-                    continue
-                if flags["up"]:
-                    operator.accumulated_offset[operator.selected_joint] += operator.adjustment_delta
-                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
-                    continue
-                if flags["down"]:
-                    operator.accumulated_offset[operator.selected_joint] -= operator.adjustment_delta
-                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
-                    continue
-                if flags["manual"]:
-                    _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, flags["manual"])
-                    continue
-                if flags["accept"]:
-                    corrected = operator.apply_offsets(predicted_action)
 
-                    # Leader override in manual mode
-                    if flags["manual"] and has_leader:
-                        try:
-                            leader_dict = leader.get_action()
-                            values = [
-                                float(leader_dict.get(f"{name}.pos", 0.0))
-                                for name in _robot_joint_names
-                            ]
-                            corrected = torch.tensor(values, dtype=torch.float32)
-                            manual_override = True
-                        except Exception as e:
-                            logger.warning(f"Failed to read leader: {e}")
+                # Read leader and execute
+                try:
+                    leader_dict = leader.get_action()
+                    values = [float(leader_dict.get(f"{name}.pos", 0.0)) for name in _robot_joint_names]
+                    corrected = torch.tensor(values, dtype=torch.float32)
+                    manual_override = True
+                except Exception as e:
+                    logger.warning(f"Failed to read leader: {e}")
+                    break
 
-                    break  # exit operator loop, execute action
+            else:
+                # ═══════════════════════════════════════════════
+                # AUTO MODE — policy proposes, operator confirms
+                # y=accept  ↑↓=adjust  ←→=select joint  space=manual
+                # ═══════════════════════════════════════════════
+                _printed_status = False
+                while True:
+                    flags = operator.poll_and_clear()
 
-                # Wait for next keypress
-                _time.sleep(0.05)
+                    if not _printed_status:
+                        _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                        _printed_status = True
+
+                    if flags["help"]:
+                        logger.info("Controls: y=accept ↑↓=adjust ←→=joint space=manual q=quit r=reset")
+                        continue
+                    if flags["quit"]:
+                        logger.info(f"  Episode {ep_idx} quit by operator at step {step_idx}")
+                        step_done = True
+                        break
+                    if flags["prev"]:
+                        operator.selected_joint = (operator.selected_joint - 1) % len(JOINT_NAMES)
+                        operator.adjustment_delta = DEFAULT_DELTAS[operator.selected_joint]
+                        _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                        continue
+                    if flags["next"]:
+                        operator.selected_joint = (operator.selected_joint + 1) % len(JOINT_NAMES)
+                        operator.adjustment_delta = DEFAULT_DELTAS[operator.selected_joint]
+                        _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                        continue
+                    if flags["up"]:
+                        operator.accumulated_offset[operator.selected_joint] += operator.adjustment_delta
+                        _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                        continue
+                    if flags["down"]:
+                        operator.accumulated_offset[operator.selected_joint] -= operator.adjustment_delta
+                        _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
+                        continue
+                    if flags["manual"]:
+                        # Entering manual mode — next frame will auto-read leader
+                        _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, True)
+                        continue
+                    if flags["accept"]:
+                        corrected = operator.apply_offsets(predicted_action)
+                        break  # exit operator loop, execute action
+
+                    _time.sleep(0.05)
+
+                if step_done:
+                    break
 
             if step_done:
                 break
