@@ -49,18 +49,14 @@ def main():
             continue
 
         start_pos = initial[joint_name]
-
-        # Build a single-joint action: copy current, offset ONE joint
-        action = {}
-        for j in joint_names:
-            if j in initial:
-                action[f"{j}.pos"] = initial[j]
         target = start_pos + args.angle
-        action[f"{joint_name}.pos"] = target
 
-        # Send and time
+        # Build target list — offset ONE joint, copy rest from current position
+        target_list = [target if name == joint_name else initial[name]
+                       for name in joint_names]
+        # send_target_position bypasses send_action's max_relative_joint_move clamp
         t0 = time.perf_counter()
-        robot.send_action(action)
+        robot.send_target_position(target_list)
 
         # Poll position until settled
         peak_speed = 0.0
@@ -100,9 +96,10 @@ def main():
             "elapsed_ms": elapsed * 1000,
         }
 
-        # Return to start position
-        action[f"{joint_name}.pos"] = start_pos
-        robot.send_action(action)
+        # Return to start position (bypass clamp)
+        return_list = [start_pos if name == joint_name else initial[name]
+                       for name in joint_names]
+        robot.send_target_position(return_list)
         time.sleep(0.3)
 
     robot.disconnect()
