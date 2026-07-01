@@ -263,8 +263,29 @@ JOINT_NAMES = [
     "Trunk_1", "Trunk_2",
 ]
 
-# Adjustment step sizes per joint (degrees) — rough values tuned for supre_robot
-DEFAULT_DELTAS = [0.5] * 13 + [0.3, 0.05]  # arm joints ~0.5°, trunk finer
+# Keyboard adjustment step sizes per joint (degrees).
+# Calculated from real dataset frame-to-frame diff P90, then rounded
+# to human-perceivable values that still match natural motion dynamics.
+# Large joints (shoulder, elbow): ~0.3-0.5° per step ≈ P90 of real motion
+# Small joints (wrist, trunk): ~0.05-0.2° per step
+# Gripper (L_j7): 0.1° coarse step (binary open/close in practice)
+DEFAULT_DELTAS = [
+    0.5,   # L_j1  — shoulder, P90=0.41°
+    0.2,   # L_j2  — upper arm, P90=0.21°
+    0.02,  # L_j3  — near-static, P90=0.01°
+    0.1,   # L_j4  — forearm, P90=0.08°
+    0.3,   # L_j5  — elbow, P90=0.24°
+    0.5,   # L_j6  — wrist pitch, P90=0.35°
+    0.1,   # L_j7  — gripper (binary 0/1)
+    0.5,   # R_j1  — shoulder, P90=0.44°
+    0.3,   # R_j2  — upper arm, P90=0.24°
+    0.02,  # R_j3  — near-static, P90=0.02°
+    0.1,   # R_j4  — forearm, P90=0.08°
+    0.3,   # R_j5  — elbow, P90=0.19°
+    0.5,   # R_j6  — wrist pitch, P90=0.30°
+    0.05,  # Trunk_1 — base rotation, P90=0.02°
+    0.05,  # Trunk_2 — base tilt, P90=0.02°
+]
 
 
 class OperatorInputHandler:
@@ -574,22 +595,27 @@ def collect_online_data(
                 # ═══════════════════════════════════════════════
                 flags = operator.poll_and_clear()
                 if flags["manual"]:
+                    # Toggle back to AUTO
                     _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, False)
+                    # Don't execute this frame — go back to policy prediction
                     continue
                 if flags["quit"]:
                     logger.info(f"  Episode {ep_idx} quit by operator at step {step_idx}")
                     step_done = True
                     break
 
-                # Read leader and execute
+                # Read leader and execute immediately
                 try:
                     leader_dict = leader.get_action()
                     values = [float(leader_dict.get(f"{name}.pos", 0.0)) for name in _robot_joint_names]
                     corrected = torch.tensor(values, dtype=torch.float32)
                     manual_override = True
+                    # Throttled status: once per ~1 second
+                    if step_idx % 30 == 0:
+                        _print_status(step_idx, ep_idx, corrected.tolist(), operator, True)
                 except Exception as e:
-                    logger.warning(f"Failed to read leader: {e}")
-                    break
+                    logger.warning(f"Failed to read leader at step {step_idx}: {e}")
+                    continue  # skip this frame, try next
 
             else:
                 # ═══════════════════════════════════════════════
