@@ -484,20 +484,19 @@ def collect_online_data(
         force_values = [float(raw_obs.get(f"{name}.force", 0.0)) for name in joint_names]
         obs["observation.force"] = torch.tensor(force_values, dtype=torch.float32)
 
-        # ── Cameras: copy as-is ──
-        for cam_key in ("observation.images.head_cam", "observation.images.left_wrist_cam",
-                        "observation.images.right_wrist_cam"):
-            if cam_key in raw_obs:
-                img = raw_obs[cam_key]
-                # Ensure CHW float32 tensor
+        # ── Cameras: robot returns "head_cam", policy expects "observation.images.head_cam" ──
+        _cam_map = {"head_cam": "observation.images.head_cam",
+                    "left_wrist_cam": "observation.images.left_wrist_cam",
+                    "right_wrist_cam": "observation.images.right_wrist_cam"}
+        for robot_key, policy_key in _cam_map.items():
+            if robot_key in raw_obs:
+                img = raw_obs[robot_key]
                 if isinstance(img, np.ndarray):
                     img = torch.from_numpy(img)
                 if img.ndim == 3:
                     if img.shape[-1] == 3:  # HWC → CHW
                         img = img.permute(2, 0, 1)
-                    elif img.shape[0] == 3:  # already CHW
-                        pass
-                obs[cam_key] = img.float() / 255.0 if img.max() > 1.0 else img.float()
+                obs[policy_key] = img.float() / 255.0 if img.max() > 1.0 else img.float()
 
         return obs
 
