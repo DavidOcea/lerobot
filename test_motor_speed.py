@@ -30,6 +30,8 @@ def main():
 
     print(f"Loading config: {args.config}")
     cfg = load_config_from_yaml(args.config)
+    if hasattr(cfg.robot_config, 'cameras'):
+        cfg.robot_config.cameras = {}
     robot = make_robot_from_config(cfg.robot_config)
     robot.connect()
     print("Robot connected.\n")

@@ -40,6 +40,11 @@ def main():
 
     print(f"Loading config: {args.config}")
     cfg = load_config_from_yaml(args.config)
+    # Strip cameras — test scripts only use get_current_position() (motors),
+    # don't need cameras at all.  This lets the script run on robots with
+    # any number of cameras without failing on missing device indices.
+    if hasattr(cfg.robot_config, 'cameras'):
+        cfg.robot_config.cameras = {}
     robot = make_robot_from_config(cfg.robot_config)
     robot.connect()
     print("Robot connected.\n")
