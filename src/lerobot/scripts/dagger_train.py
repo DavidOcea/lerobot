@@ -501,6 +501,29 @@ def collect_online_data(
 
         return obs
 
+    env_cfg = _draccus.parse(config_class=EnvConfig, config_path=env_config_path)
+    robot = make_robot_from_config(env_cfg.robot)
+    robot.connect()
+    logger.info(f"Robot connected: {type(robot).__name__}")
+
+    # ── Create leader (optional) ──
+    has_leader = False
+    leader = None
+    if env_cfg.teleop is not None:
+        try:
+            leader_cfg = env_cfg.teleop
+            leader = make_teleoperator_from_config(leader_cfg)
+            leader.connect()
+            has_leader = True
+            logger.info(f"Leader connected: {type(leader).__name__}")
+        except Exception as e:
+            logger.warning(f"Leader creation failed (keyboard only): {e}")
+
+    if has_leader:
+        logger.info("Leader arm detected — manual mode available (move leader to override)")
+    else:
+        logger.info("No leader — manual mode limited to keyboard offsets")
+
     # Read joint names from robot (same order as dataset's joint_names)
     _robot_joint_names = list(robot.observation_joint_names)
     logger.info(f"Robot joint names: {_robot_joint_names}")
