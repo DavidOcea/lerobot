@@ -576,6 +576,12 @@ def collect_online_data(
         ep_data: list[dict] = []
         step_done = False
 
+        # Manual mode safety: when Space is pressed, we don't jump to leader's
+        # absolute position. Instead we compute a bias = robot_current - leader_current
+        # and then always send leader_read + bias to the robot. This means the robot
+        # stays put when switching modes, and follows the leader's *relative* motion.
+        _leader_bias: list[float] | None = None  # None = not yet initialized
+
         for step_idx in range(max_episode_steps):
             # ── Preprocess observation ──
             processed_obs = _convert_robot_obs(obs, _robot_joint_names)
@@ -588,34 +594,41 @@ def collect_online_data(
 
             if operator.manual_mode and has_leader:
                 # ═══════════════════════════════════════════════
-                # CONTINUOUS MANUAL MODE — leader drives directly
-                # No per-frame confirmation needed. Operator
-                # teleoperates normally; every frame is recorded.
+                # CONTINUOUS MANUAL MODE — leader drives via RELATIVE tracking
+                # First frame: latch bias = robot_pos - leader_pos (zero jump)
+                # Subsequent frames: target = leader_pos + bias (relative motion)
                 # Press Space again to exit back to AUTO mode.
                 # ═══════════════════════════════════════════════
                 flags = operator.poll_and_clear()
                 if flags["manual"]:
-                    # Toggle back to AUTO
+                    # Toggle back to AUTO — reset bias for next manual entry
+                    _leader_bias = None
                     _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, False)
-                    # Don't execute this frame — go back to policy prediction
                     continue
                 if flags["quit"]:
                     logger.info(f"  Episode {ep_idx} quit by operator at step {step_idx}")
                     step_done = True
                     break
 
-                # Read leader and execute immediately
                 try:
                     leader_dict = leader.get_action()
-                    values = [float(leader_dict.get(f"{name}.pos", 0.0)) for name in _robot_joint_names]
+                    leader_values = [float(leader_dict.get(f"{name}.pos", 0.0)) for name in _robot_joint_names]
+
+                    if _leader_bias is None:
+                        # First frame of manual mode: lock relative offset
+                        robot_pos = robot.get_current_position()
+                        robot_values = [float(robot_pos.get(name, 0.0)) for name in _robot_joint_names]
+                        _leader_bias = [r - l for r, l in zip(robot_values, leader_values)]
+                        logger.info("  [MANUAL] Bias locked — robot follows leader relative motion")
+
+                    values = [l + b for l, b in zip(leader_values, _leader_bias)]
                     corrected = torch.tensor(values, dtype=torch.float32)
                     manual_override = True
-                    # Throttled status: once per ~1 second
                     if step_idx % 30 == 0:
                         _print_status(step_idx, ep_idx, corrected.tolist(), operator, True)
                 except Exception as e:
                     logger.warning(f"Failed to read leader at step {step_idx}: {e}")
-                    continue  # skip this frame, try next
+                    continue
 
             else:
                 # ═══════════════════════════════════════════════
