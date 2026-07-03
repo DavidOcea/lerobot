@@ -182,10 +182,6 @@ class ACTConfig(PreTrainedConfig):
                 f"The chunk size is the upper bound for the number of action steps per model invocation. Got "
                 f"{self.n_action_steps} for `n_action_steps` and {self.chunk_size} for `chunk_size`."
             )
-        if self.n_obs_steps != 1:
-            raise ValueError(
-                f"Multiple observation steps not handled yet. Got `nobs_steps={self.n_obs_steps}`"
-            )
 
     def get_optimizer_preset(self) -> AdamWConfig:
         return AdamWConfig(
@@ -208,8 +204,19 @@ class ACTConfig(PreTrainedConfig):
             raise ValueError("You must provide at least one image or the environment state among the inputs.")
 
     @property
-    def observation_delta_indices(self) -> None:
-        return None
+    def observation_delta_indices(self) -> list | None:
+        """Return frame offsets for historical observations.
+
+        For n_obs_steps=1, returns None (no history). For n_obs_steps > 1,
+        returns [-n+1, ..., -1, 0] — e.g., [-7, -6, ..., 0] for n_obs_steps=8.
+
+        Note: the factory applies this to ALL observation.* keys. Image keys
+        are filtered out in make_dataset to keep single-frame images for
+        computational efficiency. Only state + force get multi-frame history.
+        """
+        if self.n_obs_steps <= 1:
+            return None
+        return list(range(-self.n_obs_steps + 1, 1))
 
     @property
     def action_delta_indices(self) -> list:

@@ -77,6 +77,10 @@ class ACTPolicy(PreTrainedPolicy):
         if config.temporal_ensemble_coeff is not None:
             self.temporal_ensembler = ACTTemporalEnsembler(config.temporal_ensemble_coeff, config.chunk_size)
 
+        # Multi-step history buffer for inference (n_obs_steps > 1)
+        self._state_buffer = deque(maxlen=config.n_obs_steps) if config.n_obs_steps > 1 else None
+        self._force_buffer = deque(maxlen=config.n_obs_steps) if config.n_obs_steps > 1 else None
+
         self.reset()
 
     def get_optim_params(self) -> dict:
@@ -106,6 +110,10 @@ class ACTPolicy(PreTrainedPolicy):
             self.temporal_ensembler.reset()
         else:
             self._action_queue = deque([], maxlen=self.config.n_action_steps)
+        if self._state_buffer is not None:
+            self._state_buffer.clear()
+        if self._force_buffer is not None:
+            self._force_buffer.clear()
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
@@ -136,6 +144,19 @@ class ACTPolicy(PreTrainedPolicy):
     def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
         """Predict a chunk of actions given environment observations."""
         self.eval()
+
+        # ── Multi-step history stacking for inference ──
+        # At training time, delta_indices gives (B, T, 15). At inference,
+        # the robot gives single-frame (15,). Fill a ring buffer of the
+        # last n_obs_steps frames and stack them to match training format.
+        if self._state_buffer is not None:
+            batch = dict(batch)
+            # Stack history → (n_obs_steps, state_dim) or (n_obs_steps, force_dim)
+            self._state_buffer.append(batch["observation.state"])
+            batch["observation.state"] = torch.stack(list(self._state_buffer)).unsqueeze(0)  # (1, T, D)
+            if "observation.force" in batch:
+                self._force_buffer.append(batch["observation.force"])
+                batch["observation.force"] = torch.stack(list(self._force_buffer)).unsqueeze(0)
 
         batch = self.normalize_inputs(batch)
         if self.config.image_features:
@@ -461,8 +482,11 @@ class ACT(nn.Module):
             # Projection layer for joint-space configuration to hidden dimension.
             # if self.config.robot_state_feature:
             if self.robot_state_feature:
+                _state_in_dim = self.config.robot_state_feature.shape[0]
+                if self.config.n_obs_steps > 1:
+                    _state_in_dim *= self.config.n_obs_steps  # flatten time dim
                 self.vae_encoder_robot_state_input_proj = nn.Linear(
-                    self.config.robot_state_feature.shape[0], config.dim_model
+                    _state_in_dim, config.dim_model
                 )
                 if self.state_dropout:
                     self.vae_dropout = nn.Dropout(p=self.state_dropout)
@@ -530,8 +554,11 @@ class ACT(nn.Module):
                 )
 
             else:
+                _state_in_dim = self.config.robot_state_feature.shape[0]
+                if self.config.n_obs_steps > 1:
+                    _state_in_dim *= self.config.n_obs_steps  # flatten time dim
                 self.encoder_robot_state_input_proj = nn.Linear(
-                    self.config.robot_state_feature.shape[0], config.dim_model
+                    _state_in_dim, config.dim_model
                 )
 
             if self.state_dropout:
@@ -543,8 +570,11 @@ class ACT(nn.Module):
             )
 
         if self.config.robot_force_feature:
+            _force_in_dim = self.config.robot_force_feature.shape[0]
+            if self.config.n_obs_steps > 1:
+                _force_in_dim *= self.config.n_obs_steps  # flatten time dim
             self.encoder_robot_force_input_proj = nn.Linear(
-                    self.config.robot_force_feature.shape[0], config.dim_model
+                    _force_in_dim, config.dim_model
                 )
 
         self.encoder_latent_input_proj = nn.Linear(config.latent_dim, config.dim_model)
@@ -624,13 +654,21 @@ class ACT(nn.Module):
         
         # Prepare the latent for input to the transformer encoder.
         if self.config.use_vae and "action" in batch and self.training:
+            # ── Flatten multi-step state/force if n_obs_steps > 1 ──
+            _state_raw = batch["observation.state"]  # (B, state_dim) or (B, T, state_dim)
+            if _state_raw.ndim == 3:
+                _state_raw = _state_raw.flatten(1)
+            _force_raw = batch.get("observation.force")
+            if _force_raw is not None and _force_raw.ndim == 3:
+                _force_raw = _force_raw.flatten(1)
+
             # Prepare the input to the VAE encoder: [cls, *joint_space_configuration, *action_sequence].
             cls_embed = einops.repeat(
                 self.vae_encoder_cls_embed.weight, "1 d -> b 1 d", b=batch_size
             )  # (B, 1, D)
             # if self.config.robot_state_feature:
             if self.robot_state_feature:
-                robot_state_embed = self.vae_encoder_robot_state_input_proj(batch["observation.state"])
+                robot_state_embed = self.vae_encoder_robot_state_input_proj(_state_raw)
                 if self.state_dropout and self.training:
                     robot_state_embed = self.vae_dropout(robot_state_embed)
 
@@ -687,6 +725,16 @@ class ACT(nn.Module):
                 batch["observation.state"].device
             )
 
+        # ── Flatten multi-step state/force for non-VAE path ──
+        # When n_obs_steps > 1, dataset returns (B, T, 15) instead of (B, 15).
+        # Flatten to (B, T*15) so existing Linear projections work unchanged.
+        if "observation.state" in batch and batch["observation.state"].ndim == 3:
+            batch = dict(batch)
+            batch["observation.state"] = batch["observation.state"].flatten(1)
+        if "observation.force" in batch and batch["observation.force"].ndim == 3:
+            batch = dict(batch)
+            batch["observation.force"] = batch["observation.force"].flatten(1)
+
         # Prepare transformer encoder inputs.
         encoder_in_tokens = [self.encoder_latent_input_proj(latent_sample)]
         encoder_in_pos_embed = list(self.encoder_1d_feature_pos_embed.weight.unsqueeze(1))
@@ -694,6 +742,11 @@ class ACT(nn.Module):
         # if self.config.robot_state_feature:
         if self.robot_state_feature:
             if self.config.use_robot_position:
+                if self.config.n_obs_steps > 1:
+                    raise ValueError(
+                        "use_robot_position + FK is incompatible with n_obs_steps > 1 "
+                        "(flattened state loses per-joint identity). Use n_obs_steps=1."
+                    )
                 # 1. FK计算：关节角度 -> 3D位置
                 joint_angles = batch["observation.state"]  # (B, joint_count)
                 joint_positions = self.fk.compute(joint_angles)  # (B, joint_count, 3)
