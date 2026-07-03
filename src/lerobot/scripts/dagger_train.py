@@ -156,6 +156,92 @@ class DaggerPolicy:
             batch[k] = v.to(self.device)
         return self.policy.select_action(batch).squeeze(0)
 
+    @torch.no_grad()
+    def predict_augmented(
+        self,
+        obs: dict[str, torch.Tensor],
+        n_views: int = 5,
+        brightness: float = 0.1,
+        contrast: float = 0.1,
+        rotation: float = 3.0,
+    ) -> tuple[torch.Tensor, dict]:
+        """Predict via augmentation ensemble — runs policy on N augmented
+        views of the same observation and returns the mean action.
+
+        This stabilizes the policy against visual perturbations (lighting,
+        camera angle drift) that the model was trained to be robust against
+        (via customer_transforms), but may still cause minor prediction jitter.
+
+        The `n_views - 1` augmented copies add mild, random brightness,
+        contrast, and rotation variations. One raw view is always included.
+
+        Args:
+            obs: Observation dict with image keys and state/force tensors.
+            n_views: Total number of inference passes (1 raw + n_views-1 aug).
+            brightness: ± range for random brightness jitter.
+            contrast: ± range for random contrast jitter.
+            rotation: ± degrees for random rotation.
+
+        Returns:
+            (mean_action, stats_dict) where stats_dict includes per-view
+            actions and their standard deviation for monitoring.
+        """
+        import torchvision.transforms as T
+        from PIL import Image as PILImage
+
+        # Identify image keys (CHW float tensors, range [0, 1])
+        img_keys = [k for k, v in obs.items()
+                    if isinstance(v, torch.Tensor) and v.ndim == 3 and v.shape[0] == 3]
+
+        if not img_keys:
+            # No images — fall back to single prediction
+            return self.predict(obs), {"std": 0.0, "n_views": 1}
+
+        all_actions: list[torch.Tensor] = []
+
+        for view_idx in range(n_views):
+            aug_obs = dict(obs)
+
+            if view_idx == 0:
+                # First view: raw (no augmentation)
+                all_actions.append(self.predict(aug_obs))
+                continue
+
+            # Build per-view augmentations (random per call)
+            b = 1.0 + np.random.uniform(-brightness, brightness)
+            c = 1.0 + np.random.uniform(-contrast, contrast)
+            r = np.random.uniform(-rotation, rotation)
+            augment = T.Compose([
+                T.ColorJitter(brightness=(max(0, b-0.05), b+0.05),
+                              contrast=(max(0, c-0.05), c+0.05)),
+                T.RandomRotation(degrees=(r, r), fill=128),  # gray fill
+            ])
+
+            for key in img_keys:
+                img = aug_obs[key]  # (C, H, W) float [0, 1]
+                # Convert to PIL for torchvision transforms
+                img_np = (img.cpu().numpy() * 255).astype(np.uint8)
+                img_np = np.transpose(img_np, (1, 2, 0))  # CHW → HWC
+                img_pil = PILImage.fromarray(img_np)
+                img_aug = augment(img_pil)
+                # Back to CHW float
+                img_out = np.array(img_aug, dtype=np.float32) / 255.0
+                if img_out.ndim == 3 and img_out.shape[-1] in (3, 4):
+                    img_out = np.transpose(img_out, (2, 0, 1))  # HWC → CHW
+                aug_obs[key] = torch.from_numpy(img_out[:3]).to(self.device)
+
+            all_actions.append(self.predict(aug_obs))
+
+        stacked = torch.stack(all_actions)  # (n_views, action_dim)
+        mean_action = stacked.mean(dim=0)
+        std_per_joint = stacked.std(dim=0).mean().item()
+
+        return mean_action, {
+            "std": std_per_joint,
+            "n_views": n_views,
+            "all_actions": stacked,
+        }
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Phase 1: Offline — Noise Injection + Recovery Data Generation
@@ -443,6 +529,8 @@ def collect_online_data(
     fps: int = 30,
     dataset_root: str = "",
     dataset_repo_id: str = "",
+    aug_ensemble: bool = False,
+    aug_n_views: int = 5,
 ) -> list[dict]:
     """Collect online interaction data with operator override (visual confirmation).
 
@@ -464,6 +552,14 @@ def collect_online_data(
     logger.info("ONLINE PHASE — DAgger data collection with operator")
     logger.info("=" * 60)
     logger.info(f"Episodes: {num_episodes}, Max steps: {max_episode_steps}, FPS: {fps}")
+    if aug_ensemble:
+        logger.info(f"Aug Ensemble: ON (n_views={aug_n_views}, ~{aug_n_views}x inference cost)")
+
+    # ── Prediction function (ensemble or single) ──
+    if aug_ensemble:
+        _predict_fn = lambda obs: policy.predict_augmented(obs, n_views=aug_n_views)[0]
+    else:
+        _predict_fn = policy.predict
     logger.info("")
     logger.info("Controls:")
     logger.info("  Enter / y    Accept prediction & execute")
@@ -587,7 +683,7 @@ def collect_online_data(
             processed_obs = _convert_robot_obs(obs, _robot_joint_names)
 
             # ── Policy prediction ──
-            predicted_action = policy.predict(processed_obs)
+            predicted_action = _predict_fn(processed_obs)
 
             # ── Operator interaction ──
             manual_override = False
@@ -886,6 +982,8 @@ def _parse_args(argv: list[str]) -> dict:
         "num_online_episodes": 20,
         "max_episode_steps": 350,
         "fps": 30,
+        "aug_ensemble": False,
+        "aug_n_views": 5,
     }
     result = dict(defaults)
     i = 1
@@ -914,6 +1012,10 @@ def _parse_args(argv: list[str]) -> dict:
         result[k] = int(result[k])
     for k in ("noise_std", "learning_rate"):
         result[k] = float(result[k])
+    for k in ("aug_ensemble",):
+        result[k] = result[k] in (True, "true", "True", "1")
+    for k in ("aug_n_views",):
+        result[k] = int(result[k])
     return result
 
 
@@ -940,6 +1042,8 @@ def main():
     num_online_episodes = args["num_online_episodes"]
     max_episode_steps = args["max_episode_steps"]
     fps = args["fps"]
+    aug_ensemble = args["aug_ensemble"]
+    aug_n_views = args["aug_n_views"]
     device_str = args["device"]
 
     # Set seed
@@ -1023,6 +1127,8 @@ def main():
             fps=fps,
             dataset_root=dataset_root,
             dataset_repo_id=dataset_repo_id,
+            aug_ensemble=aug_ensemble,
+            aug_n_views=aug_n_views,
         )
 
         ds_meta = LeRobotDatasetMetadata(
