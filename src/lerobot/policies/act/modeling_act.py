@@ -175,6 +175,15 @@ class ACTPolicy(PreTrainedPolicy):
                 # 不需要头部
                 batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features if 'head_cam' not in key]
 
+        # ── Flatten multi-step state/force (inference safety net) ──
+        if "observation.state" in batch and batch["observation.state"].ndim == 3:
+            batch = dict(batch)
+            batch["observation.state"] = batch["observation.state"].reshape(
+                batch["observation.state"].shape[0], -1)
+            if "observation.force" in batch and batch["observation.force"].ndim == 3:
+                batch["observation.force"] = batch["observation.force"].reshape(
+                    batch["observation.force"].shape[0], -1)
+
         actions = self.model(batch)[0]
 
         # 相对角度推理：将相对角度转换回绝对角度
