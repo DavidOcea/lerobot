@@ -151,12 +151,19 @@ class ACTPolicy(PreTrainedPolicy):
         # last n_obs_steps frames and stack them to match training format.
         if self._state_buffer is not None:
             batch = dict(batch)
-            # Stack history → (n_obs_steps, state_dim) or (n_obs_steps, force_dim)
             self._state_buffer.append(batch["observation.state"])
-            batch["observation.state"] = torch.stack(list(self._state_buffer)).unsqueeze(0)  # (1, T, D)
+            # Pad to full n_obs_steps if buffer not yet filled (episode start)
+            states = list(self._state_buffer)
+            if len(states) < self.config.n_obs_steps:
+                pad_needed = self.config.n_obs_steps - len(states)
+                states = [states[0]] * pad_needed + states
+            batch["observation.state"] = torch.stack(states).unsqueeze(0)  # (1, T, D)
             if "observation.force" in batch:
                 self._force_buffer.append(batch["observation.force"])
-                batch["observation.force"] = torch.stack(list(self._force_buffer)).unsqueeze(0)
+                forces = list(self._force_buffer)
+                if len(forces) < self.config.n_obs_steps:
+                    forces = [forces[0]] * (self.config.n_obs_steps - len(forces)) + forces
+                batch["observation.force"] = torch.stack(forces).unsqueeze(0)
 
         batch = self.normalize_inputs(batch)
         if self.config.image_features:
