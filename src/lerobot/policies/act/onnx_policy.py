@@ -291,7 +291,10 @@ class ACTPolicyONNX:
 
         if self._state_buffer is not None:
             self._state_buffer.append(state)
-            state = torch.stack(list(self._state_buffer))  # (T, 15)
+            states = list(self._state_buffer)
+            if len(states) < self.n_obs_steps:
+                states = [states[0]] * (self.n_obs_steps - len(states)) + states
+            state = torch.stack(states)  # (T, 15)
         batch["observation.state"] = state
 
         # ── Force ──
@@ -302,7 +305,10 @@ class ACTPolicyONNX:
             force = force.to(self.device)
             if self._force_buffer is not None:
                 self._force_buffer.append(force)
-                force = torch.stack(list(self._force_buffer))
+                forces = list(self._force_buffer)
+                if len(forces) < self.n_obs_steps:
+                    forces = [forces[0]] * (self.n_obs_steps - len(forces)) + forces
+                force = torch.stack(forces)
             batch["observation.force"] = force
 
         # ── Images (keep as-is, normalization handles conversion) ──
