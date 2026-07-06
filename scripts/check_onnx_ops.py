@@ -93,30 +93,32 @@ class BackboneEncoderExport(nn.Module):
 
         # ── Latent token (zeros at inference) ──
         latent_sample = torch.zeros(B, self.latent_dim, device=device)
-        encoder_in_tokens = [self.model.encoder_latent_input_proj(latent_sample)]  # (B, D)
-        # Position embeddings: each is (1, D), we stack them later
-        pos_weight = self.model.encoder_1d_feature_pos_embed.weight  # (n_tok, D)
-        encoder_in_pos_embed = [pos_weight[0:1]]                     # (1, D) for latent
+        enc_token = self.model.encoder_latent_input_proj(latent_sample)  # (B, D)
+        encoder_in_tokens = [enc_token.unsqueeze(0)]                      # (1, B, D)
+        pos_weight = self.model.encoder_1d_feature_pos_embed.weight      # (n_tok, D)
+        encoder_in_pos_embed = [pos_weight[0:1].unsqueeze(1)]             # (1, 1, D)
 
         # ── State token ──
-        encoder_in_tokens.append(self.model.encoder_robot_state_input_proj(state))  # (B, D)
-        encoder_in_pos_embed.append(pos_weight[1:2])                                # (1, D)
+        st = self.model.encoder_robot_state_input_proj(state)  # (B, D)
+        encoder_in_tokens.append(st.unsqueeze(0))
+        encoder_in_pos_embed.append(pos_weight[1:2].unsqueeze(1))
 
         # ── Force token ──
-        encoder_in_tokens.append(self.model.encoder_robot_force_input_proj(force))  # (B, D)
-        encoder_in_pos_embed.append(pos_weight[2:3])                                # (1, D)
+        ft = self.model.encoder_robot_force_input_proj(force)  # (B, D)
+        encoder_in_tokens.append(ft.unsqueeze(0))
+        encoder_in_pos_embed.append(pos_weight[2:3].unsqueeze(1))
 
         # ── Image features (3 cameras) ──
         for img in [img0, img1, img2]:
             cam_features = self.model.backbone(img)["feature_map"]
             cam_pos_embed = self.model.encoder_cam_feat_pos_embed(cam_features).to(dtype=cam_features.dtype)
             cam_features = self.model.encoder_img_feat_input_proj(cam_features)
-            cam_features = cam_features.flatten(2).permute(2, 0, 1)  # (H*W, B, C)
-            cam_pos_embed = cam_pos_embed.flatten(2).permute(2, 0, 1)  # (H*W, B, C)
-            encoder_in_tokens.extend(list(cam_features))
-            encoder_in_pos_embed.extend(list(cam_pos_embed))
+            cam_features = cam_features.flatten(2).permute(2, 0, 1)  # (H*W, B, D)
+            cam_pos_embed = cam_pos_embed.flatten(2).permute(2, 0, 1)  # (H*W, B, D)
+            encoder_in_tokens.extend(cf.unsqueeze(0) for cf in cam_features)
+            encoder_in_pos_embed.extend(cp.unsqueeze(0) for cp in cam_pos_embed)
 
-        # ── Stack: all entries are (1_or_HW, B, D) → (total_seq, B, D) ──
+        # ── Cat: all entries (1, B, D) → (total_seq, B, D) ──
         encoder_in_tokens = torch.cat(encoder_in_tokens, dim=0)
         encoder_in_pos_embed = torch.cat(encoder_in_pos_embed, dim=0)
         encoder_out = self.model.encoder(encoder_in_tokens, pos_embed=encoder_in_pos_embed, key_padding_mask=None)

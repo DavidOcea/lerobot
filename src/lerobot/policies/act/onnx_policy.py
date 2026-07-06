@@ -1,0 +1,376 @@
+#!/usr/bin/env python3
+"""
+Step 3: ONNX inference wrapper — drop-in replacement for ACTPolicy.
+
+Provides the same select_action/forward/reset interface as ACTPolicy,
+but runs backbone+encoder through ONNX Runtime and keeps decoder
+in PyTorch for the autoregressive for-loop.
+
+Usage:
+    from lerobot.policies.act.onnx_policy import ACTPolicyONNX
+
+    policy = ACTPolicyONNX(
+        onnx_path="outputs/export/backbone_encoder.onnx",
+        checkpoint_path="outputs/train/act_xxx/checkpoints/last/pretrained_model",
+        device="cuda",
+    )
+
+    action = policy.select_action(obs)  # same as ACTPolicy
+    policy.reset()                       # same as ACTPolicy
+"""
+
+import logging
+from collections import deque
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+from lerobot.constants import ACTION, OBS_IMAGES
+
+logger = logging.getLogger("onnx_policy")
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Decoder-only wrapper (PyTorch)
+# ═══════════════════════════════════════════════════════════════════════
+
+class DecoderOnly(nn.Module):
+    """Subset of ACT model: decoder + action head only.
+
+    Takes encoder output, runs autoregressive decoder, returns action chunk.
+    """
+
+    def __init__(self, act_model, config):
+        super().__init__()
+        self.decoder = act_model.decoder
+        self.decoder_pos_embed = act_model.decoder_pos_embed
+        self.action_head = act_model.action_head
+        self.chunk_size = config.chunk_size
+        self.dim_model = config.dim_model
+        self.latent_dim = config.latent_dim
+        # Fixed start token (zeros) — same as ACT training
+        self.register_buffer(
+            "tgt_embed",
+            torch.zeros(1, self.dim_model),
+        )
+
+    def forward(self, encoder_out: torch.Tensor) -> torch.Tensor:
+        """Run autoregressive decoder.
+
+        Args:
+            encoder_out: (seq_len, B, dim_model) from backbone+encoder
+
+        Returns:
+            (B, chunk_size, action_dim) action chunk
+        """
+        B = encoder_out.shape[1]
+        device = encoder_out.device
+
+        decoder_out = []
+        x = self.tgt_embed.unsqueeze(0).expand(1, B, self.dim_model)  # (1, B, D)
+
+        for i in range(self.chunk_size):
+            # Position embedding for current step
+            pos = self.decoder_pos_embed.weight[i:i+1].unsqueeze(1)  # (1, 1, D)
+            dec_in = x[-1:] + pos  # only feed last token as input (causal)
+
+            out = self.decoder(
+                dec_in,
+                encoder_out,
+                decoder_pos_embed=pos,
+                encoder_pos_embed=None,
+            )  # (1, B, D)
+            x = torch.cat([x, out], dim=0)
+            decoder_out.append(out)
+
+        decoder_out = torch.cat(decoder_out, dim=0)  # (chunk_size, B, D)
+        decoder_out = decoder_out.transpose(0, 1)     # (B, chunk_size, D)
+        actions = self.action_head(decoder_out)        # (B, chunk_size, action_dim)
+        return actions
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Temporal Ensemble (same as ACT, kept in PyTorch for simplicity)
+# ═══════════════════════════════════════════════════════════════════════
+
+class TemporalEnsembler:
+    """Online temporal ensemble for action chunks.
+
+    Identical to ACTTemporalEnsembler in modeling_act.py, but standalone
+    so onnx_policy doesn't need to import the full modeling_act module.
+    """
+
+    def __init__(self, coeff: float, chunk_size: int):
+        self.chunk_size = chunk_size
+        weights = torch.exp(-coeff * torch.arange(chunk_size))
+        self.register_buffer = lambda name, t: setattr(self, name, t)
+        self.register_buffer("weights", weights / weights.sum())
+        self.register_buffer("ensembled_actions", torch.zeros(0, 15))
+        self.register_buffer("ensembled_actions_count", torch.zeros(0, dtype=torch.long))
+
+    def reset(self):
+        self.ensembled_actions = torch.zeros(0, 15)
+        self.ensembled_actions_count = torch.zeros(0, dtype=torch.long)
+
+    def update(self, actions: torch.Tensor) -> torch.Tensor:
+        """Update ensemble with new chunk, return weighted action."""
+        self.ensembled_actions = torch.cat(
+            [self.ensembled_actions, actions[:, -1:]], dim=1
+        )
+        self.ensembled_actions_count = torch.cat(
+            [self.ensembled_actions_count,
+             torch.ones_like(self.ensembled_actions_count[-1:])]
+        )
+        # Clamp count to chunk_size
+        self.ensembled_actions = self.ensembled_actions[:, -self.chunk_size:]
+        self.ensembled_actions_count = self.ensembled_actions_count[-self.chunk_size:]
+        actions_count = torch.clamp(self.ensembled_actions_count, max=self.chunk_size)
+        weights = self.weights.to(actions.device)
+        w = weights[:actions_count.shape[0]]
+        # Normalize
+        w = w / (w.sum() + 1e-8)
+        w = w.unsqueeze(0).unsqueeze(-1)  # (1, N, 1)
+        return (self.ensembled_actions * w).sum(dim=1)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Main ONNX Policy class
+# ═══════════════════════════════════════════════════════════════════════
+
+class ACTPolicyONNX:
+    """ONNX-accelerated ACT policy with PyTorch decoder.
+
+    Replaces ACTPolicy for inference only (forward/train not supported).
+
+    Key differences from ACTPolicy:
+        - backbone + encoder → ONNX Runtime (GPU accelerated)
+        - decoder + action_head → PyTorch (autoregressive loop)
+        - temporal ensembler → PyTorch (stateful, not ONNX-compatible)
+        - normalize/unnormalize → PyTorch (needs dataset stats)
+    """
+
+    def __init__(
+        self,
+        onnx_path: str,
+        checkpoint_path: str,
+        device: str = "cuda",
+    ):
+        from lerobot.policies.act.modeling_act import ACTPolicy
+
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+
+        # ── Load checkpoint (config + weights) ──
+        logger.info(f"Loading checkpoint: {checkpoint_path}")
+        full_policy = ACTPolicy.from_pretrained(checkpoint_path)
+        full_policy = full_policy.to(self.device)
+        config = full_policy.config
+        self.chunk_size = config.chunk_size
+        self.n_action_steps = config.n_action_steps
+        self.n_obs_steps = config.n_obs_steps
+        self.use_relative_action = config.use_relative_action
+        self.only_first_step = config.only_first_step
+
+        logger.info(
+            f"  chunk_size={self.chunk_size}, n_obs_steps={self.n_obs_steps}, "
+            f"n_action_steps={self.n_action_steps}, "
+            f"temporal_ensemble_coeff={config.temporal_ensemble_coeff}"
+        )
+
+        # ── Normalization (PyTorch, uses dataset stats) ──
+        self.normalize_inputs = full_policy.normalize_inputs
+        self.unnormalize_outputs = full_policy.unnormalize_outputs
+
+        # ── ONNX Runtime session ──
+        logger.info(f"Loading ONNX model: {onnx_path}")
+
+        try:
+            import onnxruntime as ort
+        except ImportError:
+            raise ImportError(
+                "onnxruntime-gpu is required for ACTPolicyONNX. "
+                "Install with: pip install onnxruntime-gpu"
+            )
+
+        self._ort_session = ort.InferenceSession(
+            onnx_path,
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        )
+        provider = self._ort_session.get_providers()[0]
+        logger.info(f"  ONNX provider: {provider}")
+
+        # ── Decoder (PyTorch, extracted from full model) ──
+        full_policy.model.eval()
+        self._decoder = DecoderOnly(full_policy.model, config).to(self.device)
+        self._decoder.eval()
+
+        # ── Temporal ensemble ──
+        self._te_coeff = config.temporal_ensemble_coeff
+        if self._te_coeff is not None:
+            self._temporal_ensembler = TemporalEnsembler(self._te_coeff, self.chunk_size)
+            self._action_queue = None
+        else:
+            self._temporal_ensembler = None
+            self._action_queue = deque([], maxlen=self.n_action_steps)
+
+        # ── State buffer for n_obs_steps > 1 ──
+        self._state_buffer = deque(maxlen=self.n_obs_steps) if self.n_obs_steps > 1 else None
+        self._force_buffer = deque(maxlen=self.n_obs_steps) if self.n_obs_steps > 1 else None
+
+        # ── Image key config ──
+        self._img_keys = sorted(
+            [k for k, ft in config.input_features.items() if ft.type.name == "VISUAL"]
+        )
+
+        self.reset()
+        logger.info("✅ ACTPolicyONNX ready")
+
+    def reset(self):
+        """Reset stateful components (call at episode start)."""
+        if self._temporal_ensembler is not None:
+            self._temporal_ensembler.reset()
+        if self._state_buffer is not None:
+            self._state_buffer.clear()
+        if self._force_buffer is not None:
+            self._force_buffer.clear()
+
+    def select_action(self, obs: dict[str, Any]) -> torch.Tensor:
+        """Select a single action given environment observations.
+
+        Args:
+            obs: Dict with keys like:
+                observation.state: (15,) tensor
+                observation.force: (15,) tensor
+                observation.images.head_cam: (3, 480, 640) tensor
+                observation.images.left_wrist_cam: (3, 480, 640) tensor
+                observation.images.right_wrist_cam: (3, 480, 640) tensor
+
+        Returns:
+            (15,) tensor — single action in unnormalized space
+        """
+        # ── Multi-step history (same as n_obs_steps training) ──
+        batch = self._build_batch(obs)
+
+        # ── Normalize ──
+        batch = self.normalize_inputs(batch)
+
+        # ── ONNX backbone+encoder ──
+        encoder_out = self._run_onnx_encoder(batch)
+
+        # ── PyTorch decoder ──
+        with torch.no_grad():
+            actions = self._decoder(encoder_out)  # (B, chunk_size, 15)
+
+        # ── Unnormalize ──
+        actions = self.unnormalize_outputs({ACTION: actions})[ACTION]
+
+        # ── Temporal ensemble or action queue ──
+        if self._temporal_ensembler is not None:
+            action = self._temporal_ensembler.update(actions)
+            return action
+        else:
+            if len(self._action_queue) == 0:
+                chunk = actions[:, :self.n_action_steps]
+                self._action_queue.extend(chunk.transpose(0, 1))
+            return self._action_queue.popleft()
+
+    def _build_batch(self, obs: dict) -> dict:
+        """Build single-sample batch dict for ONNX inference.
+
+        Handles multi-step state/force stacking (n_obs_steps > 1).
+        """
+        batch = {}
+
+        # ── State ──
+        state = obs["observation.state"]
+        if isinstance(state, np.ndarray):
+            state = torch.from_numpy(state).float()
+        state = state.to(self.device)
+
+        if self._state_buffer is not None:
+            self._state_buffer.append(state)
+            state = torch.stack(list(self._state_buffer))  # (T, 15)
+        batch["observation.state"] = state
+
+        # ── Force ──
+        force = obs.get("observation.force")
+        if force is not None:
+            if isinstance(force, np.ndarray):
+                force = torch.from_numpy(force).float()
+            force = force.to(self.device)
+            if self._force_buffer is not None:
+                self._force_buffer.append(force)
+                force = torch.stack(list(self._force_buffer))
+            batch["observation.force"] = force
+
+        # ── Images (keep as-is, normalization handles conversion) ──
+        for key in self._img_keys:
+            img = obs.get(key)
+            if img is not None:
+                if isinstance(img, np.ndarray):
+                    img = torch.from_numpy(img).float()
+                batch[key] = img.to(self.device)
+
+        return batch
+
+    def _run_onnx_encoder(self, batch: dict) -> torch.Tensor:
+        """Run backbone+encoder through ONNX Runtime.
+
+        Args:
+            batch: Normalized batch dict with observation.state, observation.force,
+                   and image tensors.
+
+        Returns:
+            (seq_len, 1, 512) encoder output tensor on self.device
+        """
+        # Get images (must match the 3-camera export order)
+        img_keys = sorted([k for k in batch if "image" in k.lower()])
+        images = []
+        for key in img_keys:
+            img = batch[key]
+            if img.ndim == 3:
+                img = img.unsqueeze(0)  # (C,H,W) → (1,C,H,W)
+            images.append(img)
+
+        # Fallback if fewer than 3 cameras: duplicate first image
+        while len(images) < 3:
+            images.append(images[0])
+
+        # State/force → (1, 15) or (1, T*15)
+        state = batch["observation.state"]
+        if state.ndim == 2:
+            state = state.unsqueeze(0)  # (T, D) → (1, T, D)
+        if state.ndim == 3:
+            state = state.reshape(state.shape[0], -1)  # (1, T*D)
+
+        force = batch.get("observation.force", torch.zeros_like(state))
+        if force is not None:
+            if force.ndim == 2:
+                force = force.unsqueeze(0)
+            if force.ndim == 3:
+                force = force.reshape(force.shape[0], -1)
+
+        # ONNX feed (all numpy, float32)
+        feed = {
+            "img0": images[0].cpu().numpy().astype(np.float32),
+            "img1": images[1].cpu().numpy().astype(np.float32),
+            "img2": images[2].cpu().numpy().astype(np.float32),
+            "state": state.cpu().numpy().astype(np.float32),
+            "force": force.cpu().numpy().astype(np.float32),
+        }
+
+        ort_out = self._ort_session.run(None, feed)[0]  # (seq_len, B, D)
+        return torch.from_numpy(ort_out).to(self.device)
+
+    def __repr__(self):
+        return (
+            f"ACTPolicyONNX(\n"
+            f"    chunk_size={self.chunk_size},\n"
+            f"    n_obs_steps={self.n_obs_steps},\n"
+            f"    n_action_steps={self.n_action_steps},\n"
+            f"    temporal_ensemble_coeff={self._te_coeff},\n"
+            f"    device={self.device},\n"
+            f")"
+        )
