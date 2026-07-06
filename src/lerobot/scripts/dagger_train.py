@@ -412,6 +412,10 @@ class OperatorInputHandler:
         self.quit_episode: bool = False
         self.print_help: bool = False
 
+        # ── Space key debounce (prevent rapid toggling from key repeat) ──
+        self._last_space_toggle: float = 0.0
+        self._space_debounce_s: float = 0.5  # only allow one toggle per 500ms
+
         # ── Keyboard listener ──
         self._listener: object | None = None
         self._start_listener()
@@ -436,8 +440,12 @@ class OperatorInputHandler:
                                 self.quit_episode = True
                                 logger.info("  [Operator] Quit episode requested")
                         elif key == kb.Key.space:
-                            self.manual_mode = not self.manual_mode
-                            logger.info(f"  [Operator] Manual mode: {'ON (use leader)' if self.manual_mode else 'OFF (auto)'}")
+                            import time as _time
+                            _now = _time.time()
+                            if _now - self._last_space_toggle > self._space_debounce_s:
+                                self._last_space_toggle = _now
+                                self.manual_mode = not self.manual_mode
+                                logger.info(f"  [Operator] Manual mode: {'ON (use leader)' if self.manual_mode else 'OFF (auto)'}")
                         elif key == kb.Key.enter:
                             self.accept_action = True
                         elif key == kb.Key.up:
