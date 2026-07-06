@@ -765,9 +765,11 @@ def collect_online_data(
                         _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, operator.manual_mode)
                         continue
                     if flags["manual"]:
-                        # Entering manual mode — next frame will auto-read leader
+                        # Entering manual mode — exit AUTO loop, next frame reads leader
                         _print_status(step_idx, ep_idx, predicted_action.tolist(), operator, True)
-                        continue
+                        # Set corrected=None to skip this frame's execution entirely
+                        corrected = None
+                        break
                     if flags["accept"]:
                         corrected = operator.apply_offsets(predicted_action)
                         break  # exit operator loop, execute action
@@ -779,6 +781,11 @@ def collect_online_data(
 
             if step_done:
                 break
+
+            # ── Skip frame if operator toggled mode (no action to execute) ──
+            if corrected is None:
+                obs = robot.get_observation()
+                continue
 
             # ── Execute on robot ──
             corrected_np = corrected.cpu().numpy() if isinstance(corrected, torch.Tensor) else corrected
