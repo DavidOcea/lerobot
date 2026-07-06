@@ -176,13 +176,14 @@ class ACTPolicy(PreTrainedPolicy):
                 batch[OBS_IMAGES] = [batch[key] for key in self.config.image_features if 'head_cam' not in key]
 
         # ── Flatten multi-step state/force (inference safety net) ──
-        if "observation.state" in batch and batch["observation.state"].ndim == 3:
+        # When n_obs_steps > 1, the state buffer may produce (T,D) or (1,T,D).
+        # Always reshape to (1, T*D) so Linear(15*n_obs, 512) works regardless
+        # of the buffer's exact output shape (which varies between code versions).
+        if self._state_buffer is not None:
             batch = dict(batch)
-            batch["observation.state"] = batch["observation.state"].reshape(
-                batch["observation.state"].shape[0], -1)
-            if "observation.force" in batch and batch["observation.force"].ndim == 3:
-                batch["observation.force"] = batch["observation.force"].reshape(
-                    batch["observation.force"].shape[0], -1)
+            batch["observation.state"] = batch["observation.state"].reshape(1, -1)
+            if "observation.force" in batch:
+                batch["observation.force"] = batch["observation.force"].reshape(1, -1)
 
         actions = self.model(batch)[0]
 
