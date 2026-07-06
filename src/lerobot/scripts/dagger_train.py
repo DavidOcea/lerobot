@@ -415,6 +415,7 @@ class OperatorInputHandler:
         # ── Space key debounce (prevent rapid toggling from key repeat) ──
         self._last_space_toggle: float = 0.0
         self._space_debounce_s: float = 0.5  # only allow one toggle per 500ms
+        self._space_toggle_pending: bool = False  # transient: Space just pressed
 
         # ── Keyboard listener ──
         self._listener: object | None = None
@@ -445,6 +446,7 @@ class OperatorInputHandler:
                             if _now - self._last_space_toggle > self._space_debounce_s:
                                 self._last_space_toggle = _now
                                 self.manual_mode = not self.manual_mode
+                                self._space_toggle_pending = True
                                 logger.info(f"  [Operator] Manual mode: {'ON (use leader)' if self.manual_mode else 'OFF (auto)'}")
                         elif key == kb.Key.enter:
                             self.accept_action = True
@@ -479,7 +481,7 @@ class OperatorInputHandler:
                 "down": self.adjust_down,
                 "next": self.joint_next,
                 "prev": self.joint_prev,
-                "manual": self.manual_mode,
+                "manual": self._space_toggle_pending,  # transient: True only when Space was just pressed
                 "quit": self.quit_episode,
                 "help": self.print_help,
             }
@@ -488,6 +490,7 @@ class OperatorInputHandler:
             self.adjust_down = False
             self.joint_next = False
             self.joint_prev = False
+            self._space_toggle_pending = False  # clear transient flag after read
             self.quit_episode = False
             self.print_help = False
         return snapshot
