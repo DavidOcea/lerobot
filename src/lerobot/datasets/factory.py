@@ -87,6 +87,16 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             cfg.dataset.repo_id, root=cfg.dataset.root, revision=cfg.dataset.revision
         )
         delta_timestamps = resolve_delta_timestamps(cfg.policy, ds_meta)
+        # P2 optimization: when n_obs_steps > 1, the policy receives multi-frame
+        # state/force but single-frame images (to avoid GPU memory explosion of
+        # 8×3=24 images per sample). Strip image keys from delta_timestamps.
+        if delta_timestamps is not None:
+            delta_timestamps = {
+                k: v for k, v in delta_timestamps.items()
+                if not any(k.startswith(prefix) for prefix in ds_meta.video_keys + ds_meta.image_keys)
+            }
+            if len(delta_timestamps) == 0:
+                delta_timestamps = None
         dataset = LeRobotDataset(
             cfg.dataset.repo_id,
             root=cfg.dataset.root,
@@ -95,6 +105,13 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
             image_transforms=image_transforms,
             revision=cfg.dataset.revision,
             video_backend=cfg.dataset.video_backend,
+            customer_transforms = cfg.dataset.customer_transforms,
+            customer_transforms_cfg = cfg.dataset.customer_transforms_cfg,
+            only_head_transforms = cfg.dataset.only_head_transforms,
+            tolerance_s=cfg.dataset.tolerance_s,  # 使用配置的容差
+            time_warp=cfg.dataset.time_warp,
+            time_warp_speed_min=cfg.dataset.time_warp_speed_min,
+            time_warp_speed_max=cfg.dataset.time_warp_speed_max,
         )
     else:
         raise NotImplementedError("The MultiLeRobotDataset isn't supported for now.")
