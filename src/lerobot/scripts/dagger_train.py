@@ -859,7 +859,7 @@ def dagger_finetune(
     policy_path: str,
     dagger_data: list[dict],
     output_dir: str,
-    ds_meta: LeRobotDatasetMetadata,
+    ds_meta = None,
     train_steps: int = 50000,
     batch_size: int = 32,
     learning_rate: float = 1e-5,
@@ -1149,14 +1149,10 @@ def main():
             aug_n_views=aug_n_views,
         )
 
-        ds_meta = LeRobotDatasetMetadata(
-            dataset_repo_id, root=dataset_root
-        )
         dagger_finetune(
             policy_path=policy_path,
             dagger_data=online_data,
             output_dir=output_dir,
-            ds_meta=ds_meta,
             train_steps=train_steps,
             batch_size=batch_size,
             device=device,
