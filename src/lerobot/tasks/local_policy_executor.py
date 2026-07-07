@@ -271,47 +271,18 @@ class LocalPolicyExecutor:
                 batch["observation.force"] = force_tensor.unsqueeze(0)
 
         # Handle nested images structure if present
+        # IMPORTANT: images are always single-frame (current observation only).
+        # Stacking images across timesteps would produce 5D tensors (T, C, H, W)
+        # that conv2d cannot ingest, and is unnecessary — multi-frame state
+        # already encodes motion; images encode spatial context.
         if 'images' in observation and isinstance(observation['images'], dict):
             for cam_name in observation['images'].keys():
-                # Collect values from buffer
-                values = []
-                for obs in self.observation_buffer:
-                    if 'images' in obs and isinstance(obs['images'], dict) and cam_name in obs['images']:
-                        values.append(obs['images'][cam_name])
-                    else:
-                        values.append(None)
-
-                # Filter out None values
-                if all(v is None for v in values):
-                    continue  # Skip this camera if all values are None
-
-                # Use first non-None value for padding
-                first_valid = next((v for v in values if v is not None), None)
-
-                if first_valid is None:
+                img_np = observation['images'].get(cam_name)
+                if img_np is None:
                     continue
-
-                # Pad if needed
-                while len(values) < self.n_obs_steps:
-                    values.insert(0, first_valid)
-
-                # Convert numpy arrays to torch tensors
-                if hasattr(first_valid, 'shape'):
-                    import numpy as np
-
-                    if self.n_obs_steps == 1:
-                        # No temporal stacking needed, just use the single observation
-                        img = values[0]
-                        # Convert to tensor: (H, W, C) -> (1, C, H, W)
-                        tensor = torch.from_numpy(img).permute(2, 0, 1).unsqueeze(0).float() / 255.0
-                    else:
-                        # Stack multiple observations along temporal dimension
-                        stacked = np.stack([v if v is not None else first_valid for v in values])
-                        # Convert to tensor: (time, H, W, C) -> (1, C, time, H, W)
-                        tensor = torch.from_numpy(stacked).permute(0, 3, 1, 2).unsqueeze(0).float() / 255.0
-
-                    # Use the prefixed key format expected by the policy
-                    batch[f"observation.images.{cam_name}"] = tensor
+                # Convert to tensor: (H, W, C) -> (1, C, H, W)
+                tensor = torch.from_numpy(img_np).permute(2, 0, 1).unsqueeze(0).float() / 255.0
+                batch[f"observation.images.{cam_name}"] = tensor
 
         # Add batch dimension
 
