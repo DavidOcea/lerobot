@@ -146,24 +146,26 @@ class ACTPolicy(PreTrainedPolicy):
         self.eval()
 
         # ── Multi-step history stacking for inference ──
-        # At training time, delta_indices gives (B, T, 15). At inference,
-        # the robot gives single-frame (15,). Fill a ring buffer of the
-        # last n_obs_steps frames and stack them to match training format.
+        # Two callers: (A) single-frame (lerobot.record, dagger_train) —
+        # we fill an internal ring buffer; (B) pre-stacked (temp-agent's
+        # LocalPolicyExecutor) — caller already passes (1, T, D), skip buffer.
         if self._state_buffer is not None:
-            batch = dict(batch)
-            self._state_buffer.append(batch["observation.state"])
-            # Pad to full n_obs_steps if buffer not yet filled (episode start)
-            states = list(self._state_buffer)
-            if len(states) < self.config.n_obs_steps:
-                pad_needed = self.config.n_obs_steps - len(states)
-                states = [states[0]] * pad_needed + states
-            batch["observation.state"] = torch.stack(states).unsqueeze(0)  # (1, T, D)
-            if "observation.force" in batch:
-                self._force_buffer.append(batch["observation.force"])
-                forces = list(self._force_buffer)
-                if len(forces) < self.config.n_obs_steps:
-                    forces = [forces[0]] * (self.config.n_obs_steps - len(forces)) + forces
-                batch["observation.force"] = torch.stack(forces).unsqueeze(0)
+            if batch["observation.state"].ndim == 3:
+                # Pre-stacked by caller — skip internal buffer
+                pass
+            else:
+                batch = dict(batch)
+                self._state_buffer.append(batch["observation.state"])
+                states = list(self._state_buffer)
+                if len(states) < self.config.n_obs_steps:
+                    states = [states[0]] * (self.config.n_obs_steps - len(states)) + states
+                batch["observation.state"] = torch.stack(states).unsqueeze(0)  # (1, T, D)
+                if "observation.force" in batch:
+                    self._force_buffer.append(batch["observation.force"])
+                    forces = list(self._force_buffer)
+                    if len(forces) < self.config.n_obs_steps:
+                        forces = [forces[0]] * (self.config.n_obs_steps - len(forces)) + forces
+                    batch["observation.force"] = torch.stack(forces).unsqueeze(0)
 
         batch = self.normalize_inputs(batch)
         if self.config.image_features:
