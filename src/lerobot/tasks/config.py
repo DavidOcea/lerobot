@@ -295,6 +295,7 @@ class TaskConfig:
     enabled: bool = True  # Allow disabling specific tasks
     cameras: list[CameraConfig] = field(default_factory=list)  # Active cameras for this task
     cycle_end: bool = False  # When True, orchestrator ends the current cycle after this task
+    stop_on_failure: bool = True  # When False, FAILED tasks don't break the cycle
 
     # AGV任务字段
     agv_config: AGVTaskConfig | None = None
@@ -462,6 +463,7 @@ def parse_task_dict(
         "cameras": cameras,
         "agv_config": agv_config,
         "cycle_end": task_dict.get("cycle_end", False),
+        "stop_on_failure": task_dict.get("stop_on_failure", True),
     }
 
     # Task-type-specific fields
