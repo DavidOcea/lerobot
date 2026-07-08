@@ -318,19 +318,24 @@ class ACTPolicyONNX:
         while len(images) < 3:
             images.append(images[0])
 
-        # State/force → (1, 15) or (1, T*15)
+        # State/force → must be (1, n_obs_steps * state_dim) for ONNX
         state = batch["observation.state"]
-        if state.ndim == 2:
-            state = state.unsqueeze(0)  # (T, D) → (1, T, D)
-        if state.ndim == 3:
-            state = state.reshape(state.shape[0], -1)  # (1, T*D)
+        # Reshape to flat (1, D) regardless of input format
+        state = state.reshape(1, -1)
+        # Pad if state dim is too small (e.g. n_obs_steps=8 but buffer only has 1 frame)
+        _expected = self.n_obs_steps * 15
+        if state.shape[1] < _expected:
+            _padded = torch.zeros(1, _expected, dtype=state.dtype, device=state.device)
+            _padded[0, :state.shape[1]] = state[0]
+            state = _padded
 
         force = batch.get("observation.force", torch.zeros_like(state))
         if force is not None:
-            if force.ndim == 2:
-                force = force.unsqueeze(0)
-            if force.ndim == 3:
-                force = force.reshape(force.shape[0], -1)
+            force = force.reshape(1, -1)
+            if force.shape[1] < _expected:
+                _padded_f = torch.zeros(1, _expected, dtype=force.dtype, device=force.device)
+                _padded_f[0, :force.shape[1]] = force[0]
+                force = _padded_f
 
         # ONNX feed (all numpy, float32)
         feed = {
