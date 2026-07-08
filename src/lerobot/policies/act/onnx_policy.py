@@ -96,44 +96,10 @@ class DecoderOnly(nn.Module):
 # Temporal Ensemble (same as ACT, kept in PyTorch for simplicity)
 # ═══════════════════════════════════════════════════════════════════════
 
-class TemporalEnsembler:
-    """Online temporal ensemble for action chunks.
-
-    Identical to ACTTemporalEnsembler in modeling_act.py, but standalone
-    so onnx_policy doesn't need to import the full modeling_act module.
-    """
-
-    def __init__(self, coeff: float, chunk_size: int):
-        self.chunk_size = chunk_size
-        weights = torch.exp(-coeff * torch.arange(chunk_size))
-        self.register_buffer = lambda name, t: setattr(self, name, t)
-        self.register_buffer("weights", weights / weights.sum())
-        self.register_buffer("ensembled_actions", torch.zeros(0, 15))
-        self.register_buffer("ensembled_actions_count", torch.zeros(0, dtype=torch.long))
-
-    def reset(self):
-        self.ensembled_actions = torch.zeros(0, 15)
-        self.ensembled_actions_count = torch.zeros(0, dtype=torch.long)
-
-    def update(self, actions: torch.Tensor) -> torch.Tensor:
-        """Update ensemble with new chunk, return weighted action."""
-        self.ensembled_actions = torch.cat(
-            [self.ensembled_actions, actions[:, -1:]], dim=1
-        )
-        self.ensembled_actions_count = torch.cat(
-            [self.ensembled_actions_count,
-             torch.ones_like(self.ensembled_actions_count[-1:])]
-        )
-        # Clamp count to chunk_size
-        self.ensembled_actions = self.ensembled_actions[:, -self.chunk_size:]
-        self.ensembled_actions_count = self.ensembled_actions_count[-self.chunk_size:]
-        actions_count = torch.clamp(self.ensembled_actions_count, max=self.chunk_size)
-        weights = self.weights.to(actions.device)
-        w = weights[:actions_count.shape[0]]
-        # Normalize
-        w = w / (w.sum() + 1e-8)
-        w = w.unsqueeze(0).unsqueeze(-1)  # (1, N, 1)
-        return (self.ensembled_actions * w).sum(dim=1)
+# ═══════════════════════════════════════════════════════════════════════
+# Reuse original temporal ensemble from modeling_act (no need to reimplement)
+# ═══════════════════════════════════════════════════════════════════════
+from lerobot.policies.act.modeling_act import ACTTemporalEnsembler as TemporalEnsembler
 
 
 # ═══════════════════════════════════════════════════════════════════════
