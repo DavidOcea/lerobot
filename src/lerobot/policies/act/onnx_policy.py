@@ -153,9 +153,8 @@ class ACTPolicyONNX:
         # Auto-detect: .engine (TensorRT, Jetson Orin) > .onnx (ONNX Runtime, H100/CPU)
         self._encoder_backend: str = "ort"
         self._ort_session = None
-        self._trt_runtime = None
         self._trt_context = None
-        self._trt_bindings: list[int] = []
+        self._trt_engine = None
 
         if onnx_path.endswith(".engine"):
             self._init_trt_backend(onnx_path)
@@ -216,26 +215,15 @@ class ACTPolicyONNX:
 
         trt_logger = trt.Logger(trt.Logger.WARNING)
         runtime = trt.Runtime(trt_logger)
-        engine = runtime.deserialize_cuda_engine(engine_data)
-        context = engine.create_execution_context()
+        self._trt_engine = runtime.deserialize_cuda_engine(engine_data)
+        self._trt_context = self._trt_engine.create_execution_context()
 
-        self._trt_runtime = runtime
-        self._trt_context = context
-        self._trt_engine = engine
+        # Resolve input/output tensor names once
+        n_io = self._trt_engine.num_io_tensors
+        self._trt_in_names = [self._trt_engine.get_tensor_name(i) for i in range(5)]
+        self._trt_out_name = self._trt_engine.get_tensor_name(5)
+        self._trt_out_shape = self._trt_engine.get_tensor_shape(self._trt_out_name)
 
-        # Pre-allocate device buffers for the 5 inputs + 1 output
-        import ctypes
-        total_io = engine.num_io_tensors
-        bindings: list[int] = []
-        for i in range(total_io):
-            name = engine.get_tensor_name(i)
-            shape = engine.get_tensor_shape(name)
-            size_bytes = trt.volume(shape) * 4  # FP32 = 4 bytes
-            buf = torch.empty(size_bytes // 4, dtype=torch.float32, device=self.device).contiguous()
-            bindings.append(buf.data_ptr())
-            context.set_tensor_address(name, buf.data_ptr())
-
-        self._trt_bindings = bindings
         logger.info(f"  Encoder backend: TensorRT ({len(engine_data)/1e6:.1f} MB engine)")
         self._encoder_backend = "trt"
 
@@ -387,37 +375,31 @@ class ACTPolicyONNX:
         return torch.from_numpy(ort_out).to(self.device)
 
     def _run_trt_encoder(self, batch: dict) -> torch.Tensor:
-        """TensorRT inference — zero-copy via pre-allocated device buffers."""
+        """TensorRT inference — fresh PyTorch tensors per call, no pre-allocation."""
         images, state, force = self._prepare_encoder_inputs(batch)
 
-        ctx = self._trt_context
-        # Copy input tensors into pre-allocated TRT buffers
-        _img_tensors = [images[0].contiguous(), images[1].contiguous(), images[2].contiguous()]
-        _input_tensors = [*_img_tensors, state.contiguous(), force.contiguous()]
+        # Input tensors on GPU (contiguous, FP32)
+        in_tensors = [
+            images[0].contiguous(), images[1].contiguous(), images[2].contiguous(),
+            state.contiguous(), force.contiguous(),
+        ]
 
-        for i, t in enumerate(_input_tensors):
-            name = self._trt_engine.get_tensor_name(i)
-            ptr = self._trt_bindings[i]
-            buf = torch.empty(t.nelement(), dtype=torch.float32, device=self.device)
-            buf.copy_(t.flatten())
+        # Allocate output tensor
+        import numpy as np
+        nelem = int(np.prod(self._trt_out_shape))
+        out_tensor = torch.empty(nelem, dtype=torch.float32, device=self.device).contiguous()
 
-        # Execute (TRT 8.6 uses execute_v2)
-        ctx.execute_v2(self._trt_bindings)
+        # Set tensor addresses for this call
+        for i in range(5):
+            self._trt_context.set_tensor_address(self._trt_in_names[i], in_tensors[i].data_ptr())
+        self._trt_context.set_tensor_address(self._trt_out_name, out_tensor.data_ptr())
 
-        # Read output from last buffer (encoder_out)
-        out_name = self._trt_engine.get_tensor_name(len(_input_tensors))
-        out_shape = self._trt_engine.get_tensor_shape(out_name)
-        out_ptr = self._trt_bindings[len(_input_tensors)]
-        nelem = int(__import__('numpy').prod(out_shape))
-        out_buf = torch.empty(nelem, dtype=torch.float32, device=self.device)
-        # Copy from TRT buffer to output tensor
-        out_view = torch.empty(nelem, dtype=torch.float32, device=self.device)
-        self._trt_context.set_tensor_address(out_name, out_ptr)
-        # Use buffer content
-        out_tensor = torch.zeros(nelem, dtype=torch.float32, device=self.device)
-        import ctypes
-        ctypes.memmove(out_tensor.data_ptr(), out_ptr, nelem * 4)
-        return out_tensor.reshape(out_shape)
+        # Execute async on CUDA stream
+        stream = torch.cuda.current_stream()
+        self._trt_context.execute_async_v2(stream_handle=stream.cuda_stream)
+        stream.synchronize()
+
+        return out_tensor.reshape(self._trt_out_shape)
 
     def __repr__(self):
         return (
