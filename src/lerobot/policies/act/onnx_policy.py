@@ -149,33 +149,69 @@ class ACTPolicyONNX:
         self.normalize_inputs = full_policy.normalize_inputs
         self.unnormalize_outputs = full_policy.unnormalize_outputs
 
-        # ── ONNX Runtime session ──
-        logger.info(f"Loading ONNX model: {onnx_path}")
+        # ── Encoder inference backend ──
+        # Auto-detect: .engine (TensorRT, Jetson Orin) > .onnx (ONNX Runtime, H100/CPU)
+        self._encoder_backend: str = "ort"
+        self._ort_session = None
+        self._trt_runtime = None
+        self._trt_context = None
+        self._trt_bindings: list[int] = []
 
-        # ONNX Runtime: try CUDA → TensorRT → CPU (Jetson has Tegra GPU via
-        # JetPack's bundled ort, not standard CUDA. JetPack ort supports
-        # 'TensorrtExecutionProvider' which wraps Tegra GPU.)
+        if onnx_path.endswith(".engine"):
+            self._init_trt_backend(onnx_path)
+        else:
+            self._init_ort_backend(onnx_path)
+
+    def _init_ort_backend(self, path: str):
+        """Set up ONNX Runtime backend (standard GPU or CPU)."""
         try:
             import onnxruntime as ort
         except ImportError:
             raise ImportError(
-                "onnxruntime is required for ACTPolicyONNX. "
-                "Install with: pip install onnxruntime-gpu (standard GPU) or "
-                "use JetPack's bundled onnxruntime (Jetson Orin)."
+                "onnxruntime is required for ONNX backend. "
+                "Install with: pip install onnxruntime-gpu"
             )
-
-        # Probe available providers in priority order
         _avail = ort.get_available_providers()
         _preferred = [
             p for p in ("CUDAExecutionProvider", "TensorrtExecutionProvider",
                          "CPUExecutionProvider")
             if p in _avail
         ]
-        self._ort_session = ort.InferenceSession(onnx_path, providers=_preferred)
-        provider = self._ort_session.get_providers()[0]
-        logger.info(f"  ONNX provider: {provider} (available: {_avail})")
+        self._ort_session = ort.InferenceSession(path, providers=_preferred)
+        logger.info(f"  Encoder backend: ONNX Runtime ({self._ort_session.get_providers()[0]})")
+        self._encoder_backend = "ort"
 
-        # ── Decoder (PyTorch, extracted from full model) ──
+    def _init_trt_backend(self, path: str):
+        """Set up TensorRT backend (Jetson Orin, NVIDIA GPU)."""
+        import tensorrt as trt
+
+        with open(path, "rb") as f:
+            engine_data = f.read()
+
+        trt_logger = trt.Logger(trt.Logger.WARNING)
+        runtime = trt.Runtime(trt_logger)
+        engine = runtime.deserialize_cuda_engine(engine_data)
+        context = engine.create_execution_context()
+
+        self._trt_runtime = runtime
+        self._trt_context = context
+        self._trt_engine = engine
+
+        # Pre-allocate device buffers for the 5 inputs + 1 output
+        import ctypes
+        total_io = engine.num_io_tensors
+        bindings: list[int] = []
+        for i in range(total_io):
+            name = engine.get_tensor_name(i)
+            shape = engine.get_tensor_shape(name)
+            size_bytes = trt.volume(shape) * 4  # FP32 = 4 bytes
+            buf = torch.empty(size_bytes // 4, dtype=torch.float32, device=self.device).contiguous()
+            bindings.append(buf.data_ptr())
+            context.set_tensor_address(name, buf.data_ptr())
+
+        self._trt_bindings = bindings
+        logger.info(f"  Encoder backend: TensorRT ({len(engine_data)/1e6:.1f} MB engine)")
+        self._encoder_backend = "trt"
         full_policy.model.eval()
         self._decoder = DecoderOnly(full_policy.model, config).to(self.device)
         self._decoder.eval()
@@ -231,7 +267,7 @@ class ACTPolicyONNX:
         batch = self.normalize_inputs(batch)
 
         # ── ONNX backbone+encoder ──
-        encoder_out = self._run_onnx_encoder(batch)
+        encoder_out = self._run_encoder(batch)
 
         # ── PyTorch decoder ──
         with torch.no_grad():
@@ -295,34 +331,31 @@ class ACTPolicyONNX:
 
         return batch
 
-    def _run_onnx_encoder(self, batch: dict) -> torch.Tensor:
-        """Run backbone+encoder through ONNX Runtime.
-
-        Args:
-            batch: Normalized batch dict with observation.state, observation.force,
-                   and image tensors.
+    def _run_encoder(self, batch: dict) -> torch.Tensor:
+        """Run backbone+encoder through the active backend (ORT or TensorRT).
 
         Returns:
             (seq_len, 1, 512) encoder output tensor on self.device
         """
-        # Get images (must match the 3-camera export order)
+        if self._encoder_backend == "trt":
+            return self._run_trt_encoder(batch)
+        return self._run_ort_encoder(batch)
+
+    def _prepare_encoder_inputs(self, batch: dict) -> tuple:
+        """Common input preparation for both ORT and TRT backends."""
+        # Images — collect and match 3-camera export order
         img_keys = sorted([k for k in batch if "image" in k.lower()])
         images = []
         for key in img_keys:
             img = batch[key]
             if img.ndim == 3:
-                img = img.unsqueeze(0)  # (C,H,W) → (1,C,H,W)
+                img = img.unsqueeze(0)
             images.append(img)
-
-        # Fallback if fewer than 3 cameras: duplicate first image
         while len(images) < 3:
             images.append(images[0])
 
-        # State/force → must be (1, n_obs_steps * state_dim) for ONNX
-        state = batch["observation.state"]
-        # Reshape to flat (1, D) regardless of input format
-        state = state.reshape(1, -1)
-        # Pad if state dim is too small (e.g. n_obs_steps=8 but buffer only has 1 frame)
+        # State/force — reshape + zero-pad to (1, n_obs_steps * 15)
+        state = batch["observation.state"].reshape(1, -1)
         _expected = self.n_obs_steps * 15
         if state.shape[1] < _expected:
             _padded = torch.zeros(1, _expected, dtype=state.dtype, device=state.device)
@@ -337,7 +370,10 @@ class ACTPolicyONNX:
                 _padded_f[0, :force.shape[1]] = force[0]
                 force = _padded_f
 
-        # ONNX feed (all numpy, float32)
+        return tuple(images), state, force
+
+    def _run_ort_encoder(self, batch: dict) -> torch.Tensor:
+        images, state, force = self._prepare_encoder_inputs(batch)
         feed = {
             "img0": images[0].cpu().numpy().astype(np.float32),
             "img1": images[1].cpu().numpy().astype(np.float32),
@@ -345,9 +381,41 @@ class ACTPolicyONNX:
             "state": state.cpu().numpy().astype(np.float32),
             "force": force.cpu().numpy().astype(np.float32),
         }
-
-        ort_out = self._ort_session.run(None, feed)[0]  # (seq_len, B, D)
+        ort_out = self._ort_session.run(None, feed)[0]
         return torch.from_numpy(ort_out).to(self.device)
+
+    def _run_trt_encoder(self, batch: dict) -> torch.Tensor:
+        """TensorRT inference — zero-copy via pre-allocated device buffers."""
+        images, state, force = self._prepare_encoder_inputs(batch)
+
+        ctx = self._trt_context
+        # Copy input tensors into pre-allocated TRT buffers
+        _img_tensors = [images[0].contiguous(), images[1].contiguous(), images[2].contiguous()]
+        _input_tensors = [*_img_tensors, state.contiguous(), force.contiguous()]
+
+        for i, t in enumerate(_input_tensors):
+            name = self._trt_engine.get_tensor_name(i)
+            ptr = self._trt_bindings[i]
+            buf = torch.empty(t.nelement(), dtype=torch.float32, device=self.device)
+            buf.copy_(t.flatten())
+
+        # Execute (TRT 8.6 uses execute_v2)
+        ctx.execute_v2(self._trt_bindings)
+
+        # Read output from last buffer (encoder_out)
+        out_name = self._trt_engine.get_tensor_name(len(_input_tensors))
+        out_shape = self._trt_engine.get_tensor_shape(out_name)
+        out_ptr = self._trt_bindings[len(_input_tensors)]
+        nelem = int(__import__('numpy').prod(out_shape))
+        out_buf = torch.empty(nelem, dtype=torch.float32, device=self.device)
+        # Copy from TRT buffer to output tensor
+        out_view = torch.empty(nelem, dtype=torch.float32, device=self.device)
+        self._trt_context.set_tensor_address(out_name, out_ptr)
+        # Use buffer content
+        out_tensor = torch.zeros(nelem, dtype=torch.float32, device=self.device)
+        import ctypes
+        ctypes.memmove(out_tensor.data_ptr(), out_ptr, nelem * 4)
+        return out_tensor.reshape(out_shape)
 
     def __repr__(self):
         return (
