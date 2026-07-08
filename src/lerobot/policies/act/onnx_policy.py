@@ -120,6 +120,9 @@ class ACTPolicyONNX:
         full_policy = ACTPolicy.from_pretrained(checkpoint_path)
         full_policy = full_policy.to(self.device)
         config = full_policy.config
+        self.config = config       # expose for callers (record.py)
+        if not hasattr(config, "use_amp"):
+            config.use_amp = False  # compatibility shim
         self.chunk_size = config.chunk_size
         self.n_action_steps = config.n_action_steps
         self.n_obs_steps = config.n_obs_steps
