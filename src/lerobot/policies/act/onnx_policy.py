@@ -41,63 +41,41 @@ class DecoderOnly(nn.Module):
     """Subset of ACT model: decoder + action head only.
 
     Takes encoder output, runs autoregressive decoder, returns action chunk.
-
-    Optimization: for n_obs_steps>1 models, the temporal ensemble weights
-    exp(-0.01*i) are near-uniform (range 1.0→0.83 over 20 steps). We can
-    safely truncate the autoregressive loop from chunk_size steps to
-    `decoder_steps` steps, repeating the last output to fill the chunk.
-    This cuts decoder latency proportionally without retraining.
     """
 
-    def __init__(self, act_model, config, decoder_steps: int = 5):
+    def __init__(self, act_model, config):
         super().__init__()
         self.decoder = act_model.decoder
         self.decoder_pos_embed = act_model.decoder_pos_embed
         self.action_head = act_model.action_head
         self.chunk_size = config.chunk_size
-        self.decoder_steps = min(decoder_steps, self.chunk_size)
         self.dim_model = config.dim_model
         self.latent_dim = config.latent_dim
-        # Fixed start token (zeros) — same as ACT training
         self.register_buffer(
             "tgt_embed",
             torch.zeros(1, self.dim_model),
         )
 
     def forward(self, encoder_out: torch.Tensor) -> torch.Tensor:
-        """Run truncated autoregressive decoder.
-
-        Args:
-            encoder_out: (seq_len, B, dim_model) from backbone+encoder
-
-        Returns:
-            (B, chunk_size, action_dim) action chunk (padded to full chunk_size)
-        """
         B = encoder_out.shape[1]
         device = encoder_out.device
 
-        x = self.tgt_embed.unsqueeze(0).expand(1, B, self.dim_model)  # (1, B, D)
+        decoder_out = []
+        x = self.tgt_embed.unsqueeze(0).expand(1, B, self.dim_model)
 
-        for i in range(self.decoder_steps):
-            pos = self.decoder_pos_embed.weight[i:i+1].unsqueeze(1)  # (1, 1, D)
+        for i in range(self.chunk_size):
+            pos = self.decoder_pos_embed.weight[i:i+1].unsqueeze(1)
             dec_in = x[-1:] + pos
             out = self.decoder(
                 dec_in, encoder_out,
                 decoder_pos_embed=pos, encoder_pos_embed=None,
-            )  # (1, B, D)
+            )
             x = torch.cat([x, out], dim=0)
+            decoder_out.append(out)
 
-        # Take the last decoder_steps outputs and pad to chunk_size by
-        # repeating the final output. Temporal ensemble with coeff=0.01
-        # weights these near-uniformly, so truncation is lossless.
-        last_out = out  # (1, B, D)
-        repeat_needed = self.chunk_size - self.decoder_steps
-        pad = last_out.repeat(repeat_needed, 1, 1)  # (repeat, B, D)
-        decoder_out = torch.cat([x[1:], pad], dim=0)  # skip init token
-        decoder_out = decoder_out[:self.chunk_size]   # ensure exact length
-
-        decoder_out = decoder_out.transpose(0, 1)     # (B, chunk_size, D)
-        actions = self.action_head(decoder_out)        # (B, chunk_size, action_dim)
+        decoder_out = torch.cat(decoder_out, dim=0)
+        decoder_out = decoder_out.transpose(0, 1)
+        actions = self.action_head(decoder_out)
         return actions
 
 
@@ -172,7 +150,7 @@ class ACTPolicyONNX:
 
         # ── Decoder (PyTorch, extracted from full model) ──
         full_policy.model.eval()
-        self._decoder = DecoderOnly(full_policy.model, config, decoder_steps=5).to(self.device)
+        self._decoder = DecoderOnly(full_policy.model, config).to(self.device)
         self._decoder.eval()
 
         # ── Temporal ensemble ──
