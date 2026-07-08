@@ -162,6 +162,42 @@ def make_policy(
     kwargs["config"] = cfg
 
     if cfg.pretrained_path:
+        # ── Auto-detect TensorRT engine ──
+        # If a .engine file exists alongside the checkpoint, use the accelerated
+        # ONNX/TensorRT inference backend (ACTPolicyONNX). Otherwise fall through
+        # to the standard PyTorch ACTPolicy. Only applies to "act" type policies.
+        _engine_detected: str | None = None
+        if cfg.type == "act":
+            from pathlib import Path as _Path
+            _ckp = _Path(cfg.pretrained_path)
+            # Check three locations: exact path, parent dir, and same-name .engine
+            for _candidate in (
+                _ckp.with_suffix(".engine"),
+                _ckp.parent / (_ckp.name + ".engine"),
+                _ckp.parent / "backbone_encoder_p2.engine",
+            ):
+                if _candidate.exists():
+                    _engine_detected = str(_candidate)
+                    break
+
+        if _engine_detected:
+            import logging as _logging
+            _logging.info(f"Detected TensorRT engine: {_engine_detected}")
+            try:
+                from lerobot.policies.act.onnx_policy import ACTPolicyONNX
+                policy = ACTPolicyONNX(
+                    onnx_path=_engine_detected,
+                    checkpoint_path=cfg.pretrained_path,
+                    device=cfg.device,
+                )
+                _logging.info("Using ACTPolicyONNX (TensorRT/ONNX accelerated inference)")
+                return policy
+            except ImportError as e:
+                _logging.warning(
+                    f"TensorRT engine detected but ACTPolicyONNX unavailable ({e}). "
+                    "Falling back to PyTorch ACTPolicy."
+                )
+
         # Load a pretrained policy and override the config if needed (for example, if there are inference-time
         # hyperparameters that we want to vary).
         kwargs["pretrained_name_or_path"] = cfg.pretrained_path
