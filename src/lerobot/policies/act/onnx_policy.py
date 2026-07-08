@@ -162,6 +162,32 @@ class ACTPolicyONNX:
         else:
             self._init_ort_backend(onnx_path)
 
+        # ── Decoder (PyTorch, extracted from full model) ──
+        full_policy.model.eval()
+        self._decoder = DecoderOnly(full_policy.model, config).to(self.device)
+        self._decoder.eval()
+
+        # ── Temporal ensemble ──
+        self._te_coeff = config.temporal_ensemble_coeff
+        if self._te_coeff is not None:
+            self._temporal_ensembler = TemporalEnsembler(self._te_coeff, self.chunk_size)
+            self._action_queue = None
+        else:
+            self._temporal_ensembler = None
+            self._action_queue = deque([], maxlen=self.n_action_steps)
+
+        # ── State buffer for n_obs_steps > 1 ──
+        self._state_buffer = deque(maxlen=self.n_obs_steps) if self.n_obs_steps > 1 else None
+        self._force_buffer = deque(maxlen=self.n_obs_steps) if self.n_obs_steps > 1 else None
+
+        # ── Image key config ──
+        self._img_keys = sorted(
+            [k for k, ft in config.input_features.items() if ft.type.name == "VISUAL"]
+        )
+
+        self.reset()
+        logger.info("✅ ACTPolicyONNX ready")
+
     def _init_ort_backend(self, path: str):
         """Set up ONNX Runtime backend (standard GPU or CPU)."""
         try:
@@ -212,30 +238,6 @@ class ACTPolicyONNX:
         self._trt_bindings = bindings
         logger.info(f"  Encoder backend: TensorRT ({len(engine_data)/1e6:.1f} MB engine)")
         self._encoder_backend = "trt"
-        full_policy.model.eval()
-        self._decoder = DecoderOnly(full_policy.model, config).to(self.device)
-        self._decoder.eval()
-
-        # ── Temporal ensemble ──
-        self._te_coeff = config.temporal_ensemble_coeff
-        if self._te_coeff is not None:
-            self._temporal_ensembler = TemporalEnsembler(self._te_coeff, self.chunk_size)
-            self._action_queue = None
-        else:
-            self._temporal_ensembler = None
-            self._action_queue = deque([], maxlen=self.n_action_steps)
-
-        # ── State buffer for n_obs_steps > 1 ──
-        self._state_buffer = deque(maxlen=self.n_obs_steps) if self.n_obs_steps > 1 else None
-        self._force_buffer = deque(maxlen=self.n_obs_steps) if self.n_obs_steps > 1 else None
-
-        # ── Image key config ──
-        self._img_keys = sorted(
-            [k for k, ft in config.input_features.items() if ft.type.name == "VISUAL"]
-        )
-
-        self.reset()
-        logger.info("✅ ACTPolicyONNX ready")
 
     def reset(self):
         """Reset stateful components (call at episode start)."""
