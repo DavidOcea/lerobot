@@ -375,29 +375,26 @@ class ACTPolicyONNX:
         return torch.from_numpy(ort_out).to(self.device)
 
     def _run_trt_encoder(self, batch: dict) -> torch.Tensor:
-        """TensorRT inference — fresh PyTorch tensors per call, no pre-allocation."""
+        """TensorRT inference — TRT 8.6 bindings API (compatible with JetPack)."""
+        import numpy as np
+
         images, state, force = self._prepare_encoder_inputs(batch)
 
-        # Input tensors on GPU (contiguous, FP32)
+        # Input tensors on GPU
         in_tensors = [
             images[0].contiguous(), images[1].contiguous(), images[2].contiguous(),
             state.contiguous(), force.contiguous(),
         ]
 
-        # Allocate output tensor
-        import numpy as np
+        # Allocate output buffer
         nelem = int(np.prod(self._trt_out_shape))
         out_tensor = torch.empty(nelem, dtype=torch.float32, device=self.device).contiguous()
 
-        # Set tensor addresses for this call
-        for i in range(5):
-            self._trt_context.set_tensor_address(self._trt_in_names[i], in_tensors[i].data_ptr())
-        self._trt_context.set_tensor_address(self._trt_out_name, out_tensor.data_ptr())
+        # TRT 8.6 bindings API: list of int device pointers
+        bindings = [t.data_ptr() for t in in_tensors] + [out_tensor.data_ptr()]
 
-        # Execute async on CUDA stream
-        stream = torch.cuda.current_stream()
-        self._trt_context.execute_async_v2(stream_handle=stream.cuda_stream)
-        stream.synchronize()
+        # Execute synchronously (simpler, no stream management)
+        self._trt_context.execute_v2(bindings)
 
         return out_tensor.reshape(self._trt_out_shape)
 
