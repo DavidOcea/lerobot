@@ -152,20 +152,28 @@ class ACTPolicyONNX:
         # ── ONNX Runtime session ──
         logger.info(f"Loading ONNX model: {onnx_path}")
 
+        # ONNX Runtime: try CUDA → TensorRT → CPU (Jetson has Tegra GPU via
+        # JetPack's bundled ort, not standard CUDA. JetPack ort supports
+        # 'TensorrtExecutionProvider' which wraps Tegra GPU.)
         try:
             import onnxruntime as ort
         except ImportError:
             raise ImportError(
-                "onnxruntime-gpu is required for ACTPolicyONNX. "
-                "Install with: pip install onnxruntime-gpu"
+                "onnxruntime is required for ACTPolicyONNX. "
+                "Install with: pip install onnxruntime-gpu (standard GPU) or "
+                "use JetPack's bundled onnxruntime (Jetson Orin)."
             )
 
-        self._ort_session = ort.InferenceSession(
-            onnx_path,
-            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
-        )
+        # Probe available providers in priority order
+        _avail = ort.get_available_providers()
+        _preferred = [
+            p for p in ("CUDAExecutionProvider", "TensorrtExecutionProvider",
+                         "CPUExecutionProvider")
+            if p in _avail
+        ]
+        self._ort_session = ort.InferenceSession(onnx_path, providers=_preferred)
         provider = self._ort_session.get_providers()[0]
-        logger.info(f"  ONNX provider: {provider}")
+        logger.info(f"  ONNX provider: {provider} (available: {_avail})")
 
         # ── Decoder (PyTorch, extracted from full model) ──
         full_policy.model.eval()
