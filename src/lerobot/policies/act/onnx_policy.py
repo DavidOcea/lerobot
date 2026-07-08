@@ -218,11 +218,11 @@ class ACTPolicyONNX:
         self._trt_engine = runtime.deserialize_cuda_engine(engine_data)
         self._trt_context = self._trt_engine.create_execution_context()
 
-        # Resolve input/output tensor names once
-        n_io = self._trt_engine.num_io_tensors
+        # Resolve input/output tensor names once, convert Dims to tuple
         self._trt_in_names = [self._trt_engine.get_tensor_name(i) for i in range(5)]
         self._trt_out_name = self._trt_engine.get_tensor_name(5)
-        self._trt_out_shape = self._trt_engine.get_tensor_shape(self._trt_out_name)
+        _dims = self._trt_engine.get_tensor_shape(self._trt_out_name)
+        self._trt_out_shape = tuple(_dims)
 
         logger.info(f"  Encoder backend: TensorRT ({len(engine_data)/1e6:.1f} MB engine)")
         self._encoder_backend = "trt"
