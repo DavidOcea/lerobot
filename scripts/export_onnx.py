@@ -141,16 +141,10 @@ def export_onnx(checkpoint_path: str, output_path: str, device: torch.device):
         output_path,
         input_names=input_names,
         output_names=output_names,
-        opset_version=17,           # required for nn.MultiheadAttention
+        opset_version=17,
         do_constant_folding=True,
-        dynamic_axes={
-            "img0": {0: "batch"},
-            "img1": {0: "batch"},
-            "img2": {0: "batch"},
-            "state": {0: "batch"},
-            "force": {0: "batch"},
-            "encoder_out": {1: "batch"},
-        },
+        # NOTE: no dynamic_axes — fixed batch=1 for TensorRT compatibility
+        # on Jetson Orin. Online inference always runs single-sample.
         export_params=True,
         verbose=False,
     )
