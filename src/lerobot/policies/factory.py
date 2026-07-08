@@ -170,11 +170,12 @@ def make_policy(
         if cfg.type == "act":
             from pathlib import Path as _Path
             _ckp = _Path(cfg.pretrained_path)
-            # Check three locations: exact path, parent dir, and same-name .engine
+            # Check: same-name .engine, parent dir, inside checkpoint dir
             for _candidate in (
                 _ckp.with_suffix(".engine"),
                 _ckp.parent / (_ckp.name + ".engine"),
                 _ckp.parent / "backbone_encoder_p2.engine",
+                _ckp / "backbone_encoder_p2.engine",           # inside checkpoint dir
             ):
                 if _candidate.exists():
                     _engine_detected = str(_candidate)
