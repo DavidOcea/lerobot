@@ -106,10 +106,11 @@ def main():
             indices = _parse_motor_input(parts[1], num_joints)
             if not indices:
                 continue
-            _set_motors(robot, indices, False)
-            disabled.update(indices)
-            names = [joint_names[i] for i in indices]
-            print(f"  已解除使能: {', '.join(names)}")
+            ok, fail = _set_motors(robot, indices, False)
+            disabled.update(ok)
+            if ok:
+                names = [joint_names[i] for i in ok]
+                print(f"  已解除使能: {', '.join(names)}")
             print(f"  当前解除总数: {len(disabled)}/{num_joints}")
 
         elif cmd == 'e':
@@ -119,10 +120,11 @@ def main():
             indices = _parse_motor_input(parts[1], num_joints)
             if not indices:
                 continue
-            _set_motors(robot, indices, True)
-            disabled.difference_update(indices)
-            names = [joint_names[i] for i in indices]
-            print(f"  已重新使能: {', '.join(names)}")
+            ok, fail = _set_motors(robot, indices, True)
+            disabled.difference_update(ok)
+            if ok:
+                names = [joint_names[i] for i in ok]
+                print(f"  已重新使能: {', '.join(names)}")
             print(f"  当前解除总数: {len(disabled)}/{num_joints}")
 
         elif cmd == 's':
@@ -182,11 +184,12 @@ def _get_positions(robot, joint_names):
 
 
 def _set_motors(robot, indices, enable):
-    """Enable or disable specific motors by index."""
+    """Enable or disable specific motors by index.
+    Returns (ok_indices, failed_indices)."""
     hw = robot._hardware_manager
     if hw is None:
         print("  ✗ 硬件管理器未初始化")
-        return
+        return [], indices
 
     # Find the EyouMotorHardware instance (arm_motors) in the manager
     motor_hw = None
@@ -211,6 +214,8 @@ def _set_motors(robot, indices, enable):
             obs_to_motor[obs_i] = motor_idx
             motor_idx += 1
 
+    ok_idx = []
+    fail_idx = []
     for idx in indices:
         mi = obs_to_motor.get(idx, -1)
         if mi < 0:
@@ -219,11 +224,25 @@ def _set_motors(robot, indices, enable):
         try:
             motor = motor_hw.motor_nodes_[mi]
             if enable:
-                motor.enable()
+                motor.clear_fault()
+                motor.configure_csp_mode(0, False)
+                motor.start_auto_feedback(0, 255, 20)
+                print(f"  ✓ {obs_names[idx]} 已重新使能 (CSP)")
             else:
                 motor.disable()
+                print(f"  ✓ {obs_names[idx]} 已解除使能")
+            ok_idx.append(idx)
         except Exception as e:
             print(f"  ✗ {obs_names[idx]} 操作失败: {e}")
+            fail_idx.append(idx)
+
+    if ok_idx:
+        action = "使能" if enable else "解除"
+        names = ", ".join(obs_names[i] for i in ok_idx)
+        print(f"  {action}成功: {names}")
+    if fail_idx:
+        print(f"  失败: {', '.join(obs_names[i] for i in fail_idx)}")
+    return ok_idx, fail_idx
 
 
 def _save_position(pos_name, positions, output_path):
