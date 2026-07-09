@@ -188,17 +188,42 @@ def _set_motors(robot, indices, enable):
         print("  ✗ 硬件管理器未初始化")
         return
 
+    # Find the EyouMotorHardware instance (arm_motors) in the manager
+    motor_hw = None
+    for inst in hw._hardware_instances:
+        if hasattr(inst, 'motor_nodes_'):
+            motor_hw = inst
+            break
+    if motor_hw is None:
+        print("  ✗ 找不到电机硬件实例 (EyouMotorHardware)")
+        return
+
+    # Build observation_index → motor_index map.
+    # Gripper (joint_7) is in observation_joint_names but NOT in motor_nodes_.
+    # All indices after gripper need to be shifted down by 1.
+    obs_names = robot.observation_joint_names
+    motor_idx = 0
+    obs_to_motor = {}
+    for obs_i, name in enumerate(obs_names):
+        if "joint_7" in name or "gripper" in name.lower():
+            obs_to_motor[obs_i] = -1  # no motor backing
+        else:
+            obs_to_motor[obs_i] = motor_idx
+            motor_idx += 1
+
     for idx in indices:
+        mi = obs_to_motor.get(idx, -1)
+        if mi < 0:
+            print(f"  ⚠ {obs_names[idx]} 无独立电机 (可能为夹爪), 跳过")
+            continue
         try:
-            motor = hw.motor_nodes_[idx]
+            motor = motor_hw.motor_nodes_[mi]
             if enable:
                 motor.enable()
             else:
                 motor.disable()
         except Exception as e:
-            joint_name = robot.observation_joint_names[idx]
-            action = "使能" if enable else "解除"
-            print(f"  ✗ {joint_name} {action}失败: {e}")
+            print(f"  ✗ {obs_names[idx]} 操作失败: {e}")
 
 
 def _save_position(pos_name, positions, output_path):
