@@ -2225,6 +2225,16 @@ class TaskAgentOrchestrator:
 
             # Create a temporary TaskConfig for this step, reusing _execute_position_task
             from lerobot.tasks.config import CompletionCriteria
+
+            # Overlap: if this step has overlap_next and is NOT the last step,
+            # relax the tolerance so the motor doesn't fully stop before the
+            # next step's target is sent.  CSP mode reads the latest register
+            # value so the motor redirects seamlessly.
+            tolerance = step.position_tolerance
+            if step.overlap_next and i + 1 < len(task.steps):
+                tolerance = step.position_tolerance * 3.0
+                logger.debug(f"    overlap_next: relaxed tolerance {step.position_tolerance}° → {tolerance}°")
+
             step_task = TaskConfig(
                 name=f"{task.name}/{step_name}",
                 task_type="position",
@@ -2233,7 +2243,7 @@ class TaskAgentOrchestrator:
                 completion_criteria=CompletionCriteria(
                     type="position",
                     target_joint_positions=step.position,
-                    position_tolerance=step.position_tolerance,
+                    position_tolerance=tolerance,
                 ),
             )
             # Propagate speed_multiplier from parent task to step task

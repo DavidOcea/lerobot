@@ -173,6 +173,7 @@ class PositionSequenceStep:
     position: dict[str, float] = field(default_factory=dict)
     max_duration: float = 10.0
     position_tolerance: float = 3.0
+    overlap_next: bool = False  # 到位前提前发下一步, 消除停顿
 
 
 @dataclass
