@@ -93,7 +93,8 @@ class BackboneEncoderExport(nn.Module):
 # Main export logic
 # ═══════════════════════════════════════════════════════════════════════
 
-def export_onnx(checkpoint_path: str, output_path: str, device: torch.device):
+def export_onnx(checkpoint_path: str, output_path: str, device: torch.device,
+                 image_height: int = 480, image_width: int = 640):
     """Export Backbone+Encoder to ONNX."""
     from lerobot.policies.act.modeling_act import ACTPolicy
 
@@ -106,7 +107,7 @@ def export_onnx(checkpoint_path: str, output_path: str, device: torch.device):
     cfg = policy.config
 
     n_state = 15 * max(1, cfg.n_obs_steps)
-    B, C, H, W = 1, 3, 480, 640
+    B, C, H, W = 1, 3, image_height, image_width
 
     logger.info(f"  chunk_size={cfg.chunk_size}, n_obs_steps={cfg.n_obs_steps}, dim_model={cfg.dim_model}")
     logger.info(f"  state_dim={n_state}, image_shape={H}x{W}")
@@ -258,11 +259,14 @@ def main():
     parser.add_argument("--output", type=str, default="outputs/export/backbone_encoder.onnx")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--verify", action="store_true", default=True)
+    parser.add_argument("--image_height", type=int, default=480)
+    parser.add_argument("--image_width", type=int, default=640)
     args = parser.parse_args()
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     ref_output, dummy, output_path, export_module, n_state = export_onnx(
-        args.checkpoint, args.output, device
+        args.checkpoint, args.output, device,
+        image_height=args.image_height, image_width=args.image_width,
     )
 
     if args.verify:
