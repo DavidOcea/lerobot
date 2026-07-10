@@ -487,11 +487,17 @@ class ACT(nn.Module):
         if self.config.state_dropout != 0.0 and self.config.use_state:
             self.state_dropout = self.config.state_dropout
             print("state_dropout = ",self.state_dropout)
-        # head dropout 
+        # head dropout
         self.head_dropout = None
         if self.config.head_dropout != 0.0:
             self.head_dropout = self.config.head_dropout
             print("head_dropout = ",self.head_dropout)
+
+        # force dropout: randomly mask force token during training
+        self.force_dropout = None
+        if self.config.force_dropout != 0.0 and self.config.robot_force_feature:
+            self.force_dropout = nn.Dropout(p=self.config.force_dropout)
+            print("force_dropout = ",self.config.force_dropout)
 
 
         if self.config.use_vae:
@@ -844,11 +850,12 @@ class ACT(nn.Module):
             encoder_in_tokens.append(
                 self.encoder_env_state_input_proj(batch["observation.environment_state"])
             )
-        # add force using
+        # add force using (with optional dropout for contact robustness)
         if self.config.robot_force_feature:
-            encoder_in_tokens.append(
-                self.encoder_robot_force_input_proj(batch["observation.force"])
-                )
+            force_token = self.encoder_robot_force_input_proj(batch["observation.force"])
+            if self.force_dropout is not None and self.training:
+                force_token = self.force_dropout(force_token)
+            encoder_in_tokens.append(force_token)
 
         if self.config.image_features and not self.config.img_cross_atten:
             # print("no cross attention image !")
