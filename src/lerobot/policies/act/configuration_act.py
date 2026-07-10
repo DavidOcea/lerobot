@@ -95,6 +95,8 @@ class ACTConfig(PreTrainedConfig):
     use_state: bool = True
     # 使用state_dropout
     state_dropout: float = 0.0
+    # force dropout: 训练时随机 mask 掉 force token，逼模型用视觉+关节补全
+    force_dropout: float = 0.0
     head_dropout: float = 0.0
     use_robot_position: bool = False
     # img和position 进行交叉注意力
