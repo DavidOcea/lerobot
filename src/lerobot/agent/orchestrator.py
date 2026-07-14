@@ -2115,8 +2115,12 @@ class TaskAgentOrchestrator:
             elapsed = time.time() - start_time
             progress = min(1.0, elapsed / actual_duration)
 
-            # Use smooth interpolation (ease-in-out)
-            smooth_progress = 0.5 * (1 - math.cos(math.pi * progress))
+            # Interpolation: linear for overlap steps (no speed dip at boundaries),
+            # cosine ease-in-out for standalone position tasks (smooth start/stop).
+            if allow_early_exit:
+                smooth_progress = progress
+            else:
+                smooth_progress = 0.5 * (1 - math.cos(math.pi * progress))
 
             # Calculate intermediate positions
             target_action = {}
