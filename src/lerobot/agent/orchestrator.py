@@ -2027,7 +2027,7 @@ class TaskAgentOrchestrator:
                 error_message=str(e),
             )
 
-    def _execute_position_task(self, task: TaskConfig, allow_early_exit: bool = False) -> TaskResult:
+    def _execute_position_task(self, task: TaskConfig) -> TaskResult:
         """Execute a position task - move joints directly to target positions.
 
         This task type is for moving the robot to specific joint positions
@@ -2036,9 +2036,6 @@ class TaskAgentOrchestrator:
 
         Args:
             task: Task configuration with target_joint_positions in completion_criteria.
-            allow_early_exit: If True, exit the control loop as soon as all joints
-                are within tolerance (used by position_sequence overlap_next to
-                eliminate pauses between steps). Default False = no change in behavior.
 
         Returns:
             TaskResult with execution outcome.
@@ -2115,12 +2112,8 @@ class TaskAgentOrchestrator:
             elapsed = time.time() - start_time
             progress = min(1.0, elapsed / actual_duration)
 
-            # Interpolation: linear for overlap steps (no speed dip at boundaries),
-            # cosine ease-in-out for standalone position tasks (smooth start/stop).
-            if allow_early_exit:
-                smooth_progress = progress
-            else:
-                smooth_progress = 0.5 * (1 - math.cos(math.pi * progress))
+            # Use smooth interpolation (ease-in-out)
+            smooth_progress = 0.5 * (1 - math.cos(math.pi * progress))
 
             # Calculate intermediate positions
             target_action = {}
@@ -2169,26 +2162,6 @@ class TaskAgentOrchestrator:
                     success = False
                     break
 
-            # Early exit for overlap_next: if all joints are already within
-            # tolerance, stop interpolating — the motor has arrived early and
-            # the next step's target can be sent immediately.
-            if allow_early_exit and progress > 0.3:
-                # Only check after 30% progress to avoid false positives from
-                # the initial ramp-up when joints happen to still be close.
-                early_positions = self.robot.get_current_position()
-                all_early = True
-                for joint_name in joint_names:
-                    if joint_name in target_positions and joint_name in early_positions:
-                        if abs(early_positions[joint_name] - target_positions[joint_name]) > tolerance:
-                            all_early = False
-                            break
-                if all_early:
-                    logger.info(
-                        f"    overlap_next: early exit at progress={progress:.1%}, "
-                        f"all joints within {tolerance:.1f}° tolerance"
-                    )
-                    break
-
             # Pace the control loop to the configured control frequency
             time.sleep(dt)
 
@@ -2230,8 +2203,9 @@ class TaskAgentOrchestrator:
     def _execute_position_sequence_task(self, task: TaskConfig) -> TaskResult:
         """Execute a position_sequence task - move joints through multiple positions sequentially.
 
-        Each step in the sequence is executed as a sub-task using _execute_position_task().
-        If any step fails, the entire sequence fails and subsequent steps are skipped.
+        Non-overlap steps are executed independently via _execute_position_task().
+        Consecutive overlap_next steps are merged into a single continuous control
+        loop — the motor never stops receiving commands, eliminating boundary pauses.
 
         Args:
             task: Task configuration with steps list containing PositionSequenceStep objects.
@@ -2240,29 +2214,168 @@ class TaskAgentOrchestrator:
             TaskResult with aggregated execution outcome.
         """
         import time
+        import math
 
         logger.info(f"Executing position_sequence task: {task.name} ({len(task.steps)} steps)")
 
-        total_duration = 0.0
+        joint_names = getattr(self.robot, 'observation_joint_names', None)
+        control_frequency = getattr(self.config.robot_config, 'control_frequency', 30)
+        dt = 1.0 / control_frequency
+        speed_multiplier = getattr(task, 'speed_multiplier', 1.0)
+        if speed_multiplier != 1.0:
+            dt = max(0.005, dt / speed_multiplier)
+
+        from lerobot.tasks.config import CompletionCriteria
+
         start_time = time.time()
-
-        for i, step in enumerate(task.steps):
+        i = 0
+        while i < len(task.steps):
+            step = task.steps[i]
             step_name = step.name or f"step_{i + 1}"
-            logger.info(f"  Step {i + 1}/{len(task.steps)}: {step_name}")
 
-            # Create a temporary TaskConfig for this step, reusing _execute_position_task
-            from lerobot.tasks.config import CompletionCriteria
-
-            # Overlap: if this step has overlap_next and is NOT the last step,
-            # relax the tolerance so the motor doesn't fully stop before the
-            # next step's target is sent.  CSP mode reads the latest register
-            # value so the motor redirects seamlessly.
-            tolerance = step.position_tolerance
-            early_exit = False
+            # ── Merged overlap chain ──────────────────────────────────────
+            # When this step has overlap_next, group it with the following
+            # consecutive overlap_next steps into a chain.  The chain runs
+            # inside a single while-loop so the robot receives commands at
+            # 30 Hz without ANY gap between targets.
             if step.overlap_next and i + 1 < len(task.steps):
-                tolerance = step.position_tolerance * 3.0
-                early_exit = True
-                logger.info(f"    overlap_next: relaxed tolerance {step.position_tolerance}° → {tolerance}°")
+                # Build the chain: [i, i+1, ..., j] where every step except
+                # the last has overlap_next=True.
+                chain_start = i
+                while i + 1 < len(task.steps) and task.steps[i].overlap_next:
+                    i += 1
+                chain_end = i  # last step in the chain (no overlap_next, or final step)
+                chain_steps = task.steps[chain_start:chain_end + 1]
+                chain_names = [s.name or f"step_{chain_start + k + 1}" for k, s in enumerate(chain_steps)]
+
+                logger.info(
+                    f"  Merged chain steps {chain_start + 1}-{chain_end + 1}: "
+                    f"{' → '.join(chain_names)}"
+                )
+
+                # Use the relaxed tolerance for all intermediate steps in the chain.
+                # The last step of the chain uses its original tolerance.
+                chain_tolerances = []
+                for k, cs in enumerate(chain_steps):
+                    if k < len(chain_steps) - 1:
+                        chain_tolerances.append(cs.position_tolerance * 3.0)
+                        logger.info(
+                            f"    {chain_names[k]}: overlap_next relaxed "
+                            f"{cs.position_tolerance}° → {cs.position_tolerance * 3.0}°"
+                        )
+                    else:
+                        chain_tolerances.append(cs.position_tolerance)
+
+                # Estimate total duration from max distance of each transition.
+                chain_duration = 0.0
+                for k, cs in enumerate(chain_steps):
+                    max_dist = 0.0
+                    for jn in joint_names:
+                        if jn in cs.position:
+                            cur = self.robot.get_current_position().get(jn, cs.position[jn])
+                            max_dist = max(max_dist, abs(cs.position[jn] - cur))
+                    speed_deg_per_s = 30.0 * max(speed_multiplier, 1.0)
+                    chain_duration += max_dist / speed_deg_per_s + (1.0 / max(speed_multiplier, 1.0))
+
+                chain_elapsed = 0.0
+                chain_success = True
+                current_target_idx = 0
+                current_start_positions = self.robot.get_current_position()
+                target_start_time = time.time()
+
+                while current_target_idx < len(chain_steps) and chain_success:
+                    cs = chain_steps[current_target_idx]
+                    cs_target = {k: v for k, v in cs.position.items() if k in joint_names}
+                    cs_tol = chain_tolerances[current_target_idx]
+
+                    # ── Inner loop: move toward current target ────────────
+                    while time.time() - target_start_time < cs.max_duration:
+                        elapsed = time.time() - target_start_time
+                        progress = min(1.0, elapsed / cs.max_duration)
+
+                        target_action = {}
+                        for jn in joint_names:
+                            if jn in cs_target:
+                                cur = current_start_positions.get(jn, cs_target[jn])
+                                target_action[f"{jn}.pos"] = cur + (cs_target[jn] - cur) * progress
+
+                        if target_action:
+                            self.robot.send_action(target_action)
+
+                        observation = self.robot.get_observation()
+                        chain_elapsed += dt
+
+                        # Monitoring
+                        if self.monitor_collector is not None:
+                            try:
+                                task_info = {
+                                    "task_name": f"{task.name}/{chain_names[current_target_idx]}",
+                                    "task_type": task.task_type,
+                                    "cycle": getattr(self, 'current_cycle', 0),
+                                    "total_cycles": getattr(self, 'total_cycles', 0),
+                                    "collision_count": self.total_collision_count,
+                                }
+                                self.monitor_collector.update_robot_state(observation, target_action, task_info)
+                            except Exception:
+                                pass
+
+                        # Collision
+                        if self.collision_detector:
+                            collision_result = self.collision_detector.check_collision(observation, target_action)
+                            if collision_result.is_detected:
+                                logger.warning(f"Collision during chain step {chain_names[current_target_idx]}")
+                                chain_success = False
+                                break
+
+                        # Early switch to next target when within relaxed tolerance
+                        if current_target_idx < len(chain_steps) - 1:
+                            all_within = True
+                            cur_pos = self.robot.get_current_position()
+                            for jn in joint_names:
+                                if jn in cs_target:
+                                    if abs(cur_pos.get(jn, cs_target[jn]) - cs_target[jn]) > cs_tol:
+                                        all_within = False
+                                        break
+                            if all_within:
+                                logger.info(
+                                    f"    {chain_names[current_target_idx]}: "
+                                    f"switching to next target ({chain_names[current_target_idx + 1]})"
+                                )
+                                break
+
+                        time.sleep(dt)
+
+                    if not chain_success:
+                        break
+
+                    # Move to next target in chain — re-read start positions
+                    # for the new interpolation segment
+                    current_target_idx += 1
+                    if current_target_idx < len(chain_steps):
+                        current_start_positions = self.robot.get_current_position()
+                        target_start_time = time.time()
+
+                if not chain_success:
+                    failed_name = chain_names[current_target_idx] if current_target_idx < len(chain_names) else chain_names[-1]
+                    return TaskResult(
+                        task_name=task.name,
+                        status=TaskStatus.FAILED,
+                        duration=time.time() - start_time,
+                        error_message=f"Chain step '{failed_name}' failed (collision)",
+                        collision_detected=True,
+                        attempts=1,
+                        start_time=start_time,
+                        end_time=time.time(),
+                    )
+
+                logger.info(
+                    f"  Chain steps {chain_start + 1}-{chain_end + 1} completed"
+                )
+                i = chain_end + 1
+                continue
+
+            # ── Standalone step (no overlap) ───────────────────────────
+            logger.info(f"  Step {i + 1}/{len(task.steps)}: {step_name}")
 
             step_task = TaskConfig(
                 name=f"{task.name}/{step_name}",
@@ -2272,17 +2385,13 @@ class TaskAgentOrchestrator:
                 completion_criteria=CompletionCriteria(
                     type="position",
                     target_joint_positions=step.position,
-                    position_tolerance=tolerance,
+                    position_tolerance=step.position_tolerance,
                 ),
             )
-            # Propagate speed_multiplier from parent task to step task
-            step_multiplier = getattr(task, 'speed_multiplier', 1.0)
-            if step_multiplier != 1.0:
-                step_task.speed_multiplier = step_multiplier
+            if speed_multiplier != 1.0:
+                step_task.speed_multiplier = speed_multiplier
 
-            result = self._execute_position_task(step_task, allow_early_exit=early_exit)
-            total_duration += result.duration or 0.0
-
+            result = self._execute_position_task(step_task)
             if result.status != TaskStatus.COMPLETED:
                 logger.warning(f"Step {step_name} failed: {result.error_message}")
                 return TaskResult(
@@ -2295,6 +2404,8 @@ class TaskAgentOrchestrator:
                     start_time=start_time,
                     end_time=time.time(),
                 )
+
+            i += 1
 
         logger.info(
             f"Position_sequence task completed: {task.name} -> "
