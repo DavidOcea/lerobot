@@ -2204,8 +2204,9 @@ class TaskAgentOrchestrator:
         """Execute a position_sequence task - move joints through multiple positions sequentially.
 
         Non-overlap steps are executed independently via _execute_position_task().
-        Consecutive overlap_next steps are merged into a single continuous control
-        loop — the motor never stops receiving commands, eliminating boundary pauses.
+        Consecutive overlap_next steps are merged into a single continuous trajectory
+        — one constant-speed path through all waypoints, no re-interpolation at
+        boundaries, no control-loop gap between targets.
 
         Args:
             task: Task configuration with steps list containing PositionSequenceStep objects.
@@ -2234,134 +2235,121 @@ class TaskAgentOrchestrator:
             step_name = step.name or f"step_{i + 1}"
 
             # ── Merged overlap chain ──────────────────────────────────────
-            # When this step has overlap_next, group it with the following
-            # consecutive overlap_next steps into a chain.  The chain runs
-            # inside a single while-loop so the robot receives commands at
-            # 30 Hz without ANY gap between targets.
+            # Group consecutive overlap_next steps into one continuous
+            # trajectory.  The chain stops BEFORE a non-overlap step (or at
+            # end of list).  The non-overlap step runs as standalone.
             if step.overlap_next and i + 1 < len(task.steps):
-                # Build the chain: [i, i+1, ..., j] where every step except
-                # the last has overlap_next=True.
                 chain_start = i
-                while i + 1 < len(task.steps) and task.steps[i].overlap_next:
+                while i < len(task.steps) and task.steps[i].overlap_next:
                     i += 1
-                chain_end = i  # last step in the chain (no overlap_next, or final step)
-                chain_steps = task.steps[chain_start:chain_end + 1]
+                # i now points to the first step WITHOUT overlap_next (or past end)
+                chain_steps = task.steps[chain_start:i]
                 chain_names = [s.name or f"step_{chain_start + k + 1}" for k, s in enumerate(chain_steps)]
 
                 logger.info(
-                    f"  Merged chain steps {chain_start + 1}-{chain_end + 1}: "
+                    f"  Continuous chain steps {chain_start + 1}-{chain_start + len(chain_steps)}: "
                     f"{' → '.join(chain_names)}"
                 )
 
-                # Use the relaxed tolerance for all intermediate steps in the chain.
-                # The last step of the chain uses its original tolerance.
-                chain_tolerances = []
-                for k, cs in enumerate(chain_steps):
-                    if k < len(chain_steps) - 1:
-                        chain_tolerances.append(cs.position_tolerance * 3.0)
-                        logger.info(
-                            f"    {chain_names[k]}: overlap_next relaxed "
-                            f"{cs.position_tolerance}° → {cs.position_tolerance * 3.0}°"
-                        )
-                    else:
-                        chain_tolerances.append(cs.position_tolerance)
-
-                # Estimate total duration from max distance of each transition.
-                chain_duration = 0.0
-                for k, cs in enumerate(chain_steps):
-                    max_dist = 0.0
+                # ── Build unified trajectory ─────────────────────────────
+                # waypoints: [current_pos, W1, W2, ..., Wn]
+                # Segment k: distance = max_joint |W_{k+1}[j] - W_k[j]|
+                current_pos = self.robot.get_current_position()
+                waypoints = [current_pos]
+                for cs in chain_steps:
+                    wp = {}
                     for jn in joint_names:
-                        if jn in cs.position:
-                            cur = self.robot.get_current_position().get(jn, cs.position[jn])
-                            max_dist = max(max_dist, abs(cs.position[jn] - cur))
-                    speed_deg_per_s = 30.0 * max(speed_multiplier, 1.0)
-                    chain_duration += max_dist / speed_deg_per_s + (1.0 / max(speed_multiplier, 1.0))
+                        wp[jn] = cs.position.get(jn, current_pos.get(jn, 0.0))
+                    waypoints.append(wp)
 
-                chain_elapsed = 0.0
+                segment_lengths = []
+                for k in range(len(waypoints) - 1):
+                    max_d = 0.0
+                    for jn in joint_names:
+                        max_d = max(max_d, abs(waypoints[k + 1][jn] - waypoints[k][jn]))
+                    segment_lengths.append(max_d)
+
+                total_length = sum(segment_lengths)
+                if total_length < 0.01:
+                    logger.info(f"  Chain has zero-length path, skipping")
+                    i = chain_start + len(chain_steps)
+                    continue
+
+                # Cumulative distances for segment lookup
+                cum_lengths = [0.0]
+                for sl in segment_lengths:
+                    cum_lengths.append(cum_lengths[-1] + sl)
+
+                speed_deg_per_s = 30.0 * max(speed_multiplier, 1.0)
+                total_duration = total_length / speed_deg_per_s
+
+                logger.info(
+                    f"    path={total_length:.1f}° · speed={speed_deg_per_s:.0f}°/s · "
+                    f"est={total_duration:.1f}s"
+                )
+
                 chain_success = True
-                current_target_idx = 0
-                current_start_positions = self.robot.get_current_position()
-                target_start_time = time.time()
+                traj_start = time.time()
 
-                while current_target_idx < len(chain_steps) and chain_success:
-                    cs = chain_steps[current_target_idx]
-                    cs_target = {k: v for k, v in cs.position.items() if k in joint_names}
-                    cs_tol = chain_tolerances[current_target_idx]
+                while time.time() - traj_start < total_duration:
+                    elapsed = time.time() - traj_start
+                    distance = min(speed_deg_per_s * elapsed, total_length)
 
-                    # ── Inner loop: move toward current target ────────────
-                    while time.time() - target_start_time < cs.max_duration:
-                        elapsed = time.time() - target_start_time
-                        progress = min(1.0, elapsed / cs.max_duration)
+                    # Find which segment contains this distance
+                    seg_idx = 0
+                    for s in range(len(cum_lengths) - 1):
+                        if cum_lengths[s] <= distance <= cum_lengths[s + 1]:
+                            seg_idx = s
+                            break
 
-                        target_action = {}
-                        for jn in joint_names:
-                            if jn in cs_target:
-                                cur = current_start_positions.get(jn, cs_target[jn])
-                                target_action[f"{jn}.pos"] = cur + (cs_target[jn] - cur) * progress
+                    slen = segment_lengths[seg_idx]
+                    alpha = (distance - cum_lengths[seg_idx]) / slen if slen > 0 else 1.0
 
-                        if target_action:
-                            self.robot.send_action(target_action)
+                    target_action = {}
+                    for jn in joint_names:
+                        w0 = waypoints[seg_idx][jn]
+                        w1 = waypoints[seg_idx + 1][jn]
+                        target_action[f"{jn}.pos"] = w0 + (w1 - w0) * alpha
 
-                        observation = self.robot.get_observation()
-                        chain_elapsed += dt
+                    self.robot.send_action(target_action)
 
-                        # Monitoring
-                        if self.monitor_collector is not None:
-                            try:
-                                task_info = {
-                                    "task_name": f"{task.name}/{chain_names[current_target_idx]}",
-                                    "task_type": task.task_type,
-                                    "cycle": getattr(self, 'current_cycle', 0),
-                                    "total_cycles": getattr(self, 'total_cycles', 0),
-                                    "collision_count": self.total_collision_count,
-                                }
-                                self.monitor_collector.update_robot_state(observation, target_action, task_info)
-                            except Exception:
-                                pass
+                    observation = self.robot.get_observation()
 
-                        # Collision
-                        if self.collision_detector:
-                            collision_result = self.collision_detector.check_collision(observation, target_action)
-                            if collision_result.is_detected:
-                                logger.warning(f"Collision during chain step {chain_names[current_target_idx]}")
-                                chain_success = False
-                                break
+                    # Monitoring
+                    if self.monitor_collector is not None:
+                        try:
+                            task_info = {
+                                "task_name": task.name,
+                                "task_type": task.task_type,
+                                "cycle": getattr(self, 'current_cycle', 0),
+                                "total_cycles": getattr(self, 'total_cycles', 0),
+                                "collision_count": self.total_collision_count,
+                            }
+                            self.monitor_collector.update_robot_state(observation, target_action, task_info)
+                        except Exception:
+                            pass
 
-                        # Early switch to next target when within relaxed tolerance
-                        if current_target_idx < len(chain_steps) - 1:
-                            all_within = True
-                            cur_pos = self.robot.get_current_position()
-                            for jn in joint_names:
-                                if jn in cs_target:
-                                    if abs(cur_pos.get(jn, cs_target[jn]) - cs_target[jn]) > cs_tol:
-                                        all_within = False
-                                        break
-                            if all_within:
-                                logger.info(
-                                    f"    {chain_names[current_target_idx]}: "
-                                    f"switching to next target ({chain_names[current_target_idx + 1]})"
-                                )
-                                break
+                    # Collision
+                    if self.collision_detector:
+                        if self.collision_detector.check_collision(observation, target_action).is_detected:
+                            logger.warning(f"Collision during continuous chain")
+                            chain_success = False
+                            break
 
-                        time.sleep(dt)
+                    time.sleep(dt)
 
-                    if not chain_success:
-                        break
-
-                    # Move to next target in chain — re-read start positions
-                    # for the new interpolation segment
-                    current_target_idx += 1
-                    if current_target_idx < len(chain_steps):
-                        current_start_positions = self.robot.get_current_position()
-                        target_start_time = time.time()
+                # Send final waypoint explicitly
+                final_action = {}
+                for jn in joint_names:
+                    final_action[f"{jn}.pos"] = waypoints[-1][jn]
+                self.robot.send_action(final_action)
 
                 if not chain_success:
-                    failed_name = chain_names[current_target_idx] if current_target_idx < len(chain_names) else chain_names[-1]
                     return TaskResult(
                         task_name=task.name,
                         status=TaskStatus.FAILED,
                         duration=time.time() - start_time,
-                        error_message=f"Chain step '{failed_name}' failed (collision)",
+                        error_message="Continuous chain failed (collision)",
                         collision_detected=True,
                         attempts=1,
                         start_time=start_time,
@@ -2369,9 +2357,10 @@ class TaskAgentOrchestrator:
                     )
 
                 logger.info(
-                    f"  Chain steps {chain_start + 1}-{chain_end + 1} completed"
+                    f"  Continuous chain steps {chain_start + 1}-{chain_start + len(chain_steps)} "
+                    f"completed in {time.time() - start_time:.1f}s"
                 )
-                i = chain_end + 1
+                # i already points to the non-overlap step after the chain
                 continue
 
             # ── Standalone step (no overlap) ───────────────────────────
