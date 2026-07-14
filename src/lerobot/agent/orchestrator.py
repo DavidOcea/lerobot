@@ -2252,8 +2252,13 @@ class TaskAgentOrchestrator:
                 )
 
                 # ── Build unified trajectory ─────────────────────────────
+                # Catmull-Rom spline through waypoints → C¹ continuous,
+                # no sharp corners at via-points.  Control-point padding
+                # duplicates endpoints so the curve starts/ends exactly at
+                # the first/last waypoint.
+                #
                 # waypoints: [current_pos, W1, W2, ..., Wn]
-                # Segment k: distance = max_joint |W_{k+1}[j] - W_k[j]|
+                # padded:    [current_pos, current_pos, W1, W2, ..., Wn, Wn]
                 current_pos = self.robot.get_current_position()
                 waypoints = [current_pos]
                 for cs in chain_steps:
@@ -2262,6 +2267,21 @@ class TaskAgentOrchestrator:
                         wp[jn] = cs.position.get(jn, current_pos.get(jn, 0.0))
                     waypoints.append(wp)
 
+                # Pad for Catmull-Rom boundary conditions
+                padded = [waypoints[0], waypoints[0]] + waypoints + [waypoints[-1]]
+
+                # Helper: Catmull-Rom for a scalar
+                def _cr(p0, p1, p2, p3, t):
+                    t2 = t * t
+                    t3 = t2 * t
+                    return 0.5 * (
+                        (2.0 * p1) +
+                        (-p0 + p2) * t +
+                        (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
+                        (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
+                    )
+
+                # Chord-length parameterization
                 segment_lengths = []
                 for k in range(len(waypoints) - 1):
                     max_d = 0.0
@@ -2275,7 +2295,6 @@ class TaskAgentOrchestrator:
                     i = chain_start + len(chain_steps)
                     continue
 
-                # Cumulative distances for segment lookup
                 cum_lengths = [0.0]
                 for sl in segment_lengths:
                     cum_lengths.append(cum_lengths[-1] + sl)
@@ -2285,7 +2304,7 @@ class TaskAgentOrchestrator:
 
                 logger.info(
                     f"    path={total_length:.1f}° · speed={speed_deg_per_s:.0f}°/s · "
-                    f"est={total_duration:.1f}s"
+                    f"est={total_duration:.1f}s (Catmull-Rom spline)"
                 )
 
                 chain_success = True
@@ -2303,13 +2322,20 @@ class TaskAgentOrchestrator:
                             break
 
                     slen = segment_lengths[seg_idx]
-                    alpha = (distance - cum_lengths[seg_idx]) / slen if slen > 0 else 1.0
+                    t = (distance - cum_lengths[seg_idx]) / slen if slen > 0 else 1.0
+
+                    # Catmull-Rom: padded indices for this segment
+                    # padded = [W0, W0, W1, W2, ..., Wn, Wn]
+                    # segment k (waypoint k → k+1) uses padded[k..k+3]
+                    p_idx = seg_idx  # → p0=padded[p_idx], p1=padded[p_idx+1], ...
 
                     target_action = {}
                     for jn in joint_names:
-                        w0 = waypoints[seg_idx][jn]
-                        w1 = waypoints[seg_idx + 1][jn]
-                        target_action[f"{jn}.pos"] = w0 + (w1 - w0) * alpha
+                        p0 = padded[p_idx][jn]
+                        p1 = padded[p_idx + 1][jn]
+                        p2 = padded[p_idx + 2][jn]
+                        p3 = padded[p_idx + 3][jn]
+                        target_action[f"{jn}.pos"] = _cr(p0, p1, p2, p3, t)
 
                     self.robot.send_action(target_action)
 
