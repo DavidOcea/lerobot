@@ -2027,7 +2027,7 @@ class TaskAgentOrchestrator:
                 error_message=str(e),
             )
 
-    def _execute_position_task(self, task: TaskConfig) -> TaskResult:
+    def _execute_position_task(self, task: TaskConfig, allow_early_exit: bool = False) -> TaskResult:
         """Execute a position task - move joints directly to target positions.
 
         This task type is for moving the robot to specific joint positions
@@ -2036,6 +2036,9 @@ class TaskAgentOrchestrator:
 
         Args:
             task: Task configuration with target_joint_positions in completion_criteria.
+            allow_early_exit: If True, exit the control loop as soon as all joints
+                are within tolerance (used by position_sequence overlap_next to
+                eliminate pauses between steps). Default False = no change in behavior.
 
         Returns:
             TaskResult with execution outcome.
@@ -2162,6 +2165,26 @@ class TaskAgentOrchestrator:
                     success = False
                     break
 
+            # Early exit for overlap_next: if all joints are already within
+            # tolerance, stop interpolating — the motor has arrived early and
+            # the next step's target can be sent immediately.
+            if allow_early_exit and progress > 0.3:
+                # Only check after 30% progress to avoid false positives from
+                # the initial ramp-up when joints happen to still be close.
+                early_positions = self.robot.get_current_position()
+                all_early = True
+                for joint_name in joint_names:
+                    if joint_name in target_positions and joint_name in early_positions:
+                        if abs(early_positions[joint_name] - target_positions[joint_name]) > tolerance:
+                            all_early = False
+                            break
+                if all_early:
+                    logger.info(
+                        f"    overlap_next: early exit at progress={progress:.1%}, "
+                        f"all joints within {tolerance:.1f}° tolerance"
+                    )
+                    break
+
             # Pace the control loop to the configured control frequency
             time.sleep(dt)
 
@@ -2231,9 +2254,11 @@ class TaskAgentOrchestrator:
             # next step's target is sent.  CSP mode reads the latest register
             # value so the motor redirects seamlessly.
             tolerance = step.position_tolerance
+            early_exit = False
             if step.overlap_next and i + 1 < len(task.steps):
                 tolerance = step.position_tolerance * 3.0
-                logger.debug(f"    overlap_next: relaxed tolerance {step.position_tolerance}° → {tolerance}°")
+                early_exit = True
+                logger.info(f"    overlap_next: relaxed tolerance {step.position_tolerance}° → {tolerance}°")
 
             step_task = TaskConfig(
                 name=f"{task.name}/{step_name}",
@@ -2251,7 +2276,7 @@ class TaskAgentOrchestrator:
             if step_multiplier != 1.0:
                 step_task.speed_multiplier = step_multiplier
 
-            result = self._execute_position_task(step_task)
+            result = self._execute_position_task(step_task, allow_early_exit=early_exit)
             total_duration += result.duration or 0.0
 
             if result.status != TaskStatus.COMPLETED:

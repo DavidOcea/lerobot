@@ -499,6 +499,7 @@ def parse_task_dict(
                 position=pos,
                 max_duration=step_dict.get("max_duration", 10.0),
                 position_tolerance=step_dict.get("position_tolerance", 3.0),
+                overlap_next=step_dict.get("overlap_next", False),
             ))
         task_kwargs["steps"] = steps
         total_steps_duration = sum(s.max_duration for s in steps)
