@@ -228,10 +228,20 @@ def _set_motors(robot, indices, enable):
                 motor.configure_csp_mode(0, False)
                 motor.start_auto_feedback(0, 255, 20)
                 print(f"  ✓ {obs_names[idx]} 已重新使能 (CSP)")
+                ok_idx.append(idx)
             else:
-                motor.disable()
-                print(f"  ✓ {obs_names[idx]} 已解除使能")
-            ok_idx.append(idx)
+                # CSP-enabled motors may reject direct disable().
+                # Clear fault first, then try again.
+                ret = motor.disable()
+                if not ret:
+                    motor.clear_fault()
+                    ret = motor.disable()
+                if ret:
+                    print(f"  ✓ {obs_names[idx]} 已解除使能")
+                    ok_idx.append(idx)
+                else:
+                    print(f"  ✗ {obs_names[idx]} 解除失败 (电机拒绝指令)")
+                    fail_idx.append(idx)
         except Exception as e:
             print(f"  ✗ {obs_names[idx]} 操作失败: {e}")
             fail_idx.append(idx)
