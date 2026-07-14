@@ -2252,13 +2252,10 @@ class TaskAgentOrchestrator:
                 )
 
                 # ── Build unified trajectory ─────────────────────────────
-                # Catmull-Rom spline through waypoints → C¹ continuous,
-                # no sharp corners at via-points.  Control-point padding
-                # duplicates endpoints so the curve starts/ends exactly at
-                # the first/last waypoint.
-                #
-                # waypoints: [current_pos, W1, W2, ..., Wn]
-                # padded:    [current_pos, current_pos, W1, W2, ..., Wn, Wn]
+                # Piecewise linear path: waypoints = [current_pos, W1, W2, ..., Wn].
+                # Near each intermediate waypoint, blend the incoming and
+                # outgoing segments to round the corner.  Blend is monotonic
+                # (lerp between two linear paths) — no overshoot, no jitter.
                 current_pos = self.robot.get_current_position()
                 waypoints = [current_pos]
                 for cs in chain_steps:
@@ -2267,21 +2264,6 @@ class TaskAgentOrchestrator:
                         wp[jn] = cs.position.get(jn, current_pos.get(jn, 0.0))
                     waypoints.append(wp)
 
-                # Pad for Catmull-Rom boundary conditions
-                padded = [waypoints[0], waypoints[0]] + waypoints + [waypoints[-1]]
-
-                # Helper: Catmull-Rom for a scalar
-                def _cr(p0, p1, p2, p3, t):
-                    t2 = t * t
-                    t3 = t2 * t
-                    return 0.5 * (
-                        (2.0 * p1) +
-                        (-p0 + p2) * t +
-                        (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
-                        (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3
-                    )
-
-                # Chord-length parameterization
                 segment_lengths = []
                 for k in range(len(waypoints) - 1):
                     max_d = 0.0
@@ -2302,13 +2284,24 @@ class TaskAgentOrchestrator:
                 speed_deg_per_s = 30.0 * max(speed_multiplier, 1.0)
                 total_duration = total_length / speed_deg_per_s
 
+                # Blend radius: max distance before/after a waypoint where we
+                # mix the adjacent segments.  Capped so very short segments
+                # don't blend across the entire segment.
+                blend_deg = 6.0  # degrees
+
+                def _smoothstep(x):
+                    """Smoothstep on [0,1]: zero derivatives at endpoints."""
+                    x = max(0.0, min(1.0, x))
+                    return x * x * (3.0 - 2.0 * x)
+
                 logger.info(
                     f"    path={total_length:.1f}° · speed={speed_deg_per_s:.0f}°/s · "
-                    f"est={total_duration:.1f}s (Catmull-Rom spline)"
+                    f"est={total_duration:.1f}s (piecewise linear + corner blend {blend_deg}°)"
                 )
 
                 chain_success = True
                 traj_start = time.time()
+                n_seg = len(segment_lengths)
 
                 while time.time() - traj_start < total_duration:
                     elapsed = time.time() - traj_start
@@ -2316,7 +2309,7 @@ class TaskAgentOrchestrator:
 
                     # Find which segment contains this distance
                     seg_idx = 0
-                    for s in range(len(cum_lengths) - 1):
+                    for s in range(n_seg):
                         if cum_lengths[s] <= distance <= cum_lengths[s + 1]:
                             seg_idx = s
                             break
@@ -2324,18 +2317,42 @@ class TaskAgentOrchestrator:
                     slen = segment_lengths[seg_idx]
                     t = (distance - cum_lengths[seg_idx]) / slen if slen > 0 else 1.0
 
-                    # Catmull-Rom: padded indices for this segment
-                    # padded = [W0, W0, W1, W2, ..., Wn, Wn]
-                    # segment k (waypoint k → k+1) uses padded[k..k+3]
-                    p_idx = seg_idx  # → p0=padded[p_idx], p1=padded[p_idx+1], ...
-
                     target_action = {}
                     for jn in joint_names:
-                        p0 = padded[p_idx][jn]
-                        p1 = padded[p_idx + 1][jn]
-                        p2 = padded[p_idx + 2][jn]
-                        p3 = padded[p_idx + 3][jn]
-                        target_action[f"{jn}.pos"] = _cr(p0, p1, p2, p3, t)
+                        # Base: piecewise linear on current segment
+                        w0 = waypoints[seg_idx][jn]
+                        w1 = waypoints[seg_idx + 1][jn]
+                        base = w0 + (w1 - w0) * t
+
+                        # ── Corner blend at segment start ────────────
+                        # If we just left a waypoint, blend the outgoing
+                        # path with a backward extension of the previous segment.
+                        if seg_idx > 0:
+                            dist_from_prev = distance - cum_lengths[seg_idx]
+                            if dist_from_prev < blend_deg:
+                                # Extrapolate the previous segment forward past the waypoint
+                                prev_w0 = waypoints[seg_idx - 1][jn]
+                                prev_w1 = waypoints[seg_idx][jn]  # = w0
+                                prev_slen = segment_lengths[seg_idx - 1]
+                                prev_ext = prev_w0 + (prev_w1 - prev_w0) * (1.0 + dist_from_prev / max(prev_slen, 0.01))
+                                w = _smoothstep(dist_from_prev / blend_deg)
+                                base = prev_ext + (base - prev_ext) * w
+
+                        # ── Corner blend at segment end ──────────────
+                        # If we're approaching a waypoint, blend toward the
+                        # backward extension of the next segment.
+                        if seg_idx < n_seg - 1:
+                            dist_to_next = cum_lengths[seg_idx + 1] - distance
+                            if dist_to_next < blend_deg:
+                                # Extrapolate the next segment backward before the waypoint
+                                next_w0 = waypoints[seg_idx + 1][jn]  # = w1
+                                next_w1 = waypoints[seg_idx + 2][jn]
+                                next_slen = segment_lengths[seg_idx + 1]
+                                next_ext = next_w1 + (next_w0 - next_w1) * (1.0 + dist_to_next / max(next_slen, 0.01))
+                                w = _smoothstep(dist_to_next / blend_deg)
+                                base = base + (next_ext - base) * (1.0 - w)
+
+                        target_action[f"{jn}.pos"] = base
 
                     self.robot.send_action(target_action)
 
