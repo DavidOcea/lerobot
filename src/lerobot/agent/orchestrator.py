@@ -2252,10 +2252,11 @@ class TaskAgentOrchestrator:
                 )
 
                 # ── Build unified trajectory ─────────────────────────────
-                # Piecewise linear path: waypoints = [current_pos, W1, W2, ..., Wn].
-                # Near each intermediate waypoint, blend the incoming and
-                # outgoing segments to round the corner.  Blend is monotonic
-                # (lerp between two linear paths) — no overshoot, no jitter.
+                # Piecewise linear through waypoints = constant speed, no
+                # re-interpolation at boundaries.  A light EMA low-pass filter
+                # rounds the sharp corners without overshoot or jitter because
+                # the filter response is always a weighted average of recent
+                # commanded positions — it can never leave the convex hull.
                 current_pos = self.robot.get_current_position()
                 waypoints = [current_pos]
                 for cs in chain_steps:
@@ -2284,24 +2285,19 @@ class TaskAgentOrchestrator:
                 speed_deg_per_s = 30.0 * max(speed_multiplier, 1.0)
                 total_duration = total_length / speed_deg_per_s
 
-                # Blend radius: max distance before/after a waypoint where we
-                # mix the adjacent segments.  Capped so very short segments
-                # don't blend across the entire segment.
-                blend_deg = 6.0  # degrees
-
-                def _smoothstep(x):
-                    """Smoothstep on [0,1]: zero derivatives at endpoints."""
-                    x = max(0.0, min(1.0, x))
-                    return x * x * (3.0 - 2.0 * x)
+                # EMA smoothing factor: 0=no smoothing (same as v3), 1=instant
+                # Good values: 0.15-0.30.  Lower = sharper corners, more jitter.
+                # Higher = rounder corners, more lag.  0.22 is a good default.
+                ema_alpha = 0.22
 
                 logger.info(
                     f"    path={total_length:.1f}° · speed={speed_deg_per_s:.0f}°/s · "
-                    f"est={total_duration:.1f}s (piecewise linear + corner blend {blend_deg}°)"
+                    f"est={total_duration:.1f}s · ema={ema_alpha}"
                 )
 
                 chain_success = True
                 traj_start = time.time()
-                n_seg = len(segment_lengths)
+                filtered_prev = {}  # EMA state per joint
 
                 while time.time() - traj_start < total_duration:
                     elapsed = time.time() - traj_start
@@ -2309,7 +2305,7 @@ class TaskAgentOrchestrator:
 
                     # Find which segment contains this distance
                     seg_idx = 0
-                    for s in range(n_seg):
+                    for s in range(len(cum_lengths) - 1):
                         if cum_lengths[s] <= distance <= cum_lengths[s + 1]:
                             seg_idx = s
                             break
@@ -2319,40 +2315,15 @@ class TaskAgentOrchestrator:
 
                     target_action = {}
                     for jn in joint_names:
-                        # Base: piecewise linear on current segment
                         w0 = waypoints[seg_idx][jn]
                         w1 = waypoints[seg_idx + 1][jn]
-                        base = w0 + (w1 - w0) * t
+                        raw = w0 + (w1 - w0) * t
 
-                        # ── Corner blend at segment start ────────────
-                        # If we just left a waypoint, blend the outgoing
-                        # path with a backward extension of the previous segment.
-                        if seg_idx > 0:
-                            dist_from_prev = distance - cum_lengths[seg_idx]
-                            if dist_from_prev < blend_deg:
-                                # Extrapolate the previous segment forward past the waypoint
-                                prev_w0 = waypoints[seg_idx - 1][jn]
-                                prev_w1 = waypoints[seg_idx][jn]  # = w0
-                                prev_slen = segment_lengths[seg_idx - 1]
-                                prev_ext = prev_w0 + (prev_w1 - prev_w0) * (1.0 + dist_from_prev / max(prev_slen, 0.01))
-                                w = _smoothstep(dist_from_prev / blend_deg)
-                                base = prev_ext + (base - prev_ext) * w
+                        prev = filtered_prev.get(jn, raw)
+                        filtered = prev + ema_alpha * (raw - prev)
+                        filtered_prev[jn] = filtered
 
-                        # ── Corner blend at segment end ──────────────
-                        # If we're approaching a waypoint, blend toward the
-                        # backward extension of the next segment.
-                        if seg_idx < n_seg - 1:
-                            dist_to_next = cum_lengths[seg_idx + 1] - distance
-                            if dist_to_next < blend_deg:
-                                # Extrapolate the next segment backward before the waypoint
-                                next_w0 = waypoints[seg_idx + 1][jn]  # = w1
-                                next_w1 = waypoints[seg_idx + 2][jn]
-                                next_slen = segment_lengths[seg_idx + 1]
-                                next_ext = next_w1 + (next_w0 - next_w1) * (1.0 + dist_to_next / max(next_slen, 0.01))
-                                w = _smoothstep(dist_to_next / blend_deg)
-                                base = base + (next_ext - base) * (1.0 - w)
-
-                        target_action[f"{jn}.pos"] = base
+                        target_action[f"{jn}.pos"] = filtered
 
                     self.robot.send_action(target_action)
 
