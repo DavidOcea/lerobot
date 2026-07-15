@@ -2286,24 +2286,48 @@ class TaskAgentOrchestrator:
                 for sl in segment_lengths:
                     cum_lengths.append(cum_lengths[-1] + sl)
 
-                speed_deg_per_s = 30.0 * max(speed_multiplier, 1.0)
-                total_duration = total_length / speed_deg_per_s
-
                 # EMA smoothing factor
                 ema_alpha = 0.22
 
+                # Constant speed until the LAST segment, then ease-out.
+                # Everything before the final segment: constant speed.
+                pre_last = cum_lengths[-2] if len(cum_lengths) >= 2 else 0.0  # distance at start of last segment
+                last_len = total_length - pre_last
+                const_dur = pre_last / speed_deg_per_s if pre_last > 0 else 0.0
+                # Ease-out duration on the final segment (at least 0.3s for
+                # perceptible smoothness, scaled up for longer segments).
+                ease_dur = max(last_len / speed_deg_per_s * 1.5, 0.3)
+                total_duration = const_dur + ease_dur
+
                 logger.info(
                     f"    path={total_length:.1f}° · speed={speed_deg_per_s:.0f}°/s · "
-                    f"est={total_duration:.1f}s · ema={ema_alpha}"
+                    f"est={total_duration:.1f}s · ema={ema_alpha} · ease_out(final)"
                 )
 
-                chain_success = True
+                # Run until ease-out completes + brief settling hold.
+                # The hold sends a few extra frames of the final position
+                # so the motor is told "stay here" instead of just
+                # stopping mid-deceleration.
+                hold_frames = 5
                 traj_start = time.time()
+                traj_end_time = traj_start + total_duration + hold_frames * dt
+
+                chain_success = True
                 filtered_prev = {}  # EMA state per joint
 
-                while time.time() - traj_start < total_duration:
+                while time.time() - traj_start < traj_end_time:
                     elapsed = time.time() - traj_start
-                    distance = min(speed_deg_per_s * elapsed, total_length)
+
+                    # ── Distance: constant-speed then eased final segment ─
+                    if elapsed < const_dur:
+                        distance = speed_deg_per_s * elapsed
+                    elif elapsed < total_duration:
+                        local = (elapsed - const_dur) / ease_dur  # ≤ 1.0
+                        eased = local + local * local - local * local * local
+                        distance = pre_last + last_len * eased
+                    else:
+                        # Hold at final position (settling phase)
+                        distance = total_length
 
                     # Find which segment contains this distance
                     seg_idx = 0
@@ -2353,12 +2377,6 @@ class TaskAgentOrchestrator:
                             break
 
                     time.sleep(dt)
-
-                # Send final waypoint explicitly
-                final_action = {}
-                for jn in joint_names:
-                    final_action[f"{jn}.pos"] = waypoints[-1][jn]
-                self.robot.send_action(final_action)
 
                 if not chain_success:
                     return TaskResult(
