@@ -2311,12 +2311,12 @@ class TaskAgentOrchestrator:
                 # stopping mid-deceleration.
                 hold_frames = 5
                 traj_start = time.time()
-                traj_end_time = traj_start + total_duration + hold_frames * dt
+                traj_deadline = traj_start + total_duration + hold_frames * dt
 
                 chain_success = True
                 filtered_prev = {}  # EMA state per joint
 
-                while time.time() - traj_start < traj_end_time:
+                while time.time() < traj_deadline:
                     elapsed = time.time() - traj_start
 
                     # ── Distance: constant-speed then eased final segment ─
