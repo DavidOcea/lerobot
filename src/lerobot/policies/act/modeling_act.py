@@ -306,17 +306,6 @@ class ACTPolicy(PreTrainedPolicy):
 
         if smooth_loss is not None:
             loss = loss + self.config.smoothness_lambda * smooth_loss
-            # Calculate Dₖₗ(latent_pdf || standard_normal). Note: After computing the KL-divergence for
-            # each dimension independently, we sum over the latent dimension to get the total
-            # KL-divergence per batch element, then take the mean over the batch.
-            # (See App. B of https://huggingface.co/papers/1312.6114 for more details).
-            mean_kld = (
-                (-0.5 * (1 + log_sigma_x2_hat - mu_hat.pow(2) - (log_sigma_x2_hat).exp())).sum(-1).mean()
-            )
-            loss_dict["kld_loss"] = mean_kld.item()
-            loss = l1_loss + mean_kld * self.config.kl_weight
-        else:
-            loss = l1_loss
 
         return loss, loss_dict
 
