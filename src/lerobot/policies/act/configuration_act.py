@@ -150,6 +150,9 @@ class ACTConfig(PreTrainedConfig):
     # Inference.
     # Note: the value used in ACT when temporal ensembling is enabled is 0.01.
     temporal_ensemble_coeff: float | None = None
+    # EMA smoothing for action output (inference only).
+    # 0.0 = disabled. 0.2-0.5 = blend 20-50% new prediction with old trend.
+    action_smoothing_alpha: float = 0.0
 
     # Training and loss computation.
     dropout: float = 0.1
