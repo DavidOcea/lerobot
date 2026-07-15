@@ -2285,14 +2285,20 @@ class TaskAgentOrchestrator:
                 speed_deg_per_s = 30.0 * max(speed_multiplier, 1.0)
                 total_duration = total_length / speed_deg_per_s
 
-                # EMA smoothing factor: 0=no smoothing (same as v3), 1=instant
-                # Good values: 0.15-0.30.  Lower = sharper corners, more jitter.
-                # Higher = rounder corners, more lag.  0.22 is a good default.
+                # EMA smoothing factor
                 ema_alpha = 0.22
+
+                # Ease-out at end of chain so the last overlap step decelerates
+                # smoothly into the next standalone step (no abrupt stop).
+                ease_portion = 0.12  # last 12% of chain duration
+                ease_start_time = total_duration * (1 - ease_portion)
+                constant_dist = speed_deg_per_s * ease_start_time
+                remaining_dist = total_length - constant_dist
+                ease_duration = total_duration * ease_portion
 
                 logger.info(
                     f"    path={total_length:.1f}° · speed={speed_deg_per_s:.0f}°/s · "
-                    f"est={total_duration:.1f}s · ema={ema_alpha}"
+                    f"est={total_duration:.1f}s · ema={ema_alpha} · ease_out"
                 )
 
                 chain_success = True
@@ -2301,7 +2307,16 @@ class TaskAgentOrchestrator:
 
                 while time.time() - traj_start < total_duration:
                     elapsed = time.time() - traj_start
-                    distance = min(speed_deg_per_s * elapsed, total_length)
+
+                    # ── Distance with ease-out ─────────────────────────
+                    if elapsed < ease_start_time:
+                        distance = speed_deg_per_s * elapsed
+                    else:
+                        local_t = min((elapsed - ease_start_time) / ease_duration, 1.0)
+                        # s(t) = t + t² - t³  →  s'(0)=1 (matches const speed),
+                        # s'(1)=0 (smooth stop).  C¹ continuous at transition.
+                        eased_t = local_t + local_t * local_t - local_t * local_t * local_t
+                        distance = constant_dist + remaining_dist * eased_t
 
                     # Find which segment contains this distance
                     seg_idx = 0
