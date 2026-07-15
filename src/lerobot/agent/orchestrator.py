@@ -2027,7 +2027,7 @@ class TaskAgentOrchestrator:
                 error_message=str(e),
             )
 
-    def _execute_position_task(self, task: TaskConfig, use_cosine: bool = True) -> TaskResult:
+    def _execute_position_task(self, task: TaskConfig) -> TaskResult:
         """Execute a position task - move joints directly to target positions.
 
         This task type is for moving the robot to specific joint positions
@@ -2036,9 +2036,6 @@ class TaskAgentOrchestrator:
 
         Args:
             task: Task configuration with target_joint_positions in completion_criteria.
-            use_cosine: If True, use cosine ease-in-out (smooth start/stop).
-                If False, use linear interpolation (constant speed; used when
-                following a continuous overlap chain to avoid double deceleration).
 
         Returns:
             TaskResult with execution outcome.
@@ -2115,12 +2112,8 @@ class TaskAgentOrchestrator:
             elapsed = time.time() - start_time
             progress = min(1.0, elapsed / actual_duration)
 
-            # Interpolation mode
-            if use_cosine:
-                smooth_progress = 0.5 * (1 - math.cos(math.pi * progress))
-            else:
-                smooth_progress = progress
-
+            # Use smooth interpolation (ease-in-out)
+            smooth_progress = 0.5 * (1 - math.cos(math.pi * progress))
             # Calculate intermediate positions
             target_action = {}
             for joint_name in joint_names:
@@ -2236,7 +2229,6 @@ class TaskAgentOrchestrator:
 
         start_time = time.time()
         i = 0
-        after_chain = False
         while i < len(task.steps):
             step = task.steps[i]
             step_name = step.name or f"step_{i + 1}"
@@ -2249,7 +2241,12 @@ class TaskAgentOrchestrator:
                 chain_start = i
                 while i < len(task.steps) and task.steps[i].overlap_next:
                     i += 1
-                # i now points to the first step WITHOUT overlap_next (or past end)
+                # i now points to the first step WITHOUT overlap_next.
+                # Include it as the chain's final waypoint — that way the
+                # continuous control loop covers the entire trajectory and
+                # stops naturally at the last step (no loop-restart gap).
+                if i < len(task.steps):
+                    i += 1
                 chain_steps = task.steps[chain_start:i]
                 chain_names = [s.name or f"step_{chain_start + k + 1}" for k, s in enumerate(chain_steps)]
 
@@ -2379,18 +2376,10 @@ class TaskAgentOrchestrator:
                     f"  Continuous chain steps {chain_start + 1}-{chain_start + len(chain_steps)} "
                     f"completed in {time.time() - start_time:.1f}s"
                 )
-                # i already points to the non-overlap step after the chain
-                after_chain = True
                 continue
 
             # ── Standalone step (no overlap) ───────────────────────────
             logger.info(f"  Step {i + 1}/{len(task.steps)}: {step_name}")
-
-            # If this step immediately follows a continuous chain, use
-            # linear interpolation — the motor is already moving and a
-            # cosine ease-in would cause a double-deceleration lurch.
-            step_cosine = not after_chain
-            after_chain = False
 
             step_task = TaskConfig(
                 name=f"{task.name}/{step_name}",
@@ -2406,7 +2395,7 @@ class TaskAgentOrchestrator:
             if speed_multiplier != 1.0:
                 step_task.speed_multiplier = speed_multiplier
 
-            result = self._execute_position_task(step_task, use_cosine=step_cosine)
+            result = self._execute_position_task(step_task)
             if result.status != TaskStatus.COMPLETED:
                 logger.warning(f"Step {step_name} failed: {result.error_message}")
                 return TaskResult(
