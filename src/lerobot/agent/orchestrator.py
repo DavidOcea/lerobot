@@ -2288,6 +2288,7 @@ class TaskAgentOrchestrator:
 
                 # EMA smoothing factor
                 ema_alpha = 0.22
+                speed_deg_per_s = 30.0 * max(speed_multiplier, 1.0)
 
                 # Constant speed until the LAST segment, then ease-out.
                 # Everything before the final segment: constant speed.
