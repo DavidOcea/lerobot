@@ -2027,7 +2027,7 @@ class TaskAgentOrchestrator:
                 error_message=str(e),
             )
 
-    def _execute_position_task(self, task: TaskConfig) -> TaskResult:
+    def _execute_position_task(self, task: TaskConfig, use_cosine: bool = True) -> TaskResult:
         """Execute a position task - move joints directly to target positions.
 
         This task type is for moving the robot to specific joint positions
@@ -2036,6 +2036,9 @@ class TaskAgentOrchestrator:
 
         Args:
             task: Task configuration with target_joint_positions in completion_criteria.
+            use_cosine: If True, use cosine ease-in-out (smooth start/stop).
+                If False, use linear interpolation (constant speed; used when
+                following a continuous overlap chain to avoid double deceleration).
 
         Returns:
             TaskResult with execution outcome.
@@ -2112,8 +2115,11 @@ class TaskAgentOrchestrator:
             elapsed = time.time() - start_time
             progress = min(1.0, elapsed / actual_duration)
 
-            # Use smooth interpolation (ease-in-out)
-            smooth_progress = 0.5 * (1 - math.cos(math.pi * progress))
+            # Interpolation mode
+            if use_cosine:
+                smooth_progress = 0.5 * (1 - math.cos(math.pi * progress))
+            else:
+                smooth_progress = progress
 
             # Calculate intermediate positions
             target_action = {}
@@ -2230,6 +2236,7 @@ class TaskAgentOrchestrator:
 
         start_time = time.time()
         i = 0
+        after_chain = False
         while i < len(task.steps):
             step = task.steps[i]
             step_name = step.name or f"step_{i + 1}"
@@ -2288,17 +2295,9 @@ class TaskAgentOrchestrator:
                 # EMA smoothing factor
                 ema_alpha = 0.22
 
-                # Ease-out at end of chain so the last overlap step decelerates
-                # smoothly into the next standalone step (no abrupt stop).
-                ease_portion = 0.12  # last 12% of chain duration
-                ease_start_time = total_duration * (1 - ease_portion)
-                constant_dist = speed_deg_per_s * ease_start_time
-                remaining_dist = total_length - constant_dist
-                ease_duration = total_duration * ease_portion
-
                 logger.info(
                     f"    path={total_length:.1f}° · speed={speed_deg_per_s:.0f}°/s · "
-                    f"est={total_duration:.1f}s · ema={ema_alpha} · ease_out"
+                    f"est={total_duration:.1f}s · ema={ema_alpha}"
                 )
 
                 chain_success = True
@@ -2307,16 +2306,7 @@ class TaskAgentOrchestrator:
 
                 while time.time() - traj_start < total_duration:
                     elapsed = time.time() - traj_start
-
-                    # ── Distance with ease-out ─────────────────────────
-                    if elapsed < ease_start_time:
-                        distance = speed_deg_per_s * elapsed
-                    else:
-                        local_t = min((elapsed - ease_start_time) / ease_duration, 1.0)
-                        # s(t) = t + t² - t³  →  s'(0)=1 (matches const speed),
-                        # s'(1)=0 (smooth stop).  C¹ continuous at transition.
-                        eased_t = local_t + local_t * local_t - local_t * local_t * local_t
-                        distance = constant_dist + remaining_dist * eased_t
+                    distance = min(speed_deg_per_s * elapsed, total_length)
 
                     # Find which segment contains this distance
                     seg_idx = 0
@@ -2390,10 +2380,17 @@ class TaskAgentOrchestrator:
                     f"completed in {time.time() - start_time:.1f}s"
                 )
                 # i already points to the non-overlap step after the chain
+                after_chain = True
                 continue
 
             # ── Standalone step (no overlap) ───────────────────────────
             logger.info(f"  Step {i + 1}/{len(task.steps)}: {step_name}")
+
+            # If this step immediately follows a continuous chain, use
+            # linear interpolation — the motor is already moving and a
+            # cosine ease-in would cause a double-deceleration lurch.
+            step_cosine = not after_chain
+            after_chain = False
 
             step_task = TaskConfig(
                 name=f"{task.name}/{step_name}",
@@ -2409,7 +2406,7 @@ class TaskAgentOrchestrator:
             if speed_multiplier != 1.0:
                 step_task.speed_multiplier = speed_multiplier
 
-            result = self._execute_position_task(step_task)
+            result = self._execute_position_task(step_task, use_cosine=step_cosine)
             if result.status != TaskStatus.COMPLETED:
                 logger.warning(f"Step {step_name} failed: {result.error_message}")
                 return TaskResult(
