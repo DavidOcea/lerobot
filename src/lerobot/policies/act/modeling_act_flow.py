@@ -410,6 +410,15 @@ class ACTFlowModel(nn.Module):
         # ── Loss ──
         loss = F.mse_loss(v_pred, v_target)
 
+        # ── Smoothness regularization (same as CVAE-ACT) ──
+        if self.config.smoothness_lambda > 0:
+            # Recover clean actions from predicted velocity
+            actions_hat = noise - v_pred  # (B, S, 15)
+            pred_diff = actions_hat[:, 1:] - actions_hat[:, :-1]
+            target_diff = clean_actions[:, 1:] - clean_actions[:, :-1]
+            smooth_loss = F.mse_loss(pred_diff, target_diff)
+            loss = loss + self.config.smoothness_lambda * smooth_loss
+
         return loss, (None, None)
 
     def _forward_dit(self, x: Tensor, t: Tensor, ctx: Tensor | None) -> Tensor:

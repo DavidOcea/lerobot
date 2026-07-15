@@ -70,6 +70,8 @@ class ACTFlowConfig(PreTrainedConfig):
     force_dropout: float = 0.0
     head_dropout: float = 0.0
     label_smoothing: float = 0.0
+    # Smoothness regularization: 0=off, 0.02-0.05=velocity matching
+    smoothness_lambda: float = 0.0
 
     # ── Action ──
     use_relative_action: bool = False

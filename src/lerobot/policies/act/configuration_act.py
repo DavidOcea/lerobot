@@ -159,6 +159,9 @@ class ACTConfig(PreTrainedConfig):
     kl_weight: float = 10.0
     # Label smoothing for regression: blends target with prediction to prevent overfitting
     label_smoothing: float = 0.0
+    # Smoothness regularization: penalize frame-to-frame action jitter.
+    # 0.0 = disabled. 0.02-0.05 = mild velocity matching. 0.1+ = strong.
+    smoothness_lambda: float = 0.0
 
     # Training preset
     optimizer_lr: float = 1e-5

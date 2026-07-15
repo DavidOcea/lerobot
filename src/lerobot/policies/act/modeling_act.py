@@ -273,7 +273,39 @@ class ACTPolicy(PreTrainedPolicy):
         ).mean()
 
         loss_dict = {"l1_loss": l1_loss.item()}
+
+        # ── Smoothness regularization ──
+        # Penalize frame-to-frame jitter by matching the velocity profile
+        # of the recorded demonstration. Only active when smoothness_lambda > 0.
+        if self.config.smoothness_lambda > 0:
+            # First-order difference along chunk dimension: (B, chunk_size-1, 15)
+            pred_diff = actions_hat[:, 1:] - actions_hat[:, :-1]
+            target_diff = target_actions[:, 1:] - target_actions[:, :-1]
+            # Mask out padded steps: if step i+1 is pad, delta[i] should be ignored
+            diff_mask = ~batch["action_is_pad"][:, 1:]  # (B, chunk_size-1)
+            smooth_loss = (
+                F.mse_loss(pred_diff, target_diff, reduction="none").mean(-1)  # (B, chunk_size-1)
+                * diff_mask
+            ).sum() / (diff_mask.sum() + 1e-8)
+            loss_dict["smooth_loss"] = smooth_loss.item()
+        else:
+            smooth_loss = None
+
         if self.config.use_vae:
+            # Calculate Dₖₗ(latent_pdf || standard_normal). Note: After computing the KL-divergence for
+            # each dimension independently, we sum over the latent dimension to get the total
+            # KL-divergence per batch element, then take the mean over the batch.
+            # (See App. B of https://huggingface.co/papers/1312.6114 for more details).
+            mean_kld = (
+                (-0.5 * (1 + log_sigma_x2_hat - mu_hat.pow(2) - (log_sigma_x2_hat).exp())).sum(-1).mean()
+            )
+            loss_dict["kld_loss"] = mean_kld.item()
+            loss = l1_loss + mean_kld * self.config.kl_weight
+        else:
+            loss = l1_loss
+
+        if smooth_loss is not None:
+            loss = loss + self.config.smoothness_lambda * smooth_loss
             # Calculate Dₖₗ(latent_pdf || standard_normal). Note: After computing the KL-divergence for
             # each dimension independently, we sum over the latent dimension to get the total
             # KL-divergence per batch element, then take the mean over the batch.
