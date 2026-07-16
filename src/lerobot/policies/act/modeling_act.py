@@ -81,6 +81,9 @@ class ACTPolicy(PreTrainedPolicy):
         self._state_buffer = deque(maxlen=config.n_obs_steps) if config.n_obs_steps > 1 else None
         self._force_buffer = deque(maxlen=config.n_obs_steps) if config.n_obs_steps > 1 else None
 
+        # EMA smoothing buffer (inference only, alpha=0 → disabled)
+        self._last_smoothed: Tensor | None = None
+
         self.reset()
 
     def get_optim_params(self) -> dict:
@@ -114,6 +117,8 @@ class ACTPolicy(PreTrainedPolicy):
             self._state_buffer.clear()
         if self._force_buffer is not None:
             self._force_buffer.clear()
+        if self.config.action_smoothing_alpha > 0:
+            self._last_smoothed = None
 
     @torch.no_grad()
     def select_action(self, batch: dict[str, Tensor]) -> Tensor:
@@ -128,6 +133,8 @@ class ACTPolicy(PreTrainedPolicy):
         if self.config.temporal_ensemble_coeff is not None:
             actions = self.predict_action_chunk(batch)
             action = self.temporal_ensembler.update(actions)
+            if self.config.action_smoothing_alpha > 0:
+                action = self._apply_ema(action)
             return action
 
         # Action queue logic for n_action_steps > 1. When the action_queue is depleted, populate it by
@@ -138,7 +145,24 @@ class ACTPolicy(PreTrainedPolicy):
             # `self.model.forward` returns a (batch_size, n_action_steps, action_dim) tensor, but the queue
             # effectively has shape (n_action_steps, batch_size, *), hence the transpose.
             self._action_queue.extend(actions.transpose(0, 1))
-        return self._action_queue.popleft()
+        action = self._action_queue.popleft()
+        if self.config.action_smoothing_alpha > 0:
+            action = self._apply_ema(action)
+        return action
+
+    def _apply_ema(self, action: Tensor) -> Tensor:
+        """Exponential moving average smoothing for action output.
+
+        Each call returns  α * new_action + (1-α) * last_smoothed_action.
+        First frame after reset() just uses the raw action (no history yet).
+        """
+        if self._last_smoothed is None:
+            self._last_smoothed = action.detach().clone()
+            return action
+        α = self.config.action_smoothing_alpha
+        smoothed = α * action + (1.0 - α) * self._last_smoothed
+        self._last_smoothed = smoothed.detach().clone()
+        return smoothed
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
