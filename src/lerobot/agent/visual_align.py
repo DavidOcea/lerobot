@@ -218,16 +218,20 @@ def compute_alignment_to_reference(
 ) -> tuple[float, float]:
     """Compute AGV movement to align current view to reference view.
 
-    Uses the "face the marker" + ground distance strategy:
-      1. Turn to face the marker (atan2 in AGV frame).
-      2. Compare ground-plane distances (_marker_to_agv_xy).
+    Full 2D alignment (not just radial distance matching):
+      1. Compute the displacement vector from current AGV position to the
+         target position in the ground plane: (Δx, Δy) = (cur_x - ref_x, cur_y - ref_y).
+      2. Turn by atan2(Δy, Δx) — this faces the AGV toward the target point,
+         NOT the marker.  When the reference was taken from an off-axis angle,
+         the target is NOT the marker itself.
+      3. Drive forward by sqrt(Δx² + Δy²).
 
-    This is the same strategy as compute_agv_movement, but the target
-    distance is the reference distance instead of approach_distance.
+    For a reference pose photographed from, say, 30° left of the marker,
+    the AGV will align to the SAME off-axis position — not to the marker's
+    direct front.
 
-    At 45° pitch the minus-formula ground distance has a systematic offset,
-    but the RELATIVE comparison is stable for closed-loop convergence.
-    A configurable distance_offset compensates for the systematic bias.
+    A configurable distance_offset adds a small forward bias (±) for
+    fine-tuning after convergence.
 
     Returns (dtheta_deg, forward_dist_m).
     """
@@ -235,18 +239,19 @@ def compute_alignment_to_reference(
     cur_x, cur_y = _marker_to_agv_xy(tvec_cur, config)
     ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
 
-    # Distance from AGV to marker (ground-plane projection)
-    cur_dist = math.sqrt(cur_x**2 + cur_y**2)
-    ref_dist = math.sqrt(ref_x**2 + ref_y**2)
+    # ── 2D displacement in current AGV frame ────────────────────────
+    dx = cur_x - ref_x   # forward displacement needed
+    dy = cur_y - ref_y   # leftward displacement needed
 
-    # Turn to face the marker
-    dtheta_rad = math.atan2(cur_y, cur_x)
+    # Turn to face the TARGET POSITION (not the marker)
+    dtheta_rad = math.atan2(dy, dx)
     dtheta_deg = dtheta_rad * RAD_TO_DEG
 
-    # Forward: match reference distance + offset correction
-    forward_dist = cur_dist - ref_dist + config.distance_offset
+    # Straight-line distance to target + optional fine-tune bias
+    forward_dist = math.sqrt(dx**2 + dy**2) + config.distance_offset
 
     return dtheta_deg, forward_dist
+
 
 def _log_reference_diagnostics(
     tvec_cur, tvec_ref, config, logger,
@@ -254,11 +259,11 @@ def _log_reference_diagnostics(
     """Log diagnostics for debugging reference alignment."""
     cur_x, cur_y = _marker_to_agv_xy(tvec_cur, config)
     ref_x, ref_y = _marker_to_agv_xy(tvec_ref, config)
-    cur_dist = math.sqrt(cur_x**2 + cur_y**2)
-    ref_dist = math.sqrt(ref_x**2 + ref_y**2)
+    dx = cur_x - ref_x
+    dy = cur_y - ref_y
     logger.warning(
-        f"  [diag] cur_dist={cur_dist:.3f}m ref_dist={ref_dist:.3f}m "
-        f"delta={(cur_dist - ref_dist):.3f}m offset={config.distance_offset:.3f}m"
+        f"  [diag] cur=({cur_x:.3f}, {cur_y:.3f})m ref=({ref_x:.3f}, {ref_y:.3f})m "
+        f"Δ=({dx:.3f}, {dy:.3f})m dist={math.sqrt(dx**2+dy**2):.3f}m"
     )
 
 
@@ -454,18 +459,35 @@ def execute_visual_align(
             f"→ dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
         )
 
-        # Check convergence
+        # Check convergence (including dead zone for noise immunity)
         converged_angle = abs(dtheta_deg) < config.angle_tolerance
         converged_pos = abs(forward_dist) < config.position_tolerance
-        if converged_angle and converged_pos:
-            logger.warning(f"Alignment converged at iteration {iteration}")
+        # Dead zone: sub-mm / sub-0.5° corrections are below AGV precision;
+        # executing them only adds noise.  Treat as converged.
+        in_dead_zone = abs(dtheta_deg) < 0.5 and abs(forward_dist) < 0.005
+        if converged_angle and converged_pos or in_dead_zone:
+            why = "dead zone" if in_dead_zone else "within tolerance"
+            logger.warning(
+                f"Alignment converged at iteration {iteration} ({why}): "
+                f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
+            )
             return True, f"Aligned after {iteration + 1} iterations"
 
-        # Step 1a: Turn AGV to face marker
-        if abs(dtheta_deg) > config.angle_tolerance:
-            turn_deg = dtheta_deg  # positive = CCW (left turn)
-            # Seer AGV: angle=absolute magnitude, vw sign controls direction
-            # vw > 0 = CCW (left), vw < 0 = CW (right)
+        # ── Decaying gain to prevent overshoot ───────────────────────
+        # Iteration 0: 1.0, 1: 0.7, 2: 0.5, 3+: 0.4
+        gains = [1.0, 0.7, 0.5, 0.4]
+        gain = gains[iteration] if iteration < len(gains) else 0.4
+        if gain < 1.0:
+            logger.warning(
+                f"  gain={gain:.1f} (raw: dtheta={dtheta_deg:.1f}°, "
+                f"forward={forward_dist:.3f}m)"
+            )
+            dtheta_deg *= gain
+            forward_dist *= gain
+
+        # Step 1a: Turn AGV
+        if abs(dtheta_deg) > 1.0:  # skip turns < 1° (below AGV precision)
+            turn_deg = dtheta_deg
             vw = config.turn_speed * DEG_TO_RAD
             if turn_deg < 0:
                 vw = -vw
@@ -479,9 +501,7 @@ def execute_visual_align(
             time.sleep(0.3)
 
         # Step 1b: Drive forward/backward
-        if abs(forward_dist) > config.position_tolerance:
-            # Seer AGV translate: dist=absolute magnitude, vx sign controls direction
-            # vx > 0 = forward, vx < 0 = backward
+        if abs(forward_dist) > 0.005:  # skip moves < 5mm
             if forward_dist > 0:
                 vx = config.translate_speed
                 direction = "forward"
