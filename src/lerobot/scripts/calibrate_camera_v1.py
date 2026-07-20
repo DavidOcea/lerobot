@@ -159,7 +159,11 @@ def main():
     print("Connecting to robot...")
     from lerobot.robots.config import RobotConfig
     import draccus
+    import sys
+    _saved_argv = sys.argv
+    sys.argv = ["calibrate_camera_v1"]
     robot_config = draccus.parse(RobotConfig, robot_cfg)
+    sys.argv = _saved_argv
     robot = make_robot_from_config(robot_config)
     robot.connect()
     print("Robot connected.")
