@@ -12,7 +12,7 @@ ChArUco is recommended: partial visibility → more edge samples → better
 distortion estimation.
 
 Usage (ChArUco, recommended):
-    python -m lerobot.scripts.calibrate_camera \\
+    python -m lerobot.scripts.calibrate_camera_v1 \\
         --robot-type supre_robot_follower \\
         --cam-type opencv \\
         --cam-index 0 \\
@@ -28,7 +28,7 @@ Usage (ChArUco, recommended):
         --min-samples 30
 
 Usage (chessboard):
-    python -m lerobot.scripts.calibrate_camera \\
+    python -m lerobot.scripts.calibrate_camera_v1 \\
         --robot-type supre_robot_follower \\
         ...
         --board-type chessboard \\
