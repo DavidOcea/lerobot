@@ -150,14 +150,13 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.cam_width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.cam_height)
     cap.set(cv2.CAP_PROP_FPS, args.cam_fps)
-    print(f"Camera connected: index={cam_idx} {args.cam_width}x{args.cam_height}")
+    print(f"Camera connected: index={cam_idx} {args.cam_width}x{args.cam_height} @{args.cam_fps}fps")
 
     def _grab_frame():
         ret, frame = cap.read()
         if not ret:
             return None
         return frame
-    print("Robot connected.")
 
     # ── Header ────────────────────────────────────────────────────────
     print()
@@ -284,19 +283,28 @@ def main():
     print("=" * 60)
 
     if board_type == "charuco":
-        # Convert ChArUco detections → standard obj_points / img_points
-        # so we can use plain cv2.calibrateCamera (compatible with older
-        # OpenCV that lacks cv2.aruco.calibrateCameraCharuco).
+        # Manually build 3D→2D correspondences from ChArUco detections
+        # (compatible with older OpenCV that lacks matchImagePoints /
+        # calibrateCameraCharuco).
+        all_board_pts_3d = board.getChessboardCorners()  # (N,3)
+        all_board_ids = board.getIds().flatten()          # (N,)
+
         obj_points = []
         img_points = []
         for i in range(n_views):
-            # matchImagePoints: map detected charuco corners to board object points
-            ok, obj_pts, img_pts = cv2.aruco.matchImagePoints(
-                board, all_charuco_corners[i], all_charuco_ids[i],
-            )
-            if ok and len(obj_pts) >= 4:
-                obj_points.append(obj_pts.astype(np.float32))
-                img_points.append(img_pts.astype(np.float32))
+            detected_ids = all_charuco_ids[i].flatten()
+            detected_corners = all_charuco_corners[i]
+            # Map detected IDs → board 3D points
+            obj_pts = []
+            img_pts = []
+            for d_id, corner in zip(detected_ids, detected_corners):
+                match_idx = np.where(all_board_ids == d_id)[0]
+                if len(match_idx) == 1:
+                    obj_pts.append(all_board_pts_3d[match_idx[0]])
+                    img_pts.append(corner)
+            if len(obj_pts) >= 4:
+                obj_points.append(np.array(obj_pts, dtype=np.float32))
+                img_points.append(np.array(img_pts, dtype=np.float32))
         n_views_used = len(obj_points)
         if n_views_used < 3:
             print(f"ERROR: only {n_views_used} views with ≥4 matched points (need ≥3)")
@@ -305,7 +313,6 @@ def main():
         ret, K, d, rvecs, tvecs = cv2.calibrateCamera(
             obj_points, img_points, (img_w, img_h), None, None,
         )
-        # Per-view reprojection error
         total_err = 0.0
         for i in range(n_views_used):
             projected, _ = cv2.projectPoints(obj_points[i], rvecs[i], tvecs[i], K, d)
