@@ -101,19 +101,6 @@ def parse_args():
 def main():
     args = parse_args()
 
-    robot_cfg = {
-        "type": args.robot_type,
-        "cameras": {
-            "head_cam": {
-                "type": args.cam_type,
-                "index": args.cam_index,
-                "width": args.cam_width,
-                "height": args.cam_height,
-                "fps": args.cam_fps,
-            },
-        },
-    }
-
     board_type = args.board_type
     min_samples = args.min_samples
     img_w = args.cam_width
@@ -157,14 +144,18 @@ def main():
 
     # ── Connect robot ─────────────────────────────────────────────────
     print("Connecting to robot...")
-    from lerobot.robots.config import RobotConfig
-    import draccus
-    import sys
-    _saved_argv = sys.argv
-    sys.argv = ["calibrate_camera_v1"]
-    robot_config = draccus.parse(RobotConfig, robot_cfg)
-    sys.argv = _saved_argv
-    robot = make_robot_from_config(robot_config)
+    from lerobot.cameras.nv_opencv.configuration_opencv import OpenCVCameraConfig
+    from lerobot.robots.supre_robot_follower.supre_robot_follower_config import SupreRobotFollowerConfig
+    from lerobot.robots.utils import make_robot_from_config
+
+    head_cam = OpenCVCameraConfig(
+        index=args.cam_index,
+        width=args.cam_width,
+        height=args.cam_height,
+        fps=args.cam_fps,
+    )
+    robot_cfg = SupreRobotFollowerConfig(cameras={"head_cam": head_cam})
+    robot = make_robot_from_config(robot_cfg)
     robot.connect()
     print("Robot connected.")
 
