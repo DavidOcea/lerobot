@@ -141,8 +141,7 @@ def main():
         )
 
     # ── Open camera ─────────────────────────────────────────────────
-    print("Connecting to robot...")
-    import cv2
+    print("Opening camera...")
     cam_idx = args.cam_index
     cap = cv2.VideoCapture(cam_idx)
     if not cap.isOpened():
