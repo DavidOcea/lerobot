@@ -42,8 +42,6 @@ import time
 import cv2
 import numpy as np
 
-from lerobot.robots import make_robot_from_config
-
 
 _ARUCO_DICT_MAP = {
     "4x4": cv2.aruco.DICT_4X4_50,
@@ -142,21 +140,24 @@ def main():
             f"{board_size*1000:.0f}mm squares"
         )
 
-    # ── Connect robot ─────────────────────────────────────────────────
+    # ── Open camera ─────────────────────────────────────────────────
     print("Connecting to robot...")
-    from lerobot.cameras.nv_opencv.configuration_opencv import OpenCVCameraConfig
-    from lerobot.robots.supre_robot_follower.supre_robot_follower_config import SupreRobotFollowerConfig
-    from lerobot.robots.utils import make_robot_from_config
+    import cv2
+    cam_idx = args.cam_index
+    cap = cv2.VideoCapture(cam_idx)
+    if not cap.isOpened():
+        print(f"ERROR: cannot open camera index {cam_idx}")
+        return
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.cam_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.cam_height)
+    cap.set(cv2.CAP_PROP_FPS, args.cam_fps)
+    print(f"Camera connected: index={cam_idx} {args.cam_width}x{args.cam_height}")
 
-    head_cam = OpenCVCameraConfig(
-        index=args.cam_index,
-        width=args.cam_width,
-        height=args.cam_height,
-        fps=args.cam_fps,
-    )
-    robot_cfg = SupreRobotFollowerConfig(cameras={"head_cam": head_cam})
-    robot = make_robot_from_config(robot_cfg)
-    robot.connect()
+    def _grab_frame():
+        ret, frame = cap.read()
+        if not ret:
+            return None
+        return frame
     print("Robot connected.")
 
     # ── Header ────────────────────────────────────────────────────────
@@ -197,10 +198,9 @@ def main():
     n_captured = 0
 
     while True:
-        obs = robot.get_observation()
-        img = obs.get("images", {}).get("head_cam")
+        img = _grab_frame()
         if img is None:
-            print("ERROR: no head_cam image")
+            print("ERROR: no image from camera")
             time.sleep(0.1)
             continue
 
@@ -265,7 +265,7 @@ def main():
 
     if not args.auto_collect:
         cv2.destroyAllWindows()
-    robot.disconnect()
+    cap.release()
 
     # ── Calibration ───────────────────────────────────────────────────
     if board_type == "charuco":
