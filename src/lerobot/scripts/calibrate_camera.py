@@ -13,23 +13,24 @@ distortion estimation.
 
 Usage (ChArUco, recommended):
     python -m lerobot.scripts.calibrate_camera \\
-        --robot.type supre_robot_follower \\
-        --robot.cameras.head_cam.type opencv \\
-        --robot.cameras.head_cam.index 0 \\
-        --robot.cameras.head_cam.width 640 \\
-        --robot.cameras.head_cam.height 480 \\
-        --robot.cameras.head_cam.fps 30 \\
+        --robot-type supre_robot_follower \\
+        --cam-type opencv \\
+        --cam-index 0 \\
+        --cam-width 640 \\
+        --cam-height 480 \\
+        --cam-fps 30 \\
         --board-type charuco \\
         --charuco-squares-x 5 \\
         --charuco-squares-y 7 \\
         --charuco-square-length 0.030 \\
         --charuco-marker-length 0.024 \\
+        --charuco-marker-family 6x6 \\
         --min-samples 30
 
 Usage (chessboard):
     python -m lerobot.scripts.calibrate_camera \\
-        --robot.type supre_robot_follower \\
-        ... \\
+        --robot-type supre_robot_follower \\
+        ...
         --board-type chessboard \\
         --chessboard-rows 7 --chessboard-cols 5 --chessboard-size 0.030 \\
         --min-samples 25
@@ -62,12 +63,12 @@ _ARUCO_DICT_MAP = {
 def parse_args():
     p = argparse.ArgumentParser(description="Calibrate head camera")
     # Robot
-    p.add_argument("--robot.type", type=str, required=True)
-    p.add_argument("--robot.cameras.head_cam.type", type=str, default="opencv")
-    p.add_argument("--robot.cameras.head_cam.index", type=int, default=0)
-    p.add_argument("--robot.cameras.head_cam.width", type=int, default=640)
-    p.add_argument("--robot.cameras.head_cam.height", type=int, default=480)
-    p.add_argument("--robot.cameras.head_cam.fps", type=int, default=30)
+    p.add_argument("--robot-type", type=str, default="supre_robot_follower")
+    p.add_argument("--cam-type", type=str, default="opencv")
+    p.add_argument("--cam-index", type=int, default=0)
+    p.add_argument("--cam-width", type=int, default=640)
+    p.add_argument("--cam-height", type=int, default=480)
+    p.add_argument("--cam-fps", type=int, default=30)
 
     # Board
     p.add_argument("--board-type", choices=["chessboard", "charuco"],
@@ -101,22 +102,22 @@ def main():
     args = parse_args()
 
     robot_cfg = {
-        "type": getattr(args, "robot.type"),
+        "type": args.robot_type,
         "cameras": {
             "head_cam": {
-                "type": getattr(args, "robot.cameras.head_cam.type"),
-                "index": getattr(args, "robot.cameras.head_cam.index"),
-                "width": getattr(args, "robot.cameras.head_cam.width"),
-                "height": getattr(args, "robot.cameras.head_cam.height"),
-                "fps": getattr(args, "robot.cameras.head_cam.fps"),
+                "type": args.cam_type,
+                "index": args.cam_index,
+                "width": args.cam_width,
+                "height": args.cam_height,
+                "fps": args.cam_fps,
             },
         },
     }
 
     board_type = args.board_type
     min_samples = args.min_samples
-    img_w = getattr(args, "robot.cameras.head_cam.width")
-    img_h = getattr(args, "robot.cameras.head_cam.height")
+    img_w = args.cam_width
+    img_h = args.cam_height
 
     # ── Board setup ──────────────────────────────────────────────────
     if board_type == "charuco":
