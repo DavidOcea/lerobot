@@ -284,22 +284,35 @@ def main():
     print("=" * 60)
 
     if board_type == "charuco":
-        ret, K, d, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(
-            all_charuco_corners, all_charuco_ids, board,
-            (img_w, img_h), None, None,
-        )
-        # Per-view reprojection error for ChArUco
-        total_err = 0.0
-        n_pts = 0
+        # Convert ChArUco detections → standard obj_points / img_points
+        # so we can use plain cv2.calibrateCamera (compatible with older
+        # OpenCV that lacks cv2.aruco.calibrateCameraCharuco).
+        obj_points = []
+        img_points = []
         for i in range(n_views):
-            if rvecs is not None and tvecs is not None:
-                obj_pts = board.getChessboardCorners()[all_charuco_ids[i].flatten()]
-                img_pts = all_charuco_corners[i]
-                projected, _ = cv2.projectPoints(obj_pts.astype(np.float32), rvecs[i], tvecs[i], K, d)
-                err = cv2.norm(img_pts, projected, cv2.NORM_L2) / len(projected)
-                total_err += err
-                n_pts += 1
-        mean_err = total_err / max(n_pts, 1)
+            # matchImagePoints: map detected charuco corners to board object points
+            ok, obj_pts, img_pts = cv2.aruco.matchImagePoints(
+                board, all_charuco_corners[i], all_charuco_ids[i],
+            )
+            if ok and len(obj_pts) >= 4:
+                obj_points.append(obj_pts.astype(np.float32))
+                img_points.append(img_pts.astype(np.float32))
+        n_views_used = len(obj_points)
+        if n_views_used < 3:
+            print(f"ERROR: only {n_views_used} views with ≥4 matched points (need ≥3)")
+            return
+
+        ret, K, d, rvecs, tvecs = cv2.calibrateCamera(
+            obj_points, img_points, (img_w, img_h), None, None,
+        )
+        # Per-view reprojection error
+        total_err = 0.0
+        for i in range(n_views_used):
+            projected, _ = cv2.projectPoints(obj_points[i], rvecs[i], tvecs[i], K, d)
+            err = cv2.norm(img_points[i], projected, cv2.NORM_L2) / len(projected)
+            total_err += err
+        mean_err = total_err / n_views_used
+        n_views = n_views_used
     else:
         ret, K, d, rvecs, tvecs = cv2.calibrateCamera(
             obj_points, img_points, (img_w, img_h), None, None,
