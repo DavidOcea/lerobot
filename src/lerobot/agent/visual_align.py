@@ -471,32 +471,51 @@ def execute_visual_align(
         gains = [0.8, 0.6, 0.5, 0.4]
         gain = gains[iteration] if iteration < len(gains) else 0.4
 
+        # Save raw values before gain for the stuck check below
+        raw_dtheta = dtheta_deg
+        raw_forward = forward_dist
+
         # Oscillation detection: if dtheta flipped sign AND the amplitude
         # is above 3° (solvePnP noise floor), the AGV overshot.
-        if iteration > 0 and dtheta_deg * last_dtheta < 0 and abs(dtheta_deg) > 3.0:
+        if iteration > 0 and raw_dtheta * last_dtheta < 0 and abs(raw_dtheta) > 3.0:
             gain = min(gain, 0.3)
             logger.warning(
                 f"  oscillation detected (prev={last_dtheta:.1f}° cur={dtheta_deg:.1f}°) "
                 f"→ gain clamped to {gain}"
             )
 
+        # If raw corrections are already too small for a damped step
+        # to execute, skip the gain so the AGV can make one clean
+        # final move (un-damped).
+        if (abs(raw_dtheta) < 3.0 and abs(raw_forward) < 0.05
+                and abs(raw_dtheta * gain) < 1.0
+                and abs(raw_forward * gain) < 0.005):
+            gain = 1.0
+            logger.warning(
+                f"  gain=1.0 (final undamped step: "
+                f"dtheta={raw_dtheta:.1f}°, forward={raw_forward:.3f}m)"
+            )
+
         if gain < 1.0:
             logger.warning(
-                f"  gain={gain:.1f} (raw: dtheta={dtheta_deg:.1f}°, "
-                f"forward={forward_dist:.3f}m)"
+                f"  gain={gain:.1f} (raw: dtheta={raw_dtheta:.1f}°, "
+                f"forward={raw_forward:.3f}m)"
             )
-        dtheta_deg *= gain
-        forward_dist *= gain
-        last_dtheta = dtheta_deg  # store AFTER gain for next comparison
+        dtheta_deg = raw_dtheta * gain
+        forward_dist = raw_forward * gain
+        last_dtheta = raw_dtheta  # store RAW for next oscillation comparison
 
         # ── Stuck check: corrections below AGV execution thresholds ──
-        # If both corrected turn (<1°) and forward (<5mm) are too small
-        # for the AGV to execute, further iterations won't help — treat
-        # as converged even if raw dtheta is slightly above tolerance.
-        if abs(dtheta_deg) < 1.0 and abs(forward_dist) < 0.005:
+        # Only accept if raw values are within a loose envelope —
+        # otherwise a ~1.2cm residual × 0.4 gain ≈ 5mm would falsely
+        # trigger convergence when AGV can't execute the tiny correction.
+        raw_close = (abs(raw_dtheta) < config.angle_tolerance * 2
+                     and abs(raw_forward) < config.position_tolerance * 3)
+        if abs(dtheta_deg) < 1.0 and abs(forward_dist) < 0.005 and raw_close:
             logger.warning(
                 f"Alignment converged at iteration {iteration} (below exec threshold): "
-                f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
+                f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m "
+                f"(raw: {raw_dtheta:.1f}° {raw_forward:.3f}m)"
             )
             return True, f"Aligned after {iteration + 1} iterations"
 
