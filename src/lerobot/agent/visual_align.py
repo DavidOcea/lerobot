@@ -420,7 +420,8 @@ def execute_visual_align(
             return False, f"Failed to load reference pose: {e}"
 
     # Step 1: Closed-loop alignment
-    last_dtheta = 0.0  # track previous dtheta for oscillation detection
+    aligned = False
+    last_raw = 0.0  # track previous raw_dtheta for oscillation detection
     for iteration in range(config.max_iterations):
         # Capture fresh image
         obs = robot.get_observation()
@@ -465,7 +466,8 @@ def execute_visual_align(
                 f"Alignment converged at iteration {iteration} ({why}): "
                 f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
             )
-            return True, f"Aligned after {iteration + 1} iterations"
+            aligned = True
+            break
 
         # ── Decaying gain + oscillation damping ─────────────────────
         gains = [0.8, 0.6, 0.5, 0.4]
@@ -477,10 +479,10 @@ def execute_visual_align(
 
         # Oscillation detection: if dtheta flipped sign AND the amplitude
         # is above 3° (solvePnP noise floor), the AGV overshot.
-        if iteration > 0 and raw_dtheta * last_dtheta < 0 and abs(raw_dtheta) > 3.0:
+        if iteration > 0 and raw_dtheta * last_raw < 0 and abs(raw_dtheta) > 3.0:
             gain = min(gain, 0.3)
             logger.warning(
-                f"  oscillation detected (prev={last_dtheta:.1f}° cur={dtheta_deg:.1f}°) "
+                f"  oscillation detected (prev={last_raw:.1f}° cur={raw_dtheta:.1f}°) "
                 f"→ gain clamped to {gain}"
             )
 
@@ -502,7 +504,7 @@ def execute_visual_align(
             )
         dtheta_deg = raw_dtheta * gain
         forward_dist = raw_forward * gain
-        last_dtheta = raw_dtheta  # store RAW for next oscillation comparison
+        last_raw = raw_dtheta  # store RAW for next oscillation comparison
 
         # ── Stuck check: corrections below AGV execution thresholds ──
         # Only accept if raw values are within a loose envelope —
@@ -516,7 +518,8 @@ def execute_visual_align(
                 f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m "
                 f"(raw: {raw_dtheta:.1f}° {raw_forward:.3f}m)"
             )
-            return True, f"Aligned after {iteration + 1} iterations"
+            aligned = True
+            break
 
         # ── Per-step safety cap (keep marker in camera FOV) ───────────
         # Turning too far in one step pushes the marker out of the
@@ -576,6 +579,36 @@ def execute_visual_align(
             else:
                 agv_controller.wait_for_translate_complete(timeout=10.0)
                 time.sleep(0.3)
+
+    # ── Phase 2: heading alignment ───────────────────────────────────
+    # Phase 1 converged the distance and roughly faced the marker.
+    # If the reference photo had a slight off-axis angle (ref_y ≠ 0),
+    # one deterministic turn brings the AGV to the reference heading.
+    # No iteration needed — ref_y is constant from the reference JSON.
+    if use_reference and aligned:
+        ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
+        heading_correction = -math.atan2(ref_y, ref_x) * RAD_TO_DEG
+        if abs(heading_correction) > 0.5:
+            logger.warning(
+                f"Phase 2 heading correction: {heading_correction:.1f}° "
+                f"(ref lateral offset: {ref_y*100:.0f}cm)"
+            )
+            vw_sign = 1.0 if heading_correction > 0 else -1.0
+            agv_controller.turn(
+                angle=abs(heading_correction) * DEG_TO_RAD,
+                vw=config.turn_speed * DEG_TO_RAD * vw_sign,
+                mode=0,
+            )
+            agv_controller.wait_for_turn_complete(timeout=10.0)
+            time.sleep(0.3)
+            return True, f"Aligned (dist + heading, correction {heading_correction:.1f}°)"
+        else:
+            logger.warning(
+                f"Phase 2: heading correction {heading_correction:.1f}° < 0.5° — skipped"
+            )
+
+    if aligned:
+        return True, "Aligned (distance + heading within tolerance)"
 
     # Did not converge within max_iterations
     logger.warning(
