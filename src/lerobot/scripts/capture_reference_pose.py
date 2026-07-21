@@ -72,14 +72,46 @@ def main():
     orchestrator_cfg = load_config_from_yaml(args.config)
     robot_cfg = orchestrator_cfg.robot_config
 
+    # Read calibrated camera_matrix / dist_coeffs from the YAML's first
+    # visual_align task so the reference pose and alignment loop use the
+    # SAME solvePnP coordinate system.  Without this the reference is
+    # computed with default (uncalibrated) params and alignment with
+    # calibrated params → near-guaranteed divergence.
+    camera_matrix = None
+    dist_coeffs = None
+    # Fallback camera offsets from YAML (CLI args override)
+    yaml_pitch = args.camera_offset_pitch
+    yaml_yaw = args.camera_offset_yaw
+    yaml_x = args.camera_offset_x
+    yaml_y = args.camera_offset_y
+    for task in orchestrator_cfg.tasks:
+        if task.task_type == "visual_align" and task.visual_align_config is not None:
+            va = task.visual_align_config
+            if va.camera_matrix is not None and va.dist_coeffs is not None:
+                camera_matrix = va.camera_matrix
+                dist_coeffs = va.dist_coeffs
+                print(f"Using calibrated camera params from YAML task '{task.name}'")
+            # Use YAML offset values as defaults (CLI defaults are 0)
+            if args.camera_offset_pitch == 0.0 and va.camera_offset_pitch != 0.0:
+                yaml_pitch = va.camera_offset_pitch
+            if args.camera_offset_yaw == 0.0 and va.camera_offset_yaw != 0.0:
+                yaml_yaw = va.camera_offset_yaw
+            if args.camera_offset_x == 0.0 and va.camera_offset_x != 0.0:
+                yaml_x = va.camera_offset_x
+            if args.camera_offset_y == 0.0 and va.camera_offset_y != 0.0:
+                yaml_y = va.camera_offset_y
+            break
+
     visual_config = VisualAlignConfig(
         marker_id=args.marker_id,
         marker_size=args.marker_size,
         marker_family=args.marker_family,
-        camera_offset_pitch=args.camera_offset_pitch,
-        camera_offset_yaw=args.camera_offset_yaw,
-        camera_offset_x=args.camera_offset_x,
-        camera_offset_y=args.camera_offset_y,
+        camera_offset_pitch=yaml_pitch,
+        camera_offset_yaw=yaml_yaw,
+        camera_offset_x=yaml_x,
+        camera_offset_y=yaml_y,
+        camera_matrix=camera_matrix,
+        dist_coeffs=dist_coeffs,
     )
 
     print("Connecting to robot...")
