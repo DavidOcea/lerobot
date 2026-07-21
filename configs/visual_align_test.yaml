@@ -30,7 +30,7 @@ named_positions:
 # ========== AGV Global Configuration ==========
 agv_config:
   enabled: true
-  host: "192.168.3.21"
+  host: "192.168.2.13"
   port: 19204
   connection_timeout: 5.0
   read_timeout: 2.0
@@ -134,32 +134,65 @@ tasks:
       retry_count: 2
       emergency_stop_on_error: true
 
-  # Step 3: 视觉精调对准AprilTag标记 (粗定位±30cm → 精调±2cm)
-  # 流程: 搜索标记 → 解算位姿 → 转向+前进 → 闭环验证
-  - name: "visual_align_marker_C"
+  # # Step 3: 视觉精调对准AprilTag标记 (粗定位±30cm → 精调±2cm)
+  # # 流程: 搜索标记 → 解算位姿 → 转向+前进 → 闭环验证
+  # - name: "visual_align_marker_C"
+  #   task_type: "visual_align"
+  #   max_duration: 120.0
+  #   max_retries: 10
+  #   enabled: true
+  #   visual_align_config:
+  #     reference_pose_path: "ref_station_C.json"  # 站点参考位姿文件 默认不配置用approach_distance，配置时用参考照片定位
+  #     distance_offset: -0.10     # 参考位姿距离修正 (米), 补偿减号公式系统偏移, 正值=多前进
+  #     marker_id: 0              # AprilTag ID=0 (站点C的标记)
+  #     marker_size: 0.10         # 标记物理边长 10cm (0.10m)
+  #     marker_family: "tag36h11" # AprilTag 家族
+  #     search_turn_step: 10.0    # 搜索每步左转10°
+  #     search_max_turn: 90.0     # 最大搜索范围90°
+  #     search_max_attempts: 9    # 搜索步数 (90/10=9)
+  #     position_tolerance: 0.02  # 位置收敛阈值 2cm
+  #     angle_tolerance: 1.0      # 角度收敛阈值 2°
+  #     max_iterations: 5         # 闭环最多5轮微调 (参考照片模式建议≥5)
+  #     translate_speed: 0.15     # 前进微调速度 0.15m/s
+  #     turn_speed: 10.0          # 转动微调速度 15°/s
+  #     approach_distance: 0.50   # 停在标记前方50cm处
+  #     camera_offset_x: 0.0      # 相机偏移 (先用0, 闭环收敛弥补)
+  #     camera_offset_y: 0.0
+  #     camera_offset_yaw: 0.0
+  #     camera_offset_pitch: 55.0  # 相机俯视角度 (度, 正值=俯视朝下)
+
+
+  - name: "align_to_tag"
     task_type: "visual_align"
-    max_duration: 120.0
-    max_retries: 10
-    enabled: true
+    max_duration: 60.0          # 搜索360°+迭代需要更多时间
     visual_align_config:
-      reference_pose_path: "ref_station_C.json"  # 站点参考位姿文件 默认不配置用approach_distance，配置时用参考照片定位
-      distance_offset: -0.10     # 参考位姿距离修正 (米), 补偿减号公式系统偏移, 正值=多前进
-      marker_id: 0              # AprilTag ID=0 (站点C的标记)
-      marker_size: 0.10         # 标记物理边长 10cm (0.10m)
-      marker_family: "tag36h11" # AprilTag 家族
-      search_turn_step: 10.0    # 搜索每步左转10°
-      search_max_turn: 90.0     # 最大搜索范围90°
-      search_max_attempts: 9    # 搜索步数 (90/10=9)
-      position_tolerance: 0.02  # 位置收敛阈值 2cm
-      angle_tolerance: 1.0      # 角度收敛阈值 2°
-      max_iterations: 5         # 闭环最多5轮微调 (参考照片模式建议≥5)
-      translate_speed: 0.15     # 前进微调速度 0.15m/s
-      turn_speed: 10.0          # 转动微调速度 15°/s
-      approach_distance: 0.50   # 停在标记前方50cm处
-      camera_offset_x: 0.0      # 相机偏移 (先用0, 闭环收敛弥补)
-      camera_offset_y: 0.0
-      camera_offset_yaw: 0.0
-      camera_offset_pitch: 55.0  # 相机俯视角度 (度, 正值=俯视朝下)
+      # ── 标签配置 ──
+      marker_id: 0
+      marker_size: 0.20         # 建议20cm大标签，solvePnP精度翻倍
+      marker_family: "tag36h11"
+
+      # ── 搜索配置 ──
+      search_turn_step: 10.0
+      search_max_turn: 360.0    # 转一整圈
+      search_max_attempts: 99   # 兜底安全值
+
+      # ── 对齐精度 ──
+      max_iterations: 6         # 1.0→0.7→0.5→0.4→0.4→0.4，够收敛
+      position_tolerance: 0.01  # 1cm
+      angle_tolerance: 1.0      # 1°
+
+      # ── 参考位姿对齐 ──
+      reference_pose_path: "/home/t/workspace/gitprj/lerobot/ref_station.json"
+      distance_offset: 0.0      # 收敛后用实际偏差微调
+
+      # ── 相机-AGV 偏移（卷尺量完后填） ──
+      camera_offset_x: 0.061      # 相机在AGV中心前方?米
+      camera_offset_y: -0.018      # 相机在AGV中心左侧?米
+      camera_offset_pitch: 40.0  # 相机俯视角度（度）
+      
+      # --相机内参数--标定
+      camera_matrix: [392.163, 0.0, 331.139, 0.0, 392.655, 201.662, 0.0, 0.0, 1.0]
+      dist_coeffs: [-0.410230, 0.191873, -0.001411, -0.003197, -0.050031]
 
   # Step 4: 返回站点C
   - name: "agv_return_to_station_C"
