@@ -471,11 +471,9 @@ def execute_visual_align(
         gains = [0.8, 0.6, 0.5, 0.4]
         gain = gains[iteration] if iteration < len(gains) else 0.4
 
-        # Oscillation detection: if dtheta flipped sign vs last iteration,
-        # the AGV overshot — use an even smaller gain this round.
-        oscillating = (iteration > 0 and dtheta_deg * last_dtheta < 0
-                       and abs(dtheta_deg) > config.angle_tolerance)
-        if oscillating:
+        # Oscillation detection: if dtheta flipped sign AND the amplitude
+        # is above 3° (solvePnP noise floor), the AGV overshot.
+        if iteration > 0 and dtheta_deg * last_dtheta < 0 and abs(dtheta_deg) > 3.0:
             gain = min(gain, 0.3)
             logger.warning(
                 f"  oscillation detected (prev={last_dtheta:.1f}° cur={dtheta_deg:.1f}°) "
@@ -490,6 +488,17 @@ def execute_visual_align(
         dtheta_deg *= gain
         forward_dist *= gain
         last_dtheta = dtheta_deg  # store AFTER gain for next comparison
+
+        # ── Stuck check: corrections below AGV execution thresholds ──
+        # If both corrected turn (<1°) and forward (<5mm) are too small
+        # for the AGV to execute, further iterations won't help — treat
+        # as converged even if raw dtheta is slightly above tolerance.
+        if abs(dtheta_deg) < 1.0 and abs(forward_dist) < 0.005:
+            logger.warning(
+                f"Alignment converged at iteration {iteration} (below exec threshold): "
+                f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
+            )
+            return True, f"Aligned after {iteration + 1} iterations"
 
         # ── Per-step safety cap (keep marker in camera FOV) ───────────
         # Turning too far in one step pushes the marker out of the
