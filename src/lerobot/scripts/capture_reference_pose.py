@@ -33,6 +33,7 @@ from lerobot.agent.visual_align import (
     detect_marker,
     save_reference_pose,
     _get_detector,
+    _marker_to_agv_xy,
 )
 from lerobot.tasks.config import VisualAlignConfig, load_config_from_yaml
 from lerobot.robots import make_robot_from_config
@@ -169,15 +170,35 @@ def _interactive_capture(robot, visual_config, detector, output_path):
 
         display = bgr.copy()
         if marker is not None:
+            cur_x, cur_y = _marker_to_agv_xy(marker["tvec"], visual_config)
+            z_cam = marker["tvec"][2]
+            # ── Overlay: distance + lateral offset ───────────────────
             cv2.putText(
                 display,
-                f"ID={marker['id']}  z={marker['tvec'][2]:.2f}m",
+                f"ID={marker['id']}  z={z_cam:.2f}m  lateral={cur_y:+.3f}m",
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
                 (0, 255, 0),
                 2,
             )
+            # Horizontal bar indicator for cur_y (centering guide)
+            h, w = display.shape[:2]
+            cx, cy, bar_w = w // 2, h - 50, min(w // 2, 300)
+            # Background bar
+            cv2.rectangle(display, (cx - bar_w // 2, cy - 8), (cx + bar_w // 2, cy + 8), (50, 50, 50), -1)
+            # Center line
+            cv2.line(display, (cx, cy - 15), (cx, cy + 15), (0, 0, 255), 2)
+            # Cursor — clamp ±5cm lateral to bar half-width
+            cursor = int(cx + cur_y / 0.05 * bar_w // 2)
+            cursor = max(cx - bar_w // 2, min(cx + bar_w // 2, cursor))
+            cv2.circle(display, (cursor, cy), 8, (0, 255, 255), -1)
+            cv2.putText(display, "L", (cx - bar_w // 2 - 20, cy + 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+            cv2.putText(display, "R", (cx + bar_w // 2 + 8, cy + 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1)
+            cv2.putText(display, "0", (cx - 10, cy - 15),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
             corners = marker["corners"].astype(int)
             cv2.polylines(display, [corners], True, (0, 255, 0), 2)
         else:
