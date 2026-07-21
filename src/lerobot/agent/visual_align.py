@@ -218,20 +218,14 @@ def compute_alignment_to_reference(
 ) -> tuple[float, float]:
     """Compute AGV movement to align current view to reference view.
 
-    Full 2D alignment (not just radial distance matching):
-      1. Compute the displacement vector from current AGV position to the
-         target position in the ground plane: (Δx, Δy) = (cur_x - ref_x, cur_y - ref_y).
-      2. Turn by atan2(Δy, Δx) — this faces the AGV toward the target point,
-         NOT the marker.  When the reference was taken from an off-axis angle,
-         the target is NOT the marker itself.
-      3. Drive forward by sqrt(Δx² + Δy²).
+    Stable "face marker + match distance" strategy:
+      1. Turn to face the marker directly (atan2 in AGV frame).
+      2. Match the reference radial distance to the marker.
 
-    For a reference pose photographed from, say, 30° left of the marker,
-    the AGV will align to the SAME off-axis position — not to the marker's
-    direct front.
-
-    A configurable distance_offset adds a small forward bias (±) for
-    fine-tuning after convergence.
+    This is more stable than full 2D position matching because it
+    avoids amplifying solvePnP lateral noise.  The AGV ends up facing
+    the marker head-on at the reference distance — sufficient for
+    most docking / pick-and-place scenarios.
 
     Returns (dtheta_deg, forward_dist_m).
     """
@@ -239,16 +233,15 @@ def compute_alignment_to_reference(
     cur_x, cur_y = _marker_to_agv_xy(tvec_cur, config)
     ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
 
-    # ── 2D displacement in current AGV frame ────────────────────────
-    dx = cur_x - ref_x   # forward displacement needed
-    dy = cur_y - ref_y   # leftward displacement needed
+    cur_dist = math.sqrt(cur_x**2 + cur_y**2)
+    ref_dist = math.sqrt(ref_x**2 + ref_y**2)
 
-    # Turn to face the TARGET POSITION (not the marker)
-    dtheta_rad = math.atan2(dy, dx)
+    # Turn to face the marker
+    dtheta_rad = math.atan2(cur_y, cur_x)
     dtheta_deg = dtheta_rad * RAD_TO_DEG
 
-    # Straight-line distance to target + optional fine-tune bias
-    forward_dist = math.sqrt(dx**2 + dy**2) + config.distance_offset
+    # Match reference distance + fine-tune
+    forward_dist = cur_dist - ref_dist + config.distance_offset
 
     return dtheta_deg, forward_dist
 
@@ -427,6 +420,7 @@ def execute_visual_align(
             return False, f"Failed to load reference pose: {e}"
 
     # Step 1: Closed-loop alignment
+    last_dtheta = 0.0  # track previous dtheta for oscillation detection
     for iteration in range(config.max_iterations):
         # Capture fresh image
         obs = robot.get_observation()
@@ -473,17 +467,29 @@ def execute_visual_align(
             )
             return True, f"Aligned after {iteration + 1} iterations"
 
-        # ── Decaying gain to prevent overshoot ───────────────────────
-        # Iteration 0: 1.0, 1: 0.7, 2: 0.5, 3+: 0.4
-        gains = [1.0, 0.7, 0.5, 0.4]
+        # ── Decaying gain + oscillation damping ─────────────────────
+        gains = [0.8, 0.6, 0.5, 0.4]
         gain = gains[iteration] if iteration < len(gains) else 0.4
+
+        # Oscillation detection: if dtheta flipped sign vs last iteration,
+        # the AGV overshot — use an even smaller gain this round.
+        oscillating = (iteration > 0 and dtheta_deg * last_dtheta < 0
+                       and abs(dtheta_deg) > config.angle_tolerance)
+        if oscillating:
+            gain = min(gain, 0.3)
+            logger.warning(
+                f"  oscillation detected (prev={last_dtheta:.1f}° cur={dtheta_deg:.1f}°) "
+                f"→ gain clamped to {gain}"
+            )
+
         if gain < 1.0:
             logger.warning(
                 f"  gain={gain:.1f} (raw: dtheta={dtheta_deg:.1f}°, "
                 f"forward={forward_dist:.3f}m)"
             )
-            dtheta_deg *= gain
-            forward_dist *= gain
+        dtheta_deg *= gain
+        forward_dist *= gain
+        last_dtheta = dtheta_deg  # store AFTER gain for next comparison
 
         # ── Per-step safety cap (keep marker in camera FOV) ───────────
         # Turning too far in one step pushes the marker out of the
