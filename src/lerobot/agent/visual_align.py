@@ -421,7 +421,6 @@ def execute_visual_align(
 
     # Step 1: Closed-loop alignment
     aligned = False
-    last_marker_rvec = None  # capture rvec from converged iteration for Phase 2
     last_raw = 0.0  # track previous raw_dtheta for oscillation detection
     for iteration in range(config.max_iterations):
         # Capture fresh image
@@ -467,7 +466,6 @@ def execute_visual_align(
                 f"Alignment converged at iteration {iteration} ({why}): "
                 f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
             )
-            last_marker_rvec = marker["rvec"].copy()
             aligned = True
             break
 
@@ -479,34 +477,33 @@ def execute_visual_align(
         raw_dtheta = dtheta_deg
         raw_forward = forward_dist
 
-        # Oscillation detection: if dtheta flipped sign, the AGV
-        # overshot.  Skip turning this iteration so the AGV settles
-        # before the next measurement.
-        skip_turn = False
-        if iteration > 0 and raw_dtheta * last_raw < 0 and abs(raw_dtheta) > 5.0:
-            gain = 0.3
-            skip_turn = True
+        # Oscillation detection: if dtheta flipped sign AND the amplitude
+        # is above 3° (solvePnP noise floor), the AGV overshot.
+        if iteration > 0 and raw_dtheta * last_raw < 0 and abs(raw_dtheta) > 3.0:
+            gain = min(gain, 0.3)
             logger.warning(
                 f"  oscillation detected (prev={last_raw:.1f}° cur={raw_dtheta:.1f}°) "
-                f"→ skipping turn, only forward correction"
+                f"→ gain clamped to {gain}"
             )
 
-        # ── Final approach: undamp forward, keep dtheta damped ──────
-        if abs(raw_forward) < 0.05:
-            forward_dist = raw_forward
-            dtheta_deg = 0.0 if skip_turn else raw_dtheta * gain
+        # Once the raw correction is small, skip the gain entirely so
+        # the AGV can make one clean final move.  Damped micro-steps
+        # are often under-executed by the AGV (<5mm command → 0mm actual)
+        # which wastes iterations.
+        if abs(raw_dtheta) < 3.0 and abs(raw_forward) < 0.05:
+            gain = 1.0
             logger.warning(
-                f"  forward undamped ({raw_forward:.3f}m), "
-                f"dtheta {'skipped (osc)' if skip_turn else f'damped (raw={raw_dtheta:.1f}° gain={gain:.1f})'}"
+                f"  gain=1.0 (final undamped step: "
+                f"dtheta={raw_dtheta:.1f}°, forward={raw_forward:.3f}m)"
             )
-        else:
-            if gain < 1.0 and not skip_turn:
-                logger.warning(
-                    f"  gain={gain:.1f} (raw: dtheta={raw_dtheta:.1f}°, "
-                    f"forward={raw_forward:.3f}m)"
-                )
-            dtheta_deg = 0.0 if skip_turn else raw_dtheta * gain
-            forward_dist = raw_forward * gain
+
+        if gain < 1.0:
+            logger.warning(
+                f"  gain={gain:.1f} (raw: dtheta={raw_dtheta:.1f}°, "
+                f"forward={raw_forward:.3f}m)"
+            )
+        dtheta_deg = raw_dtheta * gain
+        forward_dist = raw_forward * gain
         last_raw = raw_dtheta  # store RAW for next oscillation comparison
 
         # ── Stuck check: corrections below AGV execution thresholds ──
@@ -521,7 +518,6 @@ def execute_visual_align(
                 f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m "
                 f"(raw: {raw_dtheta:.1f}° {raw_forward:.3f}m)"
             )
-            last_marker_rvec = marker["rvec"].copy()
             aligned = True
             break
 
@@ -584,95 +580,37 @@ def execute_visual_align(
                 agv_controller.wait_for_translate_complete(timeout=10.0)
                 time.sleep(0.3)
 
-    # ── Phase 2: lateral offset correction (closed-loop) ──────────
-    # Phase 1 matched the radial distance and faced the marker
-    # (cur_y ≈ 0).  If the reference photo had a lateral offset
-    # (ref_y ≠ 0), the AGV needs to physically shift sideways.
-    #
-    # Diff-drive lateral maneuver (Z-shape):
-    #   turn ±90° → drive step → turn back → take photo → repeat
-    # Each iteration is verified with a fresh solvePnP measurement
-    # so under-execution (wheel slip) is corrected.
+    # ── Phase 2: heading alignment ───────────────────────────────────
+    # Phase 1 converged the distance and roughly faced the marker.
+    # If the reference photo had a slight off-axis angle (ref_y ≠ 0),
+    # one deterministic turn brings the AGV to the reference heading.
+    # No iteration needed — ref_y is constant from the reference JSON.
     if use_reference and aligned:
         ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
-        residual = ref_y  # default: Phase 1 left cur_y≈0, so residual≈ref_y
-        for lat_iter in range(3):
-            obs = robot.get_observation()
-            img = obs.get("images", {}).get("head_cam")
-            if img is None:
-                break
-            bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
-            marker_lat = detect_marker(bgr, config, detector)
-            if marker_lat is None:
-                break
-            cur_x, cur_y = _marker_to_agv_xy(marker_lat["tvec"], config)
-            residual = cur_y - ref_y
-            if abs(residual) < 0.01:
-                logger.warning(
-                    f"Phase 2 lateral: {abs(residual)*100:.1f}cm < 1cm — converged"
-                )
-                break
-
-            step = residual * 0.7
-            step = max(-0.15, min(0.15, step))
+        heading_correction = -math.atan2(ref_y, ref_x) * RAD_TO_DEG
+        if abs(heading_correction) > 0.5:
             logger.warning(
-                f"Phase 2 lateral {lat_iter+1}: "
-                f"residual={residual*100:.1f}cm → step={step*100:.1f}cm"
+                f"Phase 2 heading correction: {heading_correction:.1f}° "
+                f"(ref lateral offset: {ref_y*100:.0f}cm)"
             )
-
-            turn_vw = config.turn_speed * DEG_TO_RAD
-            vw_sign = 1.0 if step > 0 else -1.0
-
-            agv_controller.turn(angle=math.pi / 2, vw=turn_vw * vw_sign, mode=0)
-            agv_controller.wait_for_turn_complete(timeout=10.0)
-            time.sleep(0.3)
-
-            agv_controller.translate(
-                dist=abs(step),
-                vx=config.translate_speed * vw_sign,
+            vw_sign = 1.0 if heading_correction > 0 else -1.0
+            agv_controller.turn(
+                angle=abs(heading_correction) * DEG_TO_RAD,
+                vw=config.turn_speed * DEG_TO_RAD * vw_sign,
                 mode=0,
             )
-            agv_controller.wait_for_translate_complete(timeout=10.0)
-            time.sleep(0.3)
-
-            agv_controller.turn(angle=math.pi / 2, vw=-turn_vw * vw_sign, mode=0)
             agv_controller.wait_for_turn_complete(timeout=10.0)
             time.sleep(0.3)
+            return True, f"Aligned (dist + heading, correction {heading_correction:.1f}°)"
+        else:
+            logger.warning(
+                f"Phase 2: heading correction {heading_correction:.1f}° < 0.5° — skipped"
+            )
 
-        # ── Final heading trim ──────────────────────────────────────
-        # Phase 1 may leave a ~2-3° angular residual.  Take one fresh
-        # measurement and apply a damped turn to match the reference
-        # heading.  The reference heading is atan2(ref_y, ref_x).
-        obs = robot.get_observation()
-        img = obs.get("images", {}).get("head_cam")
-        if img is not None:
-            bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
-            marker_h = detect_marker(bgr, config, detector)
-            if marker_h is not None:
-                cur_x, cur_y = _marker_to_agv_xy(marker_h["tvec"], config)
-                cur_heading = math.atan2(cur_y, cur_x)
-                ref_heading = math.atan2(ref_y, ref_x)
-                dheading = (ref_heading - cur_heading) * RAD_TO_DEG
-                if abs(dheading) > 1.0:
-                    dheading *= 0.7  # damped
-                    logger.warning(
-                        f"Phase 2 heading trim: {dheading:.1f}° "
-                        f"(cur={cur_heading*RAD_TO_DEG:.1f}° ref={ref_heading*RAD_TO_DEG:.1f}°)"
-                    )
-                    vw_s = 1.0 if dheading > 0 else -1.0
-                    agv_controller.turn(
-                        angle=abs(dheading) * DEG_TO_RAD,
-                        vw=config.turn_speed * DEG_TO_RAD * vw_s,
-                        mode=0,
-                    )
-                    agv_controller.wait_for_turn_complete(timeout=10.0)
-                    time.sleep(0.3)
-                else:
-                    logger.warning(
-                        f"Phase 2 heading trim: {dheading:.1f}° < 1° — skipped"
-                    )
+    if aligned:
+        return True, "Aligned (distance + heading within tolerance)"
 
-    # Not converged within max_iterations
+    # Did not converge within max_iterations
     logger.warning(
         f"Alignment did not converge after {config.max_iterations} iterations "
         f"(last: dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m)"
