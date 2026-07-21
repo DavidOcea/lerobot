@@ -484,12 +484,11 @@ def execute_visual_align(
                 f"→ gain clamped to {gain}"
             )
 
-        # If raw corrections are already too small for a damped step
-        # to execute, skip the gain so the AGV can make one clean
-        # final move (un-damped).
-        if (abs(raw_dtheta) < 3.0 and abs(raw_forward) < 0.05
-                and abs(raw_dtheta * gain) < 1.0
-                and abs(raw_forward * gain) < 0.005):
+        # Once the raw correction is small, skip the gain entirely so
+        # the AGV can make one clean final move.  Damped micro-steps
+        # are often under-executed by the AGV (<5mm command → 0mm actual)
+        # which wastes iterations.
+        if abs(raw_dtheta) < 3.0 and abs(raw_forward) < 0.05:
             gain = 1.0
             logger.warning(
                 f"  gain=1.0 (final undamped step: "
