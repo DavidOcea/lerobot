@@ -485,6 +485,29 @@ def execute_visual_align(
             dtheta_deg *= gain
             forward_dist *= gain
 
+        # ── Per-step safety cap (keep marker in camera FOV) ───────────
+        # Turning too far in one step pushes the marker out of the
+        # camera's field of view (~78° HFOV for fx=392@640px).  Cap
+        # each iteration's dtheta at ~1/3 half-FOV so the marker
+        # stays visible between iterations.
+        max_turn = 15.0  # degrees
+        max_fwd  = 0.30  # meters
+        if abs(dtheta_deg) > max_turn:
+            # Scale forward proportionally (shorten turn → shorter path)
+            ratio = max_turn / abs(dtheta_deg)
+            logger.warning(
+                f"  capping turn {dtheta_deg:.1f}° → {dtheta_deg*ratio:.1f}° "
+                f"(keep marker in FOV)"
+            )
+            dtheta_deg = dtheta_deg * ratio
+            forward_dist *= ratio
+        if abs(forward_dist) > max_fwd:
+            logger.warning(
+                f"  capping forward {forward_dist:.3f}m → "
+                f"{math.copysign(max_fwd, forward_dist):.3f}m"
+            )
+            forward_dist = math.copysign(max_fwd, forward_dist)
+
         # Step 1a: Turn AGV
         if abs(dtheta_deg) > 1.0:  # skip turns < 1° (below AGV precision)
             turn_deg = dtheta_deg
