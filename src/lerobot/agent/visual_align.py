@@ -486,26 +486,24 @@ def execute_visual_align(
                 f"→ gain clamped to {gain}"
             )
 
-        # ── Final approach: undamp forward, keep dtheta damped ──────
-        # When close, full dθ correction often overshoots because
-        # solvePnP lateral noise dominates at short range.  Forward
-        # distance is more reliable — undamp it so the AGV doesn't
-        # waste iterations on under-executed micro-moves (<5mm).
-        if abs(raw_forward) < 0.05:
-            forward_dist = raw_forward  # one clean distance step
-            dtheta_deg = raw_dtheta * gain  # keep damped
+        # Once the raw correction is small, skip the gain entirely so
+        # the AGV can make one clean final move.  Damped micro-steps
+        # are often under-executed by the AGV (<5mm command → 0mm actual)
+        # which wastes iterations.
+        if abs(raw_dtheta) < 3.0 and abs(raw_forward) < 0.05:
+            gain = 1.0
             logger.warning(
-                f"  forward undamped ({raw_forward:.3f}m), "
-                f"dtheta damped (raw={raw_dtheta:.1f}° gain={gain:.1f})"
+                f"  gain=1.0 (final undamped step: "
+                f"dtheta={raw_dtheta:.1f}°, forward={raw_forward:.3f}m)"
             )
-        else:
-            if gain < 1.0:
-                logger.warning(
-                    f"  gain={gain:.1f} (raw: dtheta={raw_dtheta:.1f}°, "
-                    f"forward={raw_forward:.3f}m)"
-                )
-            dtheta_deg = raw_dtheta * gain
-            forward_dist = raw_forward * gain
+
+        if gain < 1.0:
+            logger.warning(
+                f"  gain={gain:.1f} (raw: dtheta={raw_dtheta:.1f}°, "
+                f"forward={raw_forward:.3f}m)"
+            )
+        dtheta_deg = raw_dtheta * gain
+        forward_dist = raw_forward * gain
         last_raw = raw_dtheta  # store RAW for next oscillation comparison
 
         # ── Stuck check: corrections below AGV execution thresholds ──
