@@ -421,7 +421,6 @@ def execute_visual_align(
 
     # Step 1: Closed-loop alignment
     aligned = False
-    last_marker_rvec = None  # capture rvec from converged iteration for Phase 2
     last_raw = 0.0  # track previous raw_dtheta for oscillation detection
     for iteration in range(config.max_iterations):
         # Capture fresh image
@@ -467,7 +466,6 @@ def execute_visual_align(
                 f"Alignment converged at iteration {iteration} ({why}): "
                 f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
             )
-            last_marker_rvec = marker["rvec"].copy()
             aligned = True
             break
 
@@ -522,7 +520,6 @@ def execute_visual_align(
                 f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m "
                 f"(raw: {raw_dtheta:.1f}° {raw_forward:.3f}m)"
             )
-            last_marker_rvec = marker["rvec"].copy()
             aligned = True
             break
 
@@ -587,38 +584,17 @@ def execute_visual_align(
 
     # ── Phase 2: heading alignment ───────────────────────────────────
     # Phase 1 converged the distance and roughly faced the marker.
-    # Two deterministic corrections bring the AGV to the reference heading:
-    #   a) Lateral offset (ref_y ≠ 0): -atan2(ref_y, ref_x)
-    #   b) Tag in-plane rotation: difference in rvec around marker normal
-    # Neither needs iteration — both are fixed from the reference JSON.
-    if use_reference and aligned and last_marker_rvec is not None:
+    # If the reference photo had a slight off-axis angle (ref_y ≠ 0),
+    # one deterministic turn brings the AGV to the reference heading.
+    # No iteration needed — ref_y is constant from the reference JSON.
+    if use_reference and aligned:
         ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
-        # ── Lateral offset correction ──────────────────────────────
-        heading_lateral = -math.atan2(ref_y, ref_x) * RAD_TO_DEG
-        # ── Tag in-plane rotation correction ───────────────────────
-        # The reference rvec encodes the tag's orientation when the
-        # reference photo was taken.  If the tag has been rotated
-        # since then, solvePnP gives a different rvec.  Extract
-        # the yaw difference around the tag's face normal.
-        R_ref, _ = cv2.Rodrigues(ref_rvec)
-        R_cur, _ = cv2.Rodrigues(last_marker_rvec)
-        R_rel = R_cur @ R_ref.T
-        rvec_rel, _ = cv2.Rodrigues(R_rel)
-        rvec_rel = rvec_rel.flatten()
-        # Project relative rotation onto reference marker's normal
-        # (z-axis of marker = 3rd column of R_ref in camera frame).
-        marker_normal = R_ref[:, 2]
-        tag_rotation = float(np.dot(rvec_rel, marker_normal)) * RAD_TO_DEG
-
-        heading_correction = heading_lateral - tag_rotation
-
-        logger.warning(
-            f"Phase 2 heading: lateral={heading_lateral:.1f}° "
-            f"tag_rotation={tag_rotation:.1f}° "
-            f"→ correction={heading_correction:.1f}°"
-        )
-
+        heading_correction = -math.atan2(ref_y, ref_x) * RAD_TO_DEG
         if abs(heading_correction) > 0.5:
+            logger.warning(
+                f"Phase 2 heading correction: {heading_correction:.1f}° "
+                f"(ref lateral offset: {ref_y*100:.0f}cm)"
+            )
             vw_sign = 1.0 if heading_correction > 0 else -1.0
             agv_controller.turn(
                 angle=abs(heading_correction) * DEG_TO_RAD,
@@ -627,7 +603,7 @@ def execute_visual_align(
             )
             agv_controller.wait_for_turn_complete(timeout=10.0)
             time.sleep(0.3)
-            return True, f"Aligned (dist + heading {heading_correction:.1f}°)"
+            return True, f"Aligned (dist + heading, correction {heading_correction:.1f}°)"
         else:
             logger.warning(
                 f"Phase 2: heading correction {heading_correction:.1f}° < 0.5° — skipped"
