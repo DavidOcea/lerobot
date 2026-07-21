@@ -479,34 +479,33 @@ def execute_visual_align(
         raw_dtheta = dtheta_deg
         raw_forward = forward_dist
 
-        # Oscillation detection: if dtheta flipped sign AND the amplitude
-        # is above 3° (solvePnP noise floor), the AGV overshot.
-        if iteration > 0 and raw_dtheta * last_raw < 0 and abs(raw_dtheta) > 3.0:
-            gain = min(gain, 0.3)
+        # Oscillation detection: if dtheta flipped sign, the AGV
+        # overshot.  Skip turning this iteration so the AGV settles
+        # before the next measurement.
+        skip_turn = False
+        if iteration > 0 and raw_dtheta * last_raw < 0 and abs(raw_dtheta) > 5.0:
+            gain = 0.3
+            skip_turn = True
             logger.warning(
                 f"  oscillation detected (prev={last_raw:.1f}° cur={raw_dtheta:.1f}°) "
-                f"→ gain clamped to {gain}"
+                f"→ skipping turn, only forward correction"
             )
 
         # ── Final approach: undamp forward, keep dtheta damped ──────
-        # When close, full dθ correction often overshoots because
-        # solvePnP lateral noise dominates at short range.  Forward
-        # distance is more reliable — undamp it so the AGV doesn't
-        # waste iterations on under-executed micro-moves (<5mm).
         if abs(raw_forward) < 0.05:
-            forward_dist = raw_forward  # one clean distance step
-            dtheta_deg = raw_dtheta * gain  # keep damped
+            forward_dist = raw_forward
+            dtheta_deg = 0.0 if skip_turn else raw_dtheta * gain
             logger.warning(
                 f"  forward undamped ({raw_forward:.3f}m), "
-                f"dtheta damped (raw={raw_dtheta:.1f}° gain={gain:.1f})"
+                f"dtheta {'skipped (osc)' if skip_turn else f'damped (raw={raw_dtheta:.1f}° gain={gain:.1f})'}"
             )
         else:
-            if gain < 1.0:
+            if gain < 1.0 and not skip_turn:
                 logger.warning(
                     f"  gain={gain:.1f} (raw: dtheta={raw_dtheta:.1f}°, "
                     f"forward={raw_forward:.3f}m)"
                 )
-            dtheta_deg = raw_dtheta * gain
+            dtheta_deg = 0.0 if skip_turn else raw_dtheta * gain
             forward_dist = raw_forward * gain
         last_raw = raw_dtheta  # store RAW for next oscillation comparison
 
@@ -585,52 +584,48 @@ def execute_visual_align(
                 agv_controller.wait_for_translate_complete(timeout=10.0)
                 time.sleep(0.3)
 
-    # ── Phase 2: heading alignment ───────────────────────────────────
-    # Phase 1 converged the distance and roughly faced the marker.
-    # Two deterministic corrections bring the AGV to the reference heading:
-    #   a) Lateral offset (ref_y ≠ 0): -atan2(ref_y, ref_x)
-    #   b) Tag in-plane rotation: difference in rvec around marker normal
-    # Neither needs iteration — both are fixed from the reference JSON.
-    if use_reference and aligned and last_marker_rvec is not None:
+    # ── Phase 2: lateral offset correction ───────────────────────────
+    # Phase 1 matched distance and faced the marker (cur_y ≈ 0).
+    # If the reference photo had a lateral offset (ref_y ≠ 0), the AGV
+    # needs to physically shift sideways — not just rotate.
+    #
+    # Diff-drive lateral maneuver (Z-shape):
+    #   turn ±90° → drive |ref_y| → turn ∓90°
+    # Total lateral displacement = ref_y with zero net rotation.
+    # Only triggers when |ref_y| exceeds the noise floor (2cm).
+    if use_reference and aligned:
         ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
-        # ── Lateral offset correction ──────────────────────────────
-        heading_lateral = -math.atan2(ref_y, ref_x) * RAD_TO_DEG
-        # ── Tag in-plane rotation correction ───────────────────────
-        # The reference rvec encodes the tag's orientation when the
-        # reference photo was taken.  If the tag has been rotated
-        # since then, solvePnP gives a different rvec.  Extract
-        # the yaw difference around the tag's face normal.
-        R_ref, _ = cv2.Rodrigues(ref_rvec)
-        R_cur, _ = cv2.Rodrigues(last_marker_rvec)
-        R_rel = R_cur @ R_ref.T
-        rvec_rel, _ = cv2.Rodrigues(R_rel)
-        rvec_rel = rvec_rel.flatten()
-        # Project relative rotation onto reference marker's normal
-        # (z-axis of marker = 3rd column of R_ref in camera frame).
-        marker_normal = R_ref[:, 2]
-        tag_rotation = float(np.dot(rvec_rel, marker_normal)) * RAD_TO_DEG
-
-        heading_correction = heading_lateral - tag_rotation
-
-        logger.warning(
-            f"Phase 2 heading: lateral={heading_lateral:.1f}° "
-            f"tag_rotation={tag_rotation:.1f}° "
-            f"→ correction={heading_correction:.1f}°"
-        )
-
-        if abs(heading_correction) > 0.5:
-            vw_sign = 1.0 if heading_correction > 0 else -1.0
-            agv_controller.turn(
-                angle=abs(heading_correction) * DEG_TO_RAD,
-                vw=config.turn_speed * DEG_TO_RAD * vw_sign,
-                mode=0,
+        if abs(ref_y) > 0.02:
+            logger.warning(
+                f"Phase 2 lateral shift: {abs(ref_y)*100:.1f}cm "
+                f"({'left' if ref_y > 0 else 'right'})"
             )
+            turn_vw = config.turn_speed * DEG_TO_RAD
+            vw_sign = 1.0 if ref_y > 0 else -1.0
+
+            # Step 1: turn 90° toward target direction
+            agv_controller.turn(angle=math.pi / 2, vw=turn_vw * vw_sign, mode=0)
             agv_controller.wait_for_turn_complete(timeout=10.0)
             time.sleep(0.3)
-            return True, f"Aligned (dist + heading {heading_correction:.1f}°)"
+
+            # Step 2: drive lateral distance
+            agv_controller.translate(
+                dist=abs(ref_y),
+                vx=config.translate_speed * vw_sign,
+                mode=0,
+            )
+            agv_controller.wait_for_translate_complete(timeout=10.0)
+            time.sleep(0.3)
+
+            # Step 3: turn back facing forward
+            agv_controller.turn(angle=math.pi / 2, vw=-turn_vw * vw_sign, mode=0)
+            agv_controller.wait_for_turn_complete(timeout=10.0)
+            time.sleep(0.3)
+
+            return True, f"Aligned (dist + lateral shift {abs(ref_y)*100:.1f}cm)"
         else:
             logger.warning(
-                f"Phase 2: heading correction {heading_correction:.1f}° < 0.5° — skipped"
+                f"Phase 2: lateral offset {abs(ref_y)*100:.1f}cm < 2cm — skipped"
             )
 
     if aligned:
