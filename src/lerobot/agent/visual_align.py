@@ -596,7 +596,8 @@ def execute_visual_align(
     if use_reference and aligned:
         ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
         residual = ref_y  # default: Phase 1 left cur_y≈0, so residual≈ref_y
-        for lat_iter in range(3):
+        for lat_iter in range(3):  # at most 3 lateral correction attempts
+            # Re-detect marker after previous move
             obs = robot.get_observation()
             img = obs.get("images", {}).get("head_cam")
             if img is None:
@@ -606,27 +607,30 @@ def execute_visual_align(
             if marker_lat is None:
                 break
             cur_x, cur_y = _marker_to_agv_xy(marker_lat["tvec"], config)
-            residual = cur_y - ref_y
+            residual = cur_y - ref_y  # + = need to shift left (cur_y > ref_y: tag too far left)
             if abs(residual) < 0.01:
                 logger.warning(
-                    f"Phase 2 lateral: {abs(residual)*100:.1f}cm < 1cm — converged"
+                    f"Phase 2: lateral residual {abs(residual)*100:.1f}cm < 2cm — converged"
                 )
                 break
 
+            # Damped step — don't try to correct the full residual in one go
             step = residual * 0.7
-            step = max(-0.15, min(0.15, step))
+            step = max(-0.15, min(0.15, step))  # cap at 15cm per attempt
             logger.warning(
-                f"Phase 2 lateral {lat_iter+1}: "
+                f"Phase 2 lateral attempt {lat_iter+1}: "
                 f"residual={residual*100:.1f}cm → step={step*100:.1f}cm"
             )
 
             turn_vw = config.turn_speed * DEG_TO_RAD
             vw_sign = 1.0 if step > 0 else -1.0
 
+            # Step a: turn 90° toward shift direction
             agv_controller.turn(angle=math.pi / 2, vw=turn_vw * vw_sign, mode=0)
             agv_controller.wait_for_turn_complete(timeout=10.0)
             time.sleep(0.3)
 
+            # Step b: drive lateral distance
             agv_controller.translate(
                 dist=abs(step),
                 vx=config.translate_speed * vw_sign,
@@ -635,42 +639,17 @@ def execute_visual_align(
             agv_controller.wait_for_translate_complete(timeout=10.0)
             time.sleep(0.3)
 
+            # Step c: turn back facing forward
             agv_controller.turn(angle=math.pi / 2, vw=-turn_vw * vw_sign, mode=0)
             agv_controller.wait_for_turn_complete(timeout=10.0)
             time.sleep(0.3)
+        else:
+            logger.warning(
+                f"Phase 2: lateral not fully converged after 3 attempts "
+                f"(residual={abs(residual)*100:.1f}cm)"
+            )
 
-        # ── Final heading trim ──────────────────────────────────────
-        # Phase 1 may leave a ~2-3° angular residual.  Take one fresh
-        # measurement and apply a damped turn to match the reference
-        # heading.  The reference heading is atan2(ref_y, ref_x).
-        obs = robot.get_observation()
-        img = obs.get("images", {}).get("head_cam")
-        if img is not None:
-            bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
-            marker_h = detect_marker(bgr, config, detector)
-            if marker_h is not None:
-                cur_x, cur_y = _marker_to_agv_xy(marker_h["tvec"], config)
-                cur_heading = math.atan2(cur_y, cur_x)
-                ref_heading = math.atan2(ref_y, ref_x)
-                dheading = (ref_heading - cur_heading) * RAD_TO_DEG
-                if abs(dheading) > 1.0:
-                    dheading *= 0.7  # damped
-                    logger.warning(
-                        f"Phase 2 heading trim: {dheading:.1f}° "
-                        f"(cur={cur_heading*RAD_TO_DEG:.1f}° ref={ref_heading*RAD_TO_DEG:.1f}°)"
-                    )
-                    vw_s = 1.0 if dheading > 0 else -1.0
-                    agv_controller.turn(
-                        angle=abs(dheading) * DEG_TO_RAD,
-                        vw=config.turn_speed * DEG_TO_RAD * vw_s,
-                        mode=0,
-                    )
-                    agv_controller.wait_for_turn_complete(timeout=10.0)
-                    time.sleep(0.3)
-                else:
-                    logger.warning(
-                        f"Phase 2 heading trim: {dheading:.1f}° < 1° — skipped"
-                    )
+        return True, "Aligned (distance + lateral)"
 
     # Not converged within max_iterations
     logger.warning(
