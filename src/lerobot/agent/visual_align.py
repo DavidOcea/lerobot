@@ -475,33 +475,36 @@ def execute_visual_align(
         raw_dtheta = dtheta_deg
         raw_forward = forward_dist
 
-        # Oscillation detection: if dtheta flipped sign AND the amplitude
-        # is above 3° (solvePnP noise floor), the AGV overshot.
-        if iteration > 0 and raw_dtheta * last_dtheta < 0 and abs(raw_dtheta) > 3.0:
-            gain = min(gain, 0.3)
+        # ── Final approach: only correct distance ───────────────────
+        # When we're close (<3cm), dtheta becomes highly sensitive to
+        # solvePnP lateral noise.  Forcing the AGV to match both angle
+        # and distance simultaneously causes sign-flip oscillation.
+        # Instead, just drive forward/backward to match distance —
+        # the AGV is close enough that angle doesn't matter.
+        if abs(raw_forward) < 0.03 and abs(raw_dtheta) < 5.0:
+            dtheta_deg = 0.0
+            forward_dist = raw_forward  # undamped, one clean step
             logger.warning(
-                f"  oscillation detected (prev={last_dtheta:.1f}° cur={dtheta_deg:.1f}°) "
-                f"→ gain clamped to {gain}"
+                f"  final approach: forward-only {forward_dist:.3f}m "
+                f"(ignoring dtheta={raw_dtheta:.1f}° noise)"
             )
+        else:
+            # Oscillation detection: if dtheta flipped sign AND the
+            # amplitude is above 3°, the AGV overshot.
+            if iteration > 0 and raw_dtheta * last_dtheta < 0 and abs(raw_dtheta) > 3.0:
+                gain = min(gain, 0.5)
+                logger.warning(
+                    f"  oscillation detected (prev={last_dtheta:.1f}° cur={raw_dtheta:.1f}°) "
+                    f"→ gain clamped to {gain}"
+                )
 
-        # Once the raw correction is small, skip the gain entirely so
-        # the AGV can make one clean final move.  Damped micro-steps
-        # are often under-executed by the AGV (<5mm command → 0mm actual)
-        # which wastes iterations.
-        if abs(raw_dtheta) < 3.0 and abs(raw_forward) < 0.05:
-            gain = 1.0
-            logger.warning(
-                f"  gain=1.0 (final undamped step: "
-                f"dtheta={raw_dtheta:.1f}°, forward={raw_forward:.3f}m)"
-            )
-
-        if gain < 1.0:
-            logger.warning(
-                f"  gain={gain:.1f} (raw: dtheta={raw_dtheta:.1f}°, "
-                f"forward={raw_forward:.3f}m)"
-            )
-        dtheta_deg = raw_dtheta * gain
-        forward_dist = raw_forward * gain
+            if gain < 1.0:
+                logger.warning(
+                    f"  gain={gain:.1f} (raw: dtheta={raw_dtheta:.1f}°, "
+                    f"forward={raw_forward:.3f}m)"
+                )
+            dtheta_deg = raw_dtheta * gain
+            forward_dist = raw_forward * gain
         last_dtheta = raw_dtheta  # store RAW for next oscillation comparison
 
         # ── Stuck check: corrections below AGV execution thresholds ──
