@@ -584,74 +584,54 @@ def execute_visual_align(
                 agv_controller.wait_for_translate_complete(timeout=10.0)
                 time.sleep(0.3)
 
-    # ── Phase 2: lateral offset correction (closed-loop) ──────────
-    # Phase 1 matched the radial distance and faced the marker
-    # (cur_y ≈ 0).  If the reference photo had a lateral offset
-    # (ref_y ≠ 0), the AGV needs to physically shift sideways.
+    # ── Phase 2: lateral offset correction ───────────────────────────
+    # Phase 1 matched distance and faced the marker (cur_y ≈ 0).
+    # If the reference photo had a lateral offset (ref_y ≠ 0), the AGV
+    # needs to physically shift sideways — not just rotate.
     #
     # Diff-drive lateral maneuver (Z-shape):
-    #   turn ±90° → drive step → turn back → take photo → repeat
-    # Each iteration is verified with a fresh solvePnP measurement
-    # so under-execution (wheel slip) is corrected.
+    #   turn ±90° → drive |ref_y| → turn ∓90°
+    # Total lateral displacement = ref_y with zero net rotation.
+    # Only triggers when |ref_y| exceeds the noise floor (2cm).
     if use_reference and aligned:
         ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
-        residual = ref_y  # default: Phase 1 left cur_y≈0, so residual≈ref_y
-        for lat_iter in range(3):  # at most 3 lateral correction attempts
-            # Re-detect marker after previous move
-            obs = robot.get_observation()
-            img = obs.get("images", {}).get("head_cam")
-            if img is None:
-                break
-            bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
-            marker_lat = detect_marker(bgr, config, detector)
-            if marker_lat is None:
-                break
-            cur_x, cur_y = _marker_to_agv_xy(marker_lat["tvec"], config)
-            residual = cur_y - ref_y  # + = need to shift left (cur_y > ref_y: tag too far left)
-            if abs(residual) < 0.01:
-                logger.warning(
-                    f"Phase 2: lateral residual {abs(residual)*100:.1f}cm < 2cm — converged"
-                )
-                break
-
-            # Damped step — don't try to correct the full residual in one go
-            step = residual * 0.7
-            step = max(-0.15, min(0.15, step))  # cap at 15cm per attempt
+        if abs(ref_y) > 0.02:
             logger.warning(
-                f"Phase 2 lateral attempt {lat_iter+1}: "
-                f"residual={residual*100:.1f}cm → step={step*100:.1f}cm"
+                f"Phase 2 lateral shift: {abs(ref_y)*100:.1f}cm "
+                f"({'left' if ref_y > 0 else 'right'})"
             )
-
             turn_vw = config.turn_speed * DEG_TO_RAD
-            vw_sign = 1.0 if step > 0 else -1.0
+            vw_sign = 1.0 if ref_y > 0 else -1.0
 
-            # Step a: turn 90° toward shift direction
+            # Step 1: turn 90° toward target direction
             agv_controller.turn(angle=math.pi / 2, vw=turn_vw * vw_sign, mode=0)
             agv_controller.wait_for_turn_complete(timeout=10.0)
             time.sleep(0.3)
 
-            # Step b: drive lateral distance
+            # Step 2: drive lateral distance
             agv_controller.translate(
-                dist=abs(step),
+                dist=abs(ref_y),
                 vx=config.translate_speed * vw_sign,
                 mode=0,
             )
             agv_controller.wait_for_translate_complete(timeout=10.0)
             time.sleep(0.3)
 
-            # Step c: turn back facing forward
+            # Step 3: turn back facing forward
             agv_controller.turn(angle=math.pi / 2, vw=-turn_vw * vw_sign, mode=0)
             agv_controller.wait_for_turn_complete(timeout=10.0)
             time.sleep(0.3)
+
+            return True, f"Aligned (dist + lateral shift {abs(ref_y)*100:.1f}cm)"
         else:
             logger.warning(
-                f"Phase 2: lateral not fully converged after 3 attempts "
-                f"(residual={abs(residual)*100:.1f}cm)"
+                f"Phase 2: lateral offset {abs(ref_y)*100:.1f}cm < 2cm — skipped"
             )
 
-        return True, "Aligned (distance + lateral)"
+    if aligned:
+        return True, "Aligned (distance + heading within tolerance)"
 
-    # Not converged within max_iterations
+    # Did not converge within max_iterations
     logger.warning(
         f"Alignment did not converge after {config.max_iterations} iterations "
         f"(last: dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m)"
