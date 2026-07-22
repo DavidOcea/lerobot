@@ -192,10 +192,12 @@ def _interactive_capture(robot, visual_config, detector, output_path):
             tag1_info = ""
             if tag1_marker is not None:
                 t1x, t1y = _marker_to_agv_xy(tag1_marker["tvec"], visual_config)
-                # Draw tag_1 connector line
-                h2, w2 = display.shape[:2]
-                cx0 = int(w2 // 2 + (cur_y + 0.02) / 0.04 * w2 // 2) if hasattr else w2 // 2
-                tag1_info = f"  T1:ID={tag1_marker['id']}"
+                tag1_info = f"  T1:ID={tag1_marker['id']}  lateral={t1y:+.3f}m"
+                # Draw tag_1 bounding box (blue to distinguish from tag_0 green)
+                t1_corners = tag1_marker["corners"].astype(int)
+                cv2.polylines(display, [t1_corners], True, (255, 0, 0), 2)
+                cv2.putText(display, f"T1", (t1_corners[0][0][0], t1_corners[0][0][1] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
             # ── Overlay ──────────────────────────────────
             cv2.putText(
                 display,

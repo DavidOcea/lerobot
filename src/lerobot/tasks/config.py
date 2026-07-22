@@ -188,6 +188,8 @@ class VisualAlignConfig:
     marker_id: int | None = None  # 目标 AprilTag ID (None=搜索第一个可见标记)
     marker_size: float = 0.10  # 标记物理边长 (米), 位姿解算必须知道
     marker_family: str = "tag36h11"  # AprilTag 家族 (tag36h11, tag25h9, etc.)
+    tag_1_id: int | None = None  # 双tag模式第二个标记ID (None=单tag)
+    tag_1_size: float | None = None  # 第二个标记边长, 默认同 marker_size
 
     # ===== 搜索配置 =====
     search_turn_step: float = 10.0  # 搜索时每步转动角度 (度), 左转搜索
