@@ -2000,7 +2000,7 @@ class TaskAgentOrchestrator:
         start_time = time.time()
         try:
             parts = task.command.split()
-            if not parts or parts[0] not in ("espeak-ng", "espeak", "aplay", "speaker-test"):
+            if not parts or parts[0] not in ("espeak-ng", "espeak", "aplay", "speaker-test", "python", "python3", "/home/t/miniconda3/envs/ros2_env/bin/python"):
                 return TaskResult(
                     task_name=task.name, status=TaskStatus.FAILED,
                     duration=time.time() - start_time,
