@@ -86,6 +86,8 @@ def main():
     yaml_x = args.camera_offset_x
     yaml_y = args.camera_offset_y
     tag1_id = None
+    yaml_marker_size = args.marker_size
+    yaml_tag_1_size = None
     for task in orchestrator_cfg.tasks:
         if task.task_type == "visual_align" and task.visual_align_config is not None:
             va = task.visual_align_config
@@ -104,11 +106,16 @@ def main():
                 yaml_y = va.camera_offset_y
             # Dual-tag: read tag_1_id so the reference photo captures both
             tag1_id = va.tag_1_id
+            # Read marker_size from YAML (CLI default is 0.10)
+            if args.marker_size == 0.10 and va.marker_size != 0.10:
+                yaml_marker_size = va.marker_size
+            if va.tag_1_size is not None:
+                yaml_tag_1_size = va.tag_1_size
             break
 
     visual_config = VisualAlignConfig(
         marker_id=args.marker_id,
-        marker_size=args.marker_size,
+        marker_size=yaml_marker_size,
         marker_family=args.marker_family,
         camera_offset_pitch=yaml_pitch,
         camera_offset_yaw=yaml_yaw,
@@ -117,6 +124,7 @@ def main():
         camera_matrix=camera_matrix,
         dist_coeffs=dist_coeffs,
         tag_1_id=tag1_id,
+        tag_1_size=yaml_tag_1_size,
     )
 
     print("Connecting to robot...")
