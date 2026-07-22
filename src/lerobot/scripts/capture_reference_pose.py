@@ -85,6 +85,7 @@ def main():
     yaml_yaw = args.camera_offset_yaw
     yaml_x = args.camera_offset_x
     yaml_y = args.camera_offset_y
+    tag1_id = None
     for task in orchestrator_cfg.tasks:
         if task.task_type == "visual_align" and task.visual_align_config is not None:
             va = task.visual_align_config
@@ -101,6 +102,8 @@ def main():
                 yaml_x = va.camera_offset_x
             if args.camera_offset_y == 0.0 and va.camera_offset_y != 0.0:
                 yaml_y = va.camera_offset_y
+            # Dual-tag: read tag_1_id so the reference photo captures both
+            tag1_id = va.tag_1_id
             break
 
     visual_config = VisualAlignConfig(
@@ -113,6 +116,7 @@ def main():
         camera_offset_y=yaml_y,
         camera_matrix=camera_matrix,
         dist_coeffs=dist_coeffs,
+        tag_1_id=tag1_id,
     )
 
     print("Connecting to robot...")
@@ -148,7 +152,16 @@ def _capture_once(robot, visual_config, detector, output_path):
         print("Saved debug image to debug_no_marker.png")
         sys.exit(1)
 
-    _save_and_report(marker, output_path)
+    # Dual-tag: also detect tag_1
+    tag1_marker = None
+    if visual_config.tag_1_id is not None:
+        tag1_marker = detect_marker(bgr, visual_config, detector,
+                                    target_id=visual_config.tag_1_id)
+        if tag1_marker is None:
+            print(f"WARNING: tag_1 (ID={visual_config.tag_1_id}) not found — "
+                  f"saving single-tag only")
+
+    _save_and_report(marker, output_path, tag1_marker)
 
 
 def _interactive_capture(robot, visual_config, detector, output_path):
@@ -167,15 +180,26 @@ def _interactive_capture(robot, visual_config, detector, output_path):
 
         bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
         marker = detect_marker(bgr, visual_config, detector)
+        tag1_marker = None
+        if visual_config.tag_1_id is not None:
+            tag1_marker = detect_marker(bgr, visual_config, detector,
+                                        target_id=visual_config.tag_1_id)
 
         display = bgr.copy()
         if marker is not None:
             cur_x, cur_y = _marker_to_agv_xy(marker["tvec"], visual_config)
             z_cam = marker["tvec"][2]
-            # ── Overlay: distance + lateral offset ───────────────────
+            tag1_info = ""
+            if tag1_marker is not None:
+                t1x, t1y = _marker_to_agv_xy(tag1_marker["tvec"], visual_config)
+                # Draw tag_1 connector line
+                h2, w2 = display.shape[:2]
+                cx0 = int(w2 // 2 + (cur_y + 0.02) / 0.04 * w2 // 2) if hasattr else w2 // 2
+                tag1_info = f"  T1:ID={tag1_marker['id']}"
+            # ── Overlay ──────────────────────────────────
             cv2.putText(
                 display,
-                f"ID={marker['id']}  z={z_cam:.2f}m  lateral={cur_y:+.3f}m",
+                f"ID={marker['id']}{tag1_info}  z={z_cam:.2f}m  lateral={cur_y:+.3f}m",
                 (10, 30),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
@@ -219,7 +243,7 @@ def _interactive_capture(robot, visual_config, detector, output_path):
             if marker is None:
                 print("No marker visible — cannot capture.")
             else:
-                _save_and_report(marker, output_path)
+                _save_and_report(marker, output_path, tag1_marker)
                 break
         elif key == ord('q') or key == ord('Q'):
             print("Quit without saving.")
@@ -228,16 +252,23 @@ def _interactive_capture(robot, visual_config, detector, output_path):
     cv2.destroyAllWindows()
 
 
-def _save_and_report(marker, output_path):
+def _save_and_report(marker, output_path, tag1_marker=None):
     tvec = marker["tvec"].copy()
     rvec = marker["rvec"].copy()
-    save_reference_pose(output_path, tvec, rvec)
+    t1_t, t1_r = None, None
+    if tag1_marker is not None:
+        t1_t = tag1_marker["tvec"].copy()
+        t1_r = tag1_marker["rvec"].copy()
+    save_reference_pose(output_path, tvec, rvec, tag_1_tvec=t1_t, tag_1_rvec=t1_r)
     print(f"\nReference pose saved to: {output_path}")
     print(f"  Marker ID: {marker['id']}")
     print(f"  tvec (camera frame): "
           f"x={tvec[0]:.4f}, y={tvec[1]:.4f}, z={tvec[2]:.4f} m")
     print(f"  rvec (Rodrigues):   "
           f"rx={rvec[0]:.4f}, ry={rvec[1]:.4f}, rz={rvec[2]:.4f}")
+    if tag1_marker is not None:
+        print(f"  Tag_1 ID: {tag1_marker['id']}  "
+              f"tvec: x={t1_t[0]:.4f}, y={t1_t[1]:.4f}, z={t1_t[2]:.4f}")
 
 
 if __name__ == "__main__":

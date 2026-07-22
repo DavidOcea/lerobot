@@ -76,11 +76,16 @@ def detect_marker(
     image: np.ndarray,
     config: VisualAlignConfig,
     detector: cv2.aruco.ArucoDetector | None = None,
+    target_id: int | None = None,
 ):
     """Detect AprilTag markers in an image.
 
-    Returns the first matching marker detection (or None).
+    Returns the matching marker detection (or None).
     Each detection is a dict with: id, corners, rvec, tvec.
+
+    Args:
+        target_id: specific marker ID to search for.
+                   None = use config.marker_id.
     """
     if detector is None:
         detector = _get_detector(config.marker_family)
@@ -90,24 +95,22 @@ def detect_marker(
         return None
 
     K, d = _get_camera_params(config)
-    marker_size_m = config.marker_size
+    look_for = target_id if target_id is not None else config.marker_id
+    # Use tag_1_size for tag_1 marker if configured
+    msize = config.marker_size
+    if config.tag_1_id is not None and look_for == config.tag_1_id and config.tag_1_size is not None:
+        msize = config.tag_1_size
 
-    # Estimate pose using solvePnP (estimatePoseSingleMarkers removed in OpenCV 4.12+).
-    # AprilTag corner order: [top-left, top-right, bottom-right, bottom-left]
-    # The 3D object points are the marker's corners in its own coordinate frame
-    # (origin at marker center, marker_size side length, z=0 plane).
-    half = marker_size_m / 2.0
+    half = msize / 2.0
     obj_points = np.array([
-        [-half, half, 0.0],   # top-left
-        [half, half, 0.0],    # top-right
-        [half, -half, 0.0],   # bottom-right
-        [-half, -half, 0.0],  # bottom-left
+        [-half, half, 0.0],
+        [half, half, 0.0],
+        [half, -half, 0.0],
+        [-half, -half, 0.0],
     ], dtype=np.float32)
 
-    # Find the target marker (or first visible one if marker_id is None)
     for i, marker_id in enumerate(ids.flatten()):
-        if config.marker_id is None or marker_id == config.marker_id:
-            # solvePnP for this marker's corners
+        if look_for is None or marker_id == look_for:
             img_points = corners[i].reshape(4, 2).astype(np.float32)
             success, rvec, tvec = cv2.solvePnP(
                 obj_points, img_points, K, d,
@@ -190,23 +193,32 @@ def compute_agv_movement(
     return dtheta_deg, forward_dist
 
 
-def save_reference_pose(path: str, tvec: np.ndarray, rvec: np.ndarray):
-    """Save a reference camera pose (relative to AprilTag) to JSON."""
+def save_reference_pose(path: str, tvec: np.ndarray, rvec: np.ndarray,
+                       tag_1_tvec: np.ndarray | None = None,
+                       tag_1_rvec: np.ndarray | None = None):
+    """Save reference camera pose(s) to JSON.  Dual-tag mode if tag_1_tvec set."""
     import json
     data = {
         "tvec": tvec.tolist(),
         "rvec": rvec.tolist(),
     }
+    if tag_1_tvec is not None:
+        data["tag_1_tvec"] = tag_1_tvec.tolist()
+        data["tag_1_rvec"] = (tag_1_rvec if tag_1_rvec is not None else np.zeros(3)).tolist()
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
 
 
-def load_reference_pose(path: str) -> tuple[np.ndarray, np.ndarray]:
-    """Load reference camera pose from JSON. Returns (tvec, rvec)."""
+def load_reference_pose(path: str) -> tuple[np.ndarray, ...]:
+    """Load reference camera pose from JSON.
+    Returns (tvec, rvec, tag_1_tvec|None, tag_1_rvec|None).
+    """
     import json
     with open(path, 'r') as f:
         data = json.load(f)
-    return np.array(data["tvec"]), np.array(data["rvec"])
+    t1_t = np.array(data["tag_1_tvec"]) if "tag_1_tvec" in data else None
+    t1_r = np.array(data["tag_1_rvec"]) if "tag_1_rvec" in data else None
+    return np.array(data["tvec"]), np.array(data["rvec"]), t1_t, t1_r
 
 
 def compute_alignment_to_reference(
@@ -406,7 +418,7 @@ def execute_visual_align(
     use_reference = config.reference_pose_path is not None
     if use_reference:
         try:
-            ref_tvec, ref_rvec = load_reference_pose(config.reference_pose_path)
+            ref_tvec, ref_rvec, ref_tag1_tvec, ref_tag1_rvec = load_reference_pose(config.reference_pose_path)
             logger.warning(
                 f"Reference pose loaded from {config.reference_pose_path}: "
                 f"tvec={ref_tvec}, rvec={ref_rvec}"
@@ -581,11 +593,55 @@ def execute_visual_align(
                 time.sleep(0.3)
 
     # ── Phase 2: heading alignment ───────────────────────────────────
-    # Phase 1 converged the distance and roughly faced the marker.
-    # If the reference photo had a slight off-axis angle (ref_y ≠ 0),
-    # one deterministic turn brings the AGV to the reference heading.
-    # No iteration needed — ref_y is constant from the reference JSON.
+    # Single-tag: heading correction from ref_y offset.
+    # Dual-tag: absolute workstation heading from tag_0→tag_1 vector,
+    #   immune to workstation rotation.
     if use_reference and aligned:
+        dual_tag = (config.tag_1_id is not None and ref_tag1_tvec is not None)
+
+        if dual_tag:
+            obs = robot.get_observation()
+            img = obs.get("images", {}).get("head_cam")
+            if img is not None:
+                bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
+                m0 = detect_marker(bgr, config, detector,
+                                   target_id=config.marker_id)
+                m1 = detect_marker(bgr, config, detector,
+                                   target_id=config.tag_1_id)
+                if m0 is not None and m1 is not None:
+                    x0, y0 = _marker_to_agv_xy(m0["tvec"], config)
+                    x1, y1 = _marker_to_agv_xy(m1["tvec"], config)
+                    cur_heading = math.atan2(y1 - y0, x1 - x0)
+
+                    x0r, y0r = _marker_to_agv_xy(ref_tvec, config)
+                    x1r, y1r = _marker_to_agv_xy(ref_tag1_tvec, config)
+                    ref_heading = math.atan2(y1r - y0r, x1r - x0r)
+
+                    dheading_deg = (ref_heading - cur_heading) * RAD_TO_DEG
+                    if abs(dheading_deg) > 1.0:
+                        logger.warning(
+                            f"Phase 2 dual-tag: cur={cur_heading*RAD_TO_DEG:.1f}° "
+                            f"ref={ref_heading*RAD_TO_DEG:.1f}° "
+                            f"→ correction={dheading_deg:.1f}°"
+                        )
+                        vw_s = 1.0 if dheading_deg > 0 else -1.0
+                        agv_controller.turn(
+                            angle=abs(dheading_deg) * DEG_TO_RAD,
+                            vw=config.turn_speed * DEG_TO_RAD * vw_s,
+                            mode=0,
+                        )
+                        agv_controller.wait_for_turn_complete(timeout=10.0)
+                        time.sleep(0.3)
+                        return True, f"Aligned (dual-tag {dheading_deg:.1f}°)"
+                    else:
+                        logger.warning(
+                            f"Phase 2 dual-tag: {dheading_deg:.1f}° < 1° — skipped"
+                        )
+                        return True, "Aligned (dual-tag, heading OK)"
+                else:
+                    logger.warning("Phase 2: tag_1 missing — falling back to single-tag")
+
+        # ── Single-tag heading (original logic) ─────────────────────
         ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
         heading_correction = -math.atan2(ref_y, ref_x) * RAD_TO_DEG
         if abs(heading_correction) > 0.5:
@@ -606,10 +662,6 @@ def execute_visual_align(
             logger.warning(
                 f"Phase 2: heading correction {heading_correction:.1f}° < 0.5° — skipped"
             )
-
-    if aligned:
-        return True, "Aligned (distance + heading within tolerance)"
-
     # Did not converge within max_iterations
     logger.warning(
         f"Alignment did not converge after {config.max_iterations} iterations "
