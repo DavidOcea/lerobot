@@ -20,6 +20,7 @@ The majority of changes here involve removing unused code, unifying naming, and 
 """
 
 import math
+import logging
 from collections import deque
 from collections.abc import Callable
 from itertools import chain
@@ -84,6 +85,28 @@ class ACTPolicy(PreTrainedPolicy):
         # EMA smoothing buffer (inference only, alpha=0 → disabled)
         self._last_smoothed: Tensor | None = None
 
+        # Static joint clamp: pre-compute mask + reference tensor once
+        self._static_clamp_mask: Tensor | None = None
+        self._static_clamp_ref: Tensor | None = None
+        if config.enable_static_joint_clamp:
+            n = len(config.static_joint_indices)
+            if n > 0 and n == len(config.static_joint_values):
+                # Build a reference tensor filled with nan; only static joints get values
+                self._static_clamp_ref = torch.full(
+                    (len(config.output_features[ACTION].shape),),
+                    float("nan"), dtype=torch.float32,
+                )
+                self._static_clamp_mask = torch.zeros_like(self._static_clamp_ref, dtype=torch.bool)
+                for idx, val in zip(config.static_joint_indices, config.static_joint_values):
+                    self._static_clamp_ref[idx] = float(val)
+                    self._static_clamp_mask[idx] = True
+                logging.info(
+                    f"Static joint clamp ENABLED: "
+                    f"indices={config.static_joint_indices}, "
+                    f"values={config.static_joint_values}, "
+                    f"blend={config.static_joint_blend}"
+                )
+
         self.reset()
 
     def get_optim_params(self) -> dict:
@@ -127,6 +150,8 @@ class ACTPolicy(PreTrainedPolicy):
         This method wraps `select_actions` in order to return one action at a time for execution in the
         environment. It works by managing the actions in a queue and only calling `select_actions` when the
         queue is empty.
+
+        Post-processing order: EMA smoothing → static joint clamp.
         """
         self.eval()  # keeping the policy in eval mode as it could be set to train mode while queue is consumed
 
@@ -135,7 +160,7 @@ class ACTPolicy(PreTrainedPolicy):
             action = self.temporal_ensembler.update(actions)
             if self.config.action_smoothing_alpha > 0:
                 action = self._apply_ema(action)
-            return action
+            return self._apply_static_joint_clamp(action)
 
         # Action queue logic for n_action_steps > 1. When the action_queue is depleted, populate it by
         # querying the policy.
@@ -148,7 +173,7 @@ class ACTPolicy(PreTrainedPolicy):
         action = self._action_queue.popleft()
         if self.config.action_smoothing_alpha > 0:
             action = self._apply_ema(action)
-        return action
+        return self._apply_static_joint_clamp(action)
 
     def _apply_ema(self, action: Tensor) -> Tensor:
         """Exponential moving average smoothing for action output.
@@ -163,6 +188,29 @@ class ACTPolicy(PreTrainedPolicy):
         smoothed = α * action + (1.0 - α) * self._last_smoothed
         self._last_smoothed = smoothed.detach().clone()
         return smoothed
+
+    @torch.no_grad()
+    def _apply_static_joint_clamp(self, action: Tensor) -> Tensor:
+        """Clamp specific joint indices toward training-set reference values.
+
+        For joints with near-zero training variance, the model's output is
+        effectively random noise (amplified by MEAN_STD normalization with
+        tiny std).  This blends the predicted value toward the training-set
+        mean:  clamped = blend × ref + (1 − blend) × predicted.
+
+        blend=1.0 → fully fixed   blend=0.0 → model-controlled (disabled).
+        Only active when enable_static_joint_clamp=True in the config.
+        """
+        if self._static_clamp_mask is None:
+            return action
+        blend = self.config.static_joint_blend
+        # Use the last batch dim (0) for the action vector.
+        # _static_clamp_ref and _static_clamp_mask are on CPU; move to action device lazily.
+        ref = self._static_clamp_ref.to(action.device)
+        mask = self._static_clamp_mask.to(action.device)
+        # Blend only the masked positions; leave others unchanged.
+        action = torch.where(mask, blend * ref + (1.0 - blend) * action, action)
+        return action
 
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:

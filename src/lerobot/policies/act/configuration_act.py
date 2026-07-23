@@ -154,6 +154,18 @@ class ACTConfig(PreTrainedConfig):
     # 0.0 = disabled. 0.2-0.5 = blend 20-50% new prediction with old trend.
     action_smoothing_alpha: float = 0.0
 
+    # ---- Static Joint Clamping ----
+    # For joints with near-zero training variance, clamp model output toward
+    # training-set mean to suppress learned noise.  Controlled via YAML:
+    #   enable_static_joint_clamp: true
+    #   static_joint_indices: [2, 9, 14]      # 0-based indices in action vector
+    #   static_joint_values: [-0.50, 0.80, 0.01]  # corresponding fixed values
+    #   static_joint_blend: 0.95               # 1.0=full clamp, 0.0=passthrough
+    enable_static_joint_clamp: bool = False
+    static_joint_indices: list[int] = field(default_factory=list)
+    static_joint_values: list[float] = field(default_factory=list)
+    static_joint_blend: float = 0.95
+
     # Training and loss computation.
     dropout: float = 0.1
     kl_weight: float = 10.0
