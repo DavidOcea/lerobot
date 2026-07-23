@@ -92,9 +92,9 @@ class ACTPolicy(PreTrainedPolicy):
             n = len(config.static_joint_indices)
             if n > 0 and n == len(config.static_joint_values):
                 # Build a reference tensor filled with nan; only static joints get values
+                action_dim = config.output_features[ACTION].shape[0]
                 self._static_clamp_ref = torch.full(
-                    (len(config.output_features[ACTION].shape),),
-                    float("nan"), dtype=torch.float32,
+                    (action_dim,), float("nan"), dtype=torch.float32,
                 )
                 self._static_clamp_mask = torch.zeros_like(self._static_clamp_ref, dtype=torch.bool)
                 for idx, val in zip(config.static_joint_indices, config.static_joint_values):
