@@ -93,8 +93,16 @@ class TrajectoryGenerator:
 
             # ── Standalone step (cosine) ──────────────────────────────
             target = step.position.copy()
-            num_frames = max(1, int(step.max_duration * self.fps))
             step_start = current_pos.copy()
+
+            # 按实际运动距离计算帧数（和 agent 对齐），max_duration 仅做上限约束
+            max_delta = 0.0
+            for jn in self.all_joint_names:
+                if jn in target:
+                    max_delta = max(max_delta, abs(target[jn] - step_start[jn]))
+            distance_num_frames = int(max(1, max_delta / self.CHAIN_SPEED_DEG_PER_S * self.fps))
+            max_duration_frames = int(step.max_duration * self.fps)
+            num_frames = max(1, min(distance_num_frames, max_duration_frames)) if max_delta > 0.01 else max_duration_frames
 
             for frame_idx in range(num_frames):
                 progress = (frame_idx + 1) / num_frames
