@@ -156,15 +156,21 @@ class ACTConfig(PreTrainedConfig):
 
     # ---- Static Joint Clamping ----
     # For joints with near-zero training variance, clamp model output toward
-    # training-set mean to suppress learned noise.  Controlled via YAML:
-    #   enable_static_joint_clamp: true
-    #   static_joint_indices: [2, 9, 14]      # 0-based indices in action vector
-    #   static_joint_values: [-0.50, 0.80, 0.01]  # corresponding fixed values
-    #   static_joint_blend: 0.95               # 1.0=full clamp, 0.0=passthrough
+    # training-set mean to suppress learned noise.
+    #
+    # CLI usage (comma-separated):
+    #   --policy.enable_static_joint_clamp=true \
+    #   --policy.static_joint_indices=2,3,9,12,14 \
+    #   --policy.static_joint_values=-0.50,-30.45,0.80,84.41,0.01 \
+    #   --policy.static_joint_blend=0.95
     enable_static_joint_clamp: bool = False
-    static_joint_indices: list[int] = field(default_factory=list)
-    static_joint_values: list[float] = field(default_factory=list)
+    static_joint_indices_str: str = ""   # "2,9,14" → parsed to list[int] in __post_init__
+    static_joint_values_str: str = ""    # "-0.50,0.80,0.01" → parsed to list[float]
     static_joint_blend: float = 0.95
+
+    # Computed fields (populated from *_str in __post_init__):
+    static_joint_indices: list[int] = field(default_factory=list, init=False)
+    static_joint_values: list[float] = field(default_factory=list, init=False)
 
     # Training and loss computation.
     dropout: float = 0.1
@@ -202,6 +208,16 @@ class ACTConfig(PreTrainedConfig):
                 f"The chunk size is the upper bound for the number of action steps per model invocation. Got "
                 f"{self.n_action_steps} for `n_action_steps` and {self.chunk_size} for `chunk_size`."
             )
+
+        # Parse comma-separated static joint strings into lists
+        if self.static_joint_indices_str:
+            self.static_joint_indices = [
+                int(x.strip()) for x in self.static_joint_indices_str.split(",") if x.strip()
+            ]
+        if self.static_joint_values_str:
+            self.static_joint_values = [
+                float(x.strip()) for x in self.static_joint_values_str.split(",") if x.strip()
+            ]
 
     def get_optimizer_preset(self) -> AdamWConfig:
         return AdamWConfig(
