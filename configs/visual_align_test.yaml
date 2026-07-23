@@ -168,7 +168,9 @@ tasks:
     visual_align_config:
       # ── 标签配置 ──
       marker_id: 0
+      # tag_1_id: 1
       marker_size: 0.20         # 建议20cm大标签，solvePnP精度翻倍
+      # tag_1_size: 0.20
       marker_family: "tag36h11"
 
       # ── 搜索配置 ──
@@ -177,7 +179,7 @@ tasks:
       search_max_attempts: 99   # 兜底安全值
 
       # ── 对齐精度 ──
-      max_iterations: 6         # 1.0→0.7→0.5→0.4→0.4→0.4，够收敛
+      max_iterations: 10         # 1.0→0.7→0.5→0.4→0.4→0.4，够收敛
       position_tolerance: 0.01  # 1cm
       angle_tolerance: 1.0      # 1°
 
