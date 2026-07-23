@@ -40,6 +40,7 @@ class TrajectoryGenerator:
         steps: list[PositionSequenceStep],
         fps: int,
         all_joint_names: list[str],
+        hold_frames: int = 0,  # hold frames at chain end (agent uses 5, but 0 = no jitter)
     ):
         self.steps = steps
         self.fps = fps
