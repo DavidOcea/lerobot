@@ -600,46 +600,132 @@ def execute_visual_align(
         dual_tag = (config.tag_1_id is not None and ref_tag1_tvec is not None)
 
         if dual_tag:
-            obs = robot.get_observation()
-            img = obs.get("images", {}).get("head_cam")
-            if img is not None:
+            # ── Dual-tag heading with convergence loop ────────────────
+            # Each iteration: (1) correct heading from tag_0→tag_1 vector
+            #                 (2) correct lateral offset via mini Phase 1
+            #                 (3) re-check heading
+            dh_prev = None
+            for dh_iter in range(config.max_iterations):
+                obs = robot.get_observation()
+                img = obs.get("images", {}).get("head_cam")
+                if img is None:
+                    logger.warning("Phase 2: head_cam unavailable")
+                    break
                 bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
+
+                # ── Step A: heading correction ────────────────────────
                 m0 = detect_marker(bgr, config, detector,
                                    target_id=config.marker_id)
                 m1 = detect_marker(bgr, config, detector,
                                    target_id=config.tag_1_id)
-                if m0 is not None and m1 is not None:
-                    x0, y0 = _marker_to_agv_xy(m0["tvec"], config)
-                    x1, y1 = _marker_to_agv_xy(m1["tvec"], config)
-                    cur_heading = math.atan2(y1 - y0, x1 - x0)
+                if m0 is None or m1 is None:
+                    logger.warning(
+                        f"Phase 2 iter {dh_iter}: "
+                        f"{'tag_0' if m0 is None else ''}"
+                        f"{' ' if m0 is None and m1 is None else ''}"
+                        f"{'tag_1' if m1 is None else ''} missing"
+                    )
+                    break
 
-                    x0r, y0r = _marker_to_agv_xy(ref_tvec, config)
-                    x1r, y1r = _marker_to_agv_xy(ref_tag1_tvec, config)
-                    ref_heading = math.atan2(y1r - y0r, x1r - x0r)
+                x0, y0 = _marker_to_agv_xy(m0["tvec"], config)
+                x1, y1 = _marker_to_agv_xy(m1["tvec"], config)
+                cur_heading = math.atan2(y1 - y0, x1 - x0)
 
-                    dheading_deg = (ref_heading - cur_heading) * RAD_TO_DEG
-                    if abs(dheading_deg) > 1.0:
-                        logger.warning(
-                            f"Phase 2 dual-tag: cur={cur_heading*RAD_TO_DEG:.1f}° "
-                            f"ref={ref_heading*RAD_TO_DEG:.1f}° "
-                            f"→ correction={dheading_deg:.1f}°"
-                        )
-                        vw_s = 1.0 if dheading_deg > 0 else -1.0
-                        agv_controller.turn(
-                            angle=abs(dheading_deg) * DEG_TO_RAD,
-                            vw=config.turn_speed * DEG_TO_RAD * vw_s,
-                            mode=0,
-                        )
-                        agv_controller.wait_for_turn_complete(timeout=10.0)
-                        time.sleep(0.3)
-                        return True, f"Aligned (dual-tag {dheading_deg:.1f}°)"
+                x0r, y0r = _marker_to_agv_xy(ref_tvec, config)
+                x1r, y1r = _marker_to_agv_xy(ref_tag1_tvec, config)
+                ref_heading = math.atan2(y1r - y0r, x1r - x0r)
+
+                dheading_deg = (cur_heading - ref_heading) * RAD_TO_DEG
+                logger.warning(
+                    f"Phase 2 iter {dh_iter}: cur={cur_heading*RAD_TO_DEG:.1f}° "
+                    f"ref={ref_heading*RAD_TO_DEG:.1f}° "
+                    f"→ correction={dheading_deg:.1f}°"
+                )
+                if abs(dheading_deg) <= 1.0:
+                    logger.warning("Phase 2 dual-tag: heading converged")
+                    return True, "Aligned (dual-tag, heading OK)"
+
+                if dh_prev is not None and dheading_deg * dh_prev < 0:
+                    dheading_deg *= 0.5  # damp oscillation
+                    logger.warning(
+                        f"  oscillation detected — halved to {dheading_deg:.1f}°"
+                    )
+
+                vw_s = 1.0 if dheading_deg > 0 else -1.0
+                agv_controller.turn(
+                    angle=abs(dheading_deg) * DEG_TO_RAD,
+                    vw=config.turn_speed * DEG_TO_RAD * vw_s,
+                    mode=0,
+                )
+                agv_controller.wait_for_turn_complete(timeout=10.0)
+                time.sleep(0.3)
+                dh_prev = dheading_deg
+
+                # ── Step B: lateral offset correction (mini Phase 1) ──
+                obs = robot.get_observation()
+                img = obs.get("images", {}).get("head_cam")
+                if img is None:
+                    continue
+                bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
+                m0 = detect_marker(bgr, config, detector,
+                                   target_id=config.marker_id)
+                if m0 is None:
+                    logger.warning(
+                        f"Phase 2 iter {dh_iter} lateral: tag_0 lost, skipping"
+                    )
+                    continue
+
+                cur_x, cur_y = _marker_to_agv_xy(m0["tvec"], config)
+                dx = cur_x - ref_x
+                dy = cur_y - ref_y
+                lateral_err = abs(dy)
+                logger.warning(
+                    f"  lateral: cur=({cur_x:.3f},{cur_y:.3f}) "
+                    f"ref=({ref_x:.3f},{ref_y:.3f}) "
+                    f"dy={dy*100:.1f}cm"
+                )
+                if lateral_err < 0.01:  # < 1cm, good enough
+                    continue
+
+                # Approach the tag from current position: turn toward it,
+                # drive forward, then re-check heading next iteration
+                dtheta_lat, dforward_lat = compute_alignment_to_reference(
+                    m0["tvec"], m0["rvec"], ref_tvec, ref_rvec, config,
+                )
+                if abs(dtheta_lat) > 1.0:
+                    logger.warning(f"  lateral turn: {dtheta_lat:.1f}°")
+                    vw = config.turn_speed * DEG_TO_RAD
+                    if dtheta_lat > 0:
+                        vw = abs(vw)
                     else:
-                        logger.warning(
-                            f"Phase 2 dual-tag: {dheading_deg:.1f}° < 1° — skipped"
-                        )
-                        return True, "Aligned (dual-tag, heading OK)"
-                else:
-                    logger.warning("Phase 2: tag_1 missing — falling back to single-tag")
+                        vw = -abs(vw)
+                    agv_controller.turn(
+                        angle=abs(dtheta_lat) * DEG_TO_RAD,
+                        vw=vw,
+                        mode=0,
+                    )
+                    agv_controller.wait_for_turn_complete(timeout=10.0)
+                    time.sleep(0.3)
+
+                if abs(dforward_lat) > 0.005:
+                    dforward_lat = min(dforward_lat, 0.15)  # cap lateral step
+                    logger.warning(f"  lateral drive: {dforward_lat:.3f}m")
+                    vx = config.translate_speed
+                    if dforward_lat < 0:
+                        vx = -vx
+                    agv_controller.translate(
+                        dist=abs(dforward_lat),
+                        vx=vx,
+                        mode=0,
+                    )
+                    agv_controller.wait_for_translate_complete(timeout=10.0)
+                    time.sleep(0.3)
+
+            # Exhausted iterations without convergence
+            msg = (f"Aligned (dual-tag, heading leftover {dheading_deg:.1f}°)"
+                   if abs(dheading_deg) <= 3.0
+                   else f"Dual-tag heading not converged: {dheading_deg:.1f}°")
+            return abs(dheading_deg) <= 3.0, msg
 
         # ── Single-tag heading (original logic) ─────────────────────
         ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
