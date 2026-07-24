@@ -271,6 +271,7 @@ def collect_frame_loop(
 
     episode_start = time.perf_counter()
     frame_index = 0
+    next_send_time = time.perf_counter()  # Fixed-interval action send clock
 
     for idx, base_action in enumerate(trajectory):
         loop_start = time.perf_counter()
@@ -294,21 +295,22 @@ def collect_frame_loop(
         # 3. Apply correction (stub: passthrough)
         final_action = corrector.correct(noisy_action, events=events)
 
-        # 4. Get observation BEFORE sending action
+        # 4. Send action on FIXED clock — camera + recording I/O happens
+        #    AFTER send so their latency can't perturb motor command cadence.
+        busy_wait(max(0.0, next_send_time - time.perf_counter()))
+        sent_action = robot.send_action(final_action)
+        next_send_time += 1.0 / fps
+
+        # 5. Get observation AFTER sending (for recording only)
         observation = robot.get_observation()
 
         # Flatten nested "images" dict for build_dataset_frame compatibility.
-        # get_observation() returns {"images": {"head_cam": img, ...}} but
-        # build_dataset_frame expects {"head_cam": img, ...} at top level.
         if "images" in observation and isinstance(observation["images"], dict):
             flat_obs = {k: v for k, v in observation.items() if k != "images"}
             flat_obs.update(observation["images"])
             observation = flat_obs
 
-        # 5. Send action and get what robot actually received
-        sent_action = robot.send_action(final_action)
-
-        # 6. Record frame
+        # 6. Record frame (lightweight in-memory append)
         obs_frame = build_dataset_frame(dataset.features, observation, prefix="observation")
         action_frame = build_dataset_frame(dataset.features, sent_action, prefix="action")
         frame = {**obs_frame, **action_frame}
@@ -329,10 +331,6 @@ def collect_frame_loop(
             dataset.clear_episode_buffer()
             corrector.reset()
             return False
-
-        # 8. Timing sync
-        dt_s = time.perf_counter() - loop_start
-        busy_wait(1 / fps - dt_s)
 
     # 9. Episode complete — wait for success/fail key
     logging.info(f"Episode trajectory complete ({frame_index} frames). Press S to save, F to discard...")
