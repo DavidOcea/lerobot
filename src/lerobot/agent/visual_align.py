@@ -502,7 +502,7 @@ def execute_visual_align(
         # the AGV can make one clean final move.  Damped micro-steps
         # are often under-executed by the AGV (<5mm command → 0mm actual)
         # which wastes iterations.
-        if abs(raw_dtheta) < 3.0 and abs(raw_forward) < 0.05:
+        if abs(raw_dtheta) < 1.5 and abs(raw_forward) < 0.05:
             gain = 1.0
             logger.warning(
                 f"  gain=1.0 (final undamped step: "
@@ -645,10 +645,29 @@ def execute_visual_align(
                     logger.warning("Phase 2 dual-tag: heading converged")
                     return True, "Aligned (dual-tag, heading OK)"
 
-                if dh_prev is not None and dheading_deg * dh_prev < 0:
-                    dheading_deg *= 0.5  # damp oscillation
+                # ── Heading gain + two-way overshoot detection ─────
+                raw_dheading = dheading_deg  # save for oscillation detection
+                gains_p2 = [0.7, 0.5, 0.4]
+                gain_p2 = gains_p2[dh_iter] if dh_iter < len(gains_p2) else 0.4
+
+                if dh_prev is not None:
+                    if raw_dheading * dh_prev < 0:
+                        # Direction flipped — classical oscillation
+                        gain_p2 = min(gain_p2, 0.3)
+                        logger.warning(
+                            f"  oscillation detected → gain clamped to {gain_p2}"
+                        )
+                    elif abs(raw_dheading) >= abs(dh_prev) * 0.8:
+                        # Error not shrinking — persistent same-side overshoot
+                        gain_p2 = min(gain_p2, 0.4)
+                        logger.warning(
+                            f"  overshoot (not converging) → gain clamped to {gain_p2}"
+                        )
+
+                dheading_deg = raw_dheading * gain_p2
+                if gain_p2 < 1.0:
                     logger.warning(
-                        f"  oscillation detected — halved to {dheading_deg:.1f}°"
+                        f"  gain={gain_p2:.1f} (raw={raw_dheading:.1f}° → cmd={dheading_deg:.1f}°)"
                     )
 
                 vw_s = 1.0 if dheading_deg > 0 else -1.0
@@ -659,7 +678,7 @@ def execute_visual_align(
                 )
                 agv_controller.wait_for_turn_complete(timeout=10.0)
                 time.sleep(0.3)
-                dh_prev = dheading_deg
+                dh_prev = raw_dheading  # store RAW for next comparison
 
                 # ── Step B: lateral offset correction (mini Phase 1) ──
                 obs = robot.get_observation()
