@@ -1359,186 +1359,177 @@ class TaskAgentOrchestrator:
         if multiplier != 1.0:
             task.speed_multiplier = multiplier
 
-        # Handle AGV tasks separately
-        if task.task_type == "agv":
-            self._add_monitor_event("info", task.name, "AGV navigation started")
-            result = self._execute_agv_task(task)
-            self._add_monitor_event(
-                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
-                f"{result.status.value} ({result.duration:.1f}s)"
-                + (f" — {result.error_message}" if result.error_message else ""))
-            # Restore original settings
-            task.max_retries = original_max_retries
-            task.max_duration = original_max_duration
-            if hasattr(task, 'speed_multiplier'):
-                delattr(task, 'speed_multiplier')
-            return result
+        # ── Retry loop ──────────────────────────────────────────────
+        # max_retries controls how many times a FAILED task is re-attempted.
+        # COMPLETED, SKIPPED, and FATAL_FAILURE exit immediately.
+        max_retries = task.max_retries
+        last_result = None
+        for attempt in range(1, max_retries + 1):
+            if attempt > 1:
+                logger.warning(
+                    f"Task {task.name}: retry {attempt}/{max_retries} "
+                    f"(last error: {last_result.error_message if last_result else 'N/A'})"
+                )
 
-        # Handle position tasks (direct joint position movement)
-        if task.task_type == "position":
-            self._add_monitor_event("info", task.name, "Moving to target position")
-            result = self._execute_position_task(task)
-            self._add_monitor_event(
-                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
-                f"{result.status.value} ({result.duration:.1f}s)"
-                + (f" — {result.error_message}" if result.error_message else ""))
-            # Restore original settings
-            task.max_retries = original_max_retries
-            task.max_duration = original_max_duration
-            if hasattr(task, 'speed_multiplier'):
-                delattr(task, 'speed_multiplier')
-            return result
+            # Handle AGV tasks separately
+            if task.task_type == "agv":
+                if attempt == 1:
+                    self._add_monitor_event("info", task.name, "AGV navigation started")
+                result = self._execute_agv_task(task)
+                self._add_monitor_event(
+                    "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                    f"{result.status.value} ({result.duration:.1f}s)"
+                    + (f" — {result.error_message}" if result.error_message else ""))
 
-        # Handle position_sequence tasks (multi-step position movement)
-        if task.task_type == "position_sequence":
-            self._add_monitor_event("info", task.name, f"Executing {len(task.steps)} steps")
-            result = self._execute_position_sequence_task(task)
-            self._add_monitor_event(
-                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
-                f"{result.status.value} ({result.duration:.1f}s)"
-                + (f" — {result.error_message}" if result.error_message else ""))
-            # Restore original settings
-            task.max_retries = original_max_retries
-            task.max_duration = original_max_duration
-            if hasattr(task, 'speed_multiplier'):
-                delattr(task, 'speed_multiplier')
-            return result
+            # Handle position tasks (direct joint position movement)
+            elif task.task_type == "position":
+                if attempt == 1:
+                    self._add_monitor_event("info", task.name, "Moving to target position")
+                result = self._execute_position_task(task)
+                self._add_monitor_event(
+                    "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                    f"{result.status.value} ({result.duration:.1f}s)"
+                    + (f" — {result.error_message}" if result.error_message else ""))
 
-        # Handle visual_align tasks (AprilTag-guided AGV fine alignment)
-        if task.task_type == "visual_align":
-            self._add_monitor_event("info", task.name, "Visual alignment started")
-            result = self._execute_visual_align_task(task)
-            self._add_monitor_event(
-                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
-                f"{result.status.value} ({result.duration:.1f}s)"
-                + (f" — {result.error_message}" if result.error_message else ""))
-            # Restore original settings
-            task.max_retries = original_max_retries
-            task.max_duration = original_max_duration
-            if hasattr(task, 'speed_multiplier'):
-                delattr(task, 'speed_multiplier')
-            return result
+            # Handle position_sequence tasks (multi-step position movement)
+            elif task.task_type == "position_sequence":
+                if attempt == 1:
+                    self._add_monitor_event("info", task.name, f"Executing {len(task.steps)} steps")
+                result = self._execute_position_sequence_task(task)
+                self._add_monitor_event(
+                    "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                    f"{result.status.value} ({result.duration:.1f}s)"
+                    + (f" — {result.error_message}" if result.error_message else ""))
 
-        # Handle classify tasks (workpiece identification for branching)
-        if task.task_type == "classify":
-            self._add_monitor_event("info", task.name, "Classify started")
-            result = self._execute_classify_task(task)
-            self._add_monitor_event(
-                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
-                f"{result.status.value} ({result.duration:.1f}s)"
-                + (f" — {result.error_message}" if result.error_message else ""))
-            logger.warning(
-                f"[DIAG] _execute_single_task classify: next_task='{result.next_task}', "
-                f"status={result.status.value}"
-            )
-            # Restore original settings
-            task.max_retries = original_max_retries
-            task.max_duration = original_max_duration
-            if hasattr(task, 'speed_multiplier'):
-                delattr(task, 'speed_multiplier')
-            return result
+            # Handle visual_align tasks (AprilTag-guided AGV fine alignment)
+            elif task.task_type == "visual_align":
+                if attempt == 1:
+                    self._add_monitor_event("info", task.name, "Visual alignment started")
+                result = self._execute_visual_align_task(task)
+                self._add_monitor_event(
+                    "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                    f"{result.status.value} ({result.duration:.1f}s)"
+                    + (f" — {result.error_message}" if result.error_message else ""))
 
-        # Handle system_command tasks (shell command execution)
-        if task.task_type == "system_command":
-            self._add_monitor_event("info", task.name, f"Running: {task.command}")
-            result = self._execute_system_command_task(task)
-            self._add_monitor_event(
-                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
-                f"{result.status.value} ({result.duration:.1f}s)")
-            task.max_retries = original_max_retries
-            task.max_duration = original_max_duration
-            if hasattr(task, 'speed_multiplier'):
-                delattr(task, 'speed_multiplier')
-            return result
+            # Handle classify tasks (workpiece identification for branching)
+            elif task.task_type == "classify":
+                if attempt == 1:
+                    self._add_monitor_event("info", task.name, "Classify started")
+                result = self._execute_classify_task(task)
+                self._add_monitor_event(
+                    "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                    f"{result.status.value} ({result.duration:.1f}s)"
+                    + (f" — {result.error_message}" if result.error_message else ""))
+                logger.warning(
+                    f"[DIAG] _execute_single_task classify: next_task='{result.next_task}', "
+                    f"status={result.status.value}"
+                )
 
-        # Handle parallel tasks (concurrent sub-tasks)
-        if task.task_type == "parallel":
-            self._add_monitor_event("info", task.name, f"Parallel: {len(task.parallel_tasks)} sub-tasks")
-            result = self._execute_parallel_task(task)
-            self._add_monitor_event(
-                "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
-                f"{result.status.value} ({result.duration:.1f}s)"
-                + (f" — {result.error_message}" if result.error_message else ""))
-            task.max_retries = original_max_retries
-            task.max_duration = original_max_duration
-            if hasattr(task, 'speed_multiplier'):
-                delattr(task, 'speed_multiplier')
-            return result
+            # Handle system_command tasks (shell command execution)
+            elif task.task_type == "system_command":
+                if attempt == 1:
+                    self._add_monitor_event("info", task.name, f"Running: {task.command}")
+                result = self._execute_system_command_task(task)
+                self._add_monitor_event(
+                    "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                    f"{result.status.value} ({result.duration:.1f}s)")
 
-        # Handle policy tasks (existing logic)
-        # Apply speed_multiplier to policy task timeout
-        if multiplier != 1.0:
-            task.max_duration = max(1.0, task.max_duration / multiplier)
+            # Handle parallel tasks (concurrent sub-tasks)
+            elif task.task_type == "parallel":
+                if attempt == 1:
+                    self._add_monitor_event("info", task.name, f"Parallel: {len(task.parallel_tasks)} sub-tasks")
+                result = self._execute_parallel_task(task)
+                self._add_monitor_event(
+                    "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
+                    f"{result.status.value} ({result.duration:.1f}s)"
+                    + (f" — {result.error_message}" if result.error_message else ""))
 
-        # Switch cameras for this task
-        self._switch_cameras_for_task(task)
-        self._add_monitor_event("info", task.name, "Policy task started")
+            # Handle policy tasks (existing logic)
+            else:
+                # Apply speed_multiplier to policy task timeout (only once)
+                if attempt == 1 and multiplier != 1.0:
+                    task.max_duration = max(1.0, task.max_duration / multiplier)
 
-        # Set completion detector for this task
-        print(f"[_execute_single_task] Setting completion detector for task: {task.name}")
-        print(f"[_execute_single_task] Available detectors: {list(self.completion_detectors.keys())}")
-        detector = self.completion_detectors.get(task.name)
-        self.task_scheduler.completion_detector = detector
+                # Switch cameras for this task
+                if attempt == 1:
+                    self._switch_cameras_for_task(task)
+                    self._add_monitor_event("info", task.name, "Policy task started")
 
-        # Also set on the underlying scheduler if this is an AdaptiveTaskScheduler
-        if hasattr(self.task_scheduler, 'scheduler'):
-            self.task_scheduler.scheduler.completion_detector = detector
-            print(f"[_execute_single_task] Also set on underlying scheduler")
+                # Set completion detector for this task
+                print(f"[_execute_single_task] Setting completion detector for task: {task.name}")
+                print(f"[_execute_single_task] Available detectors: {list(self.completion_detectors.keys())}")
+                detector = self.completion_detectors.get(task.name)
+                self.task_scheduler.completion_detector = detector
 
-        print(f"[_execute_single_task] Detector assigned: {self.task_scheduler.completion_detector}")
+                # Also set on the underlying scheduler if this is an AdaptiveTaskScheduler
+                if hasattr(self.task_scheduler, 'scheduler'):
+                    self.task_scheduler.scheduler.completion_detector = detector
+                    print(f"[_execute_single_task] Also set on underlying scheduler")
 
-        # Execute task
-        # Check if using adaptive scheduler
-        if hasattr(self.task_scheduler, 'execute_task_adaptive'):
-            result = self.task_scheduler.execute_task_adaptive(
-                task,
-                collision_detector=self.collision_detector,
-                collision_handler=self.collision_handler,
-                state_monitor=self.state_monitor,
-            )
+                print(f"[_execute_single_task] Detector assigned: {self.task_scheduler.completion_detector}")
 
-            # Handle emergency stop with new model retry
-            if hasattr(result, 'retry_with_new_model') and result.retry_with_new_model:
-                # User wants to retry with a new model
-                new_model = self._prompt_alternative_model(task.name)
-                if new_model:
-                    # Create a new task config with the new model
-                    from copy import deepcopy
-                    retry_task = deepcopy(task)
-                    retry_task.policy_path = new_model
-                    retry_task.name = f"{task.name}_retry"
-
-                    logger.info(f"Retrying task with new model: {new_model}")
+                # Execute task
+                # Check if using adaptive scheduler
+                if hasattr(self.task_scheduler, 'execute_task_adaptive'):
                     result = self.task_scheduler.execute_task_adaptive(
-                        retry_task,
+                        task,
                         collision_detector=self.collision_detector,
                         collision_handler=self.collision_handler,
                         state_monitor=self.state_monitor,
                     )
+
+                    # Handle emergency stop with new model retry
+                    if hasattr(result, 'retry_with_new_model') and result.retry_with_new_model:
+                        # User wants to retry with a new model
+                        new_model = self._prompt_alternative_model(task.name)
+                        if new_model:
+                            # Create a new task config with the new model
+                            from copy import deepcopy
+                            retry_task = deepcopy(task)
+                            retry_task.policy_path = new_model
+                            retry_task.name = f"{task.name}_retry"
+
+                            logger.info(f"Retrying task with new model: {new_model}")
+                            result = self.task_scheduler.execute_task_adaptive(
+                                retry_task,
+                                collision_detector=self.collision_detector,
+                                collision_handler=self.collision_handler,
+                                state_monitor=self.state_monitor,
+                            )
+                        else:
+                            # No new model selected, mark as failed
+                            result.status = TaskStatus.FATAL_FAILURE
+                            result.error_message = "Emergency stop: No alternative model selected"
                 else:
-                    # No new model selected, mark as failed
-                    result.status = TaskStatus.FATAL_FAILURE
-                    result.error_message = "Emergency stop: No alternative model selected"
-        else:
-            result = self.task_scheduler.execute_task_with_safety(
-                task,
-                collision_detector=self.collision_detector,
-                collision_handler=self.collision_handler,
-                state_monitor=self.state_monitor,
+                    result = self.task_scheduler.execute_task_with_safety(
+                        task,
+                        collision_detector=self.collision_detector,
+                        collision_handler=self.collision_handler,
+                        state_monitor=self.state_monitor,
+                    )
+
+            # ── Retry decision ───────────────────────────────────────
+            last_result = result
+            if result.status in (TaskStatus.COMPLETED, TaskStatus.SKIPPED, TaskStatus.FATAL_FAILURE):
+                break  # no retry needed
+            # result.status == TaskStatus.FAILED → continue to next attempt
+            logger.warning(
+                f"Task {task.name} attempt {attempt}/{max_retries} failed: "
+                f"{result.error_message}"
             )
 
-        # Restore original settings
+        # ── Restore original settings ─────────────────────────────────
         task.max_retries = original_max_retries
         task.max_duration = original_max_duration
         if hasattr(task, 'speed_multiplier'):
             delattr(task, 'speed_multiplier')
 
         self._add_monitor_event(
-            "info" if result.status == TaskStatus.COMPLETED else "warn", task.name,
-            f"{result.status.value} ({result.duration:.1f}s)"
-            + (f" — {result.error_message}" if result.error_message else ""))
+            "info" if last_result.status == TaskStatus.COMPLETED else "warn", task.name,
+            f"{last_result.status.value} ({last_result.duration:.1f}s)"
+            + (f" — {last_result.error_message}" if last_result.error_message else ""))
 
-        return result
+        return last_result
 
     def _execute_agv_task(self, task: TaskConfig) -> TaskResult:
         """Execute an AGV navigation task.
