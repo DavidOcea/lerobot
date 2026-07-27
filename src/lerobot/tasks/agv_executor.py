@@ -13,6 +13,7 @@ The executor handles:
 """
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -288,9 +289,14 @@ class AGVTaskExecutor:
                     )
                     target_desc = f"translate={translate_dist}m"
                 elif nav_mode == "turn":
+                    # Seer API: angle is ABSOLUTE (always ≥ 0), direction
+                    # is controlled by vw sign.  Visual_align does the
+                    # same: abs(turn_deg) * DEG_TO_RAD for angle.
+                    turn_dir = 1.0 if (turn_angle or 0) >= 0 else -1.0
+                    turn_speed = turn_vw if turn_vw is not None else 30.0
                     navigation_success = self.agv.turn(
-                        angle=turn_angle,
-                        vw=turn_vw or 30.0,
+                        angle=math.radians(abs(turn_angle)),
+                        vw=math.radians(abs(turn_speed)) * turn_dir,
                         mode=turn_mode,
                     )
                     target_desc = f"turn={turn_angle}°"
