@@ -293,7 +293,7 @@ class TaskConfig:
     policy_path: str | None = None
     policy_type: str = "act"
     max_duration: float = 30.0  # Maximum execution time in seconds
-    max_retries: int = 3  # Maximum number of retry attempts
+    max_retries: int = 1  # Maximum number of retry attempts (1 = no retry)
     completion_criteria: CompletionCriteria = field(default_factory=CompletionCriteria)
     enabled: bool = True  # Allow disabling specific tasks
     cameras: list[CameraConfig] = field(default_factory=list)  # Active cameras for this task
@@ -467,6 +467,7 @@ def parse_task_dict(
         "agv_config": agv_config,
         "cycle_end": task_dict.get("cycle_end", False),
         "stop_on_failure": task_dict.get("stop_on_failure", True),
+        "next_tasks": task_dict.get("next_tasks", {}),  # generic branch routing
     }
 
     # Task-type-specific fields
@@ -474,12 +475,12 @@ def parse_task_dict(
         task_kwargs["policy_path"] = task_dict.get("policy_path")
         task_kwargs["policy_type"] = task_dict.get("policy_type", "act")
         task_kwargs["max_duration"] = task_dict.get("max_duration", 30.0)
-        task_kwargs["max_retries"] = task_dict.get("max_retries", 3)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
         task_kwargs["enabled"] = task_dict.get("enabled", True)
 
     elif task_type == "agv":
         task_kwargs["max_duration"] = task_dict.get("max_duration", 60.0)
-        task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
         task_kwargs["enabled"] = task_dict.get("enabled", True)
 
     elif task_type == "position":
@@ -517,7 +518,7 @@ def parse_task_dict(
             va_config_dict["arm_home_positions"] = default_arm_home_positions
         task_kwargs["visual_align_config"] = VisualAlignConfig(**va_config_dict)
         task_kwargs["max_duration"] = task_dict.get("max_duration", 30.0)
-        task_kwargs["max_retries"] = task_dict.get("max_retries", 2)
+        task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
         task_kwargs["enabled"] = task_dict.get("enabled", True)
 
     elif task_type == "classify":
@@ -526,8 +527,6 @@ def parse_task_dict(
         task_kwargs["max_duration"] = task_dict.get("max_duration", 10.0)
         task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
         task_kwargs["enabled"] = task_dict.get("enabled", True)
-        # Conditional branch routing
-        task_kwargs["next_tasks"] = task_dict.get("next_tasks", {})
 
     elif task_type == "system_command":
         task_kwargs["command"] = task_dict.get("command", "")
