@@ -184,7 +184,7 @@ tasks:
       angle_tolerance: 1.0      # 1°
 
       # ── 参考位姿对齐 ──
-      reference_pose_path: "/home/t/workspace/gitprj/lerobot/ref_station_4.json"
+      reference_pose_path: "/home/t/workspace/gitprj/lerobot/ref_station_2.json"
       distance_offset: 0.0      # 收敛后用实际偏差微调
 
       # ── 相机-AGV 偏移（卷尺量完后填） ──
