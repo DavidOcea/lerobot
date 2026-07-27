@@ -1518,6 +1518,26 @@ class TaskAgentOrchestrator:
                 f"{result.error_message}"
             )
 
+        # ── Generic next_tasks recovery ──────────────────────────────
+        # If all retries exhausted and task.next_tasks["failed"] is set,
+        # convert to COMPLETED + branch to the recovery task (like
+        # classify's recovery_task, but works for all task types).
+        if (last_result.status == TaskStatus.FAILED
+                and task.next_tasks
+                and "failed" in task.next_tasks):
+            recovery = task.next_tasks["failed"]
+            logger.warning(
+                f"Task {task.name} failed after {max_retries} attempt(s) — "
+                f"recovery → {recovery}"
+            )
+            last_result = TaskResult(
+                task_name=task.name,
+                status=TaskStatus.COMPLETED,
+                duration=last_result.duration,
+                success=True,
+                next_task=recovery,
+            )
+
         # ── Restore original settings ─────────────────────────────────
         task.max_retries = original_max_retries
         task.max_duration = original_max_duration
@@ -1733,11 +1753,20 @@ class TaskAgentOrchestrator:
             f"(message: {message}, duration: {duration:.1f}s)"
         )
 
+        # Support next_tasks routing (like classify)
+        #   next_tasks:
+        #     success: "classify_workpiece"   # skip error-handling tasks
+        next_task = None
+        if success and task.next_tasks and "success" in task.next_tasks:
+            next_task = task.next_tasks["success"]
+            logger.warning(f"Visual align success → next_task={next_task}")
+
         return TaskResult(
             task_name=task.name,
             status=status,
             duration=duration,
             error_message=None if success else message,
+            next_task=next_task,
         )
 
     def _execute_classify_task(self, task: TaskConfig) -> TaskResult:
