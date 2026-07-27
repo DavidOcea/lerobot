@@ -467,6 +467,7 @@ def parse_task_dict(
         "agv_config": agv_config,
         "cycle_end": task_dict.get("cycle_end", False),
         "stop_on_failure": task_dict.get("stop_on_failure", True),
+        "next_tasks": task_dict.get("next_tasks", {}),  # generic branch routing
     }
 
     # Task-type-specific fields
@@ -526,8 +527,6 @@ def parse_task_dict(
         task_kwargs["max_duration"] = task_dict.get("max_duration", 10.0)
         task_kwargs["max_retries"] = task_dict.get("max_retries", 1)
         task_kwargs["enabled"] = task_dict.get("enabled", True)
-        # Conditional branch routing
-        task_kwargs["next_tasks"] = task_dict.get("next_tasks", {})
 
     elif task_type == "system_command":
         task_kwargs["command"] = task_dict.get("command", "")
