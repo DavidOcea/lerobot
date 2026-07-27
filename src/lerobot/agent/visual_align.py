@@ -708,7 +708,7 @@ def execute_visual_align(
                     time.sleep(0.3)
 
                 if abs(dforward_lat) > 0.005:
-                    dforward_lat = min(dforward_lat, 0.15)  # cap lateral step
+                    dforward_lat = math.copysign(min(abs(dforward_lat), 0.15), dforward_lat)  # cap lateral step
                     logger.warning(f"  lateral drive: {dforward_lat:.3f}m")
                     vx = config.translate_speed
                     if dforward_lat < 0:
