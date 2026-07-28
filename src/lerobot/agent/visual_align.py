@@ -557,7 +557,7 @@ def execute_visual_align(
             forward_dist = math.copysign(max_fwd, forward_dist)
 
         # Step 1a: Turn AGV
-        if abs(dtheta_deg) > 1.0:  # skip turns < 1° (below AGV precision)
+        if abs(dtheta_deg) > 0.5:  # skip turns < 0.5° (below AGV precision)
             turn_deg = dtheta_deg
             vw = config.turn_speed * DEG_TO_RAD
             if turn_deg < 0:
