@@ -1487,7 +1487,7 @@ class SeerAGVController:
                             )
                             self.turn(
                                 angle=abs(theta_err),
-                                vw=-0.3 if theta_err > 0 else 0.3,
+                                vw=0.3 if theta_err > 0 else -0.3,
                                 mode=0,
                             )
                             stale_theta_count = 0
