@@ -73,7 +73,7 @@ tasks:
       turn_mode: 0
       wait_for_arrival: true
       arrival_timeout: 30.0
-      check_arm_safe_position: true
+      check_arm_safe_position: false
       retry_on_timeout: true
       retry_count: 1
       emergency_stop_on_error: true

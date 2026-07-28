@@ -154,6 +154,7 @@ class ACTConfig(PreTrainedConfig):
 
     # Training and loss computation.
     dropout: float = 0.1
+    force_dropout: float = 0.0
     kl_weight: float = 10.0
     # Label smoothing for regression: blends target with prediction to prevent overfitting
     label_smoothing: float = 0.0
