@@ -24,12 +24,15 @@ Reference: /root/workspace/dc_dir/ros2_ws/src/sm_test_tcp_bridge/sm_test_tcp_bri
 
 import json
 import logging
+import math
 import socket
 import struct
 import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
+
+RAD_TO_DEG = 180.0 / math.pi
 
 logger = logging.getLogger(__name__)
 
@@ -1442,12 +1445,55 @@ class SeerAGVController:
         logger.info(f"Waiting for arrival at {target_station} (timeout={timeout}s, wait_orientation={wait_for_orientation})")
 
         station_reached = False
+        stale_theta_count = 0  # counter for stale-theta escape hatch
 
         while time.time() - start_time < timeout:
             status = self.get_status(use_cache=False)
 
             # 检查站点ID匹配 (XY位置已到达)
             if status.current_station == target_station:
+                # Guard against stale current_station: if the AGV
+                # stayed at this station from a previous task, the
+                # string may match even though the physical position
+                # is wrong.  Verify against known coordinates.
+                # Lazy-load from onboard map on first encounter so we
+                # don't add a network call to init() and don't re-query
+                # every time.
+                self._ensure_station_in_map(target_station)
+                if target_station in self._station_map:
+                    target_pos = self._station_map[target_station]
+                    current_pos = status.position
+                    # theta error wrapped to [-π, π]
+                    theta_err = target_pos.theta - current_pos.theta
+                    theta_err = (theta_err + math.pi) % (2 * math.pi) - math.pi
+
+                    STALE_THETA_THRESHOLD = 0.174  # ~10°
+                    if abs(theta_err) > STALE_THETA_THRESHOLD:
+                        stale_theta_count += 1
+                        if time.time() - start_time >= 0.5:
+                            logger.warning(
+                                f"Stale station match: {target_station} reported "
+                                f"but theta_err={theta_err*RAD_TO_DEG:.0f}° "
+                                f"(>{STALE_THETA_THRESHOLD*RAD_TO_DEG:.0f}°) "
+                                f"— waiting for actual arrival"
+                            )
+                        # Escape hatch: after 15 consecutive stale-theta
+                        # polls (≈3s), the AGV's move_to_station won't
+                        # fix the orientation — force a turn ourselves.
+                        if stale_theta_count >= 15:
+                            logger.warning(
+                                f"Stale theta persisted for {stale_theta_count} cycles "
+                                f"— forcing turn of {theta_err*RAD_TO_DEG:.0f}°"
+                            )
+                            self.turn(
+                                angle=abs(theta_err),
+                                vw=0.3 if theta_err > 0 else -0.3,
+                                mode=0,
+                            )
+                            stale_theta_count = 0
+                        time.sleep(poll_interval)
+                        continue
+
                 if not station_reached:
                     station_reached = True
                     logger.info(f"Station reached: {target_station} (position arrived)")
@@ -1531,6 +1577,42 @@ class SeerAGVController:
         else:
             logger.warning(f"Timeout waiting for arrival at {target_station}")
         return False
+
+    def _ensure_station_in_map(self, station_id: str) -> None:
+        """Lazy-load a station's coordinates from the AGV's onboard map.
+
+        Only called during wait_for_arrival when a station name isn't
+        already in _station_map (i.e. real station names like LM16
+        rather than YAML aliases).  Memoized: queries once and caches
+        all stations so subsequent calls are free.
+        """
+        if station_id in self._station_map:
+            return
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_STATION_QUERY,
+                {},
+            )
+            stations = response.get('stations', [])
+            added = 0
+            for station in stations:
+                sid = station.get('id', '')
+                if sid and station.get('type') == 'LocationMark' and sid not in self._station_map:
+                    self._station_map[sid] = AGVPosition(
+                        x=float(station.get('x', 0.0)),
+                        y=float(station.get('y', 0.0)),
+                        theta=float(station.get('r', 0.0)),
+                    )
+                    added += 1
+            logger.info(
+                f"Lazy-loaded {added} station(s) from AGV map "
+                f"(requested by '{station_id}')"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to query onboard map for '{station_id}': {e}"
+            )
 
     def wait_for_idle(self, timeout: float = 30.0, poll_interval: float = 0.2) -> bool:
         """等待AGV变为空闲状态.
