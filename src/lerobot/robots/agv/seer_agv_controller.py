@@ -1462,25 +1462,16 @@ class SeerAGVController:
                 if target_station in self._station_map:
                     target_pos = self._station_map[target_station]
                     current_pos = status.position
-                    distance = math.hypot(
-                        current_pos.x - target_pos.x,
-                        current_pos.y - target_pos.y,
-                    )
                     # theta error wrapped to [-π, π]
                     theta_err = target_pos.theta - current_pos.theta
                     theta_err = (theta_err + math.pi) % (2 * math.pi) - math.pi
 
-                    STALE_DIST_THRESHOLD = 0.05   # 5 cm
                     STALE_THETA_THRESHOLD = 0.174  # ~10°
-                    if (distance > STALE_DIST_THRESHOLD
-                            or abs(theta_err) > STALE_THETA_THRESHOLD):
+                    if abs(theta_err) > STALE_THETA_THRESHOLD:
                         if time.time() - start_time >= 0.5:
                             logger.warning(
                                 f"Stale station match: {target_station} reported "
-                                f"but dist={distance:.3f}m "
-                                f"(>{STALE_DIST_THRESHOLD:.3f}m)"
-                                f"{' /' if distance > STALE_DIST_THRESHOLD and abs(theta_err) > STALE_THETA_THRESHOLD else ' / '}"
-                                f"theta_err={theta_err*RAD_TO_DEG:.0f}° "
+                                f"but theta_err={theta_err*RAD_TO_DEG:.0f}° "
                                 f"(>{STALE_THETA_THRESHOLD*RAD_TO_DEG:.0f}°) "
                                 f"— waiting for actual arrival"
                             )
