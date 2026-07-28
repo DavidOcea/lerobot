@@ -217,10 +217,15 @@ class TrajectoryGenerator:
                 w1 = waypoints[seg_idx + 1][j_name]
                 raw = w0 + (w1 - w0) * t
 
-                prev = filtered.get(j_name, raw)
-                smooth = prev + ema * (raw - prev)
-                filtered[j_name] = smooth
-                pos[j_name] = smooth
+                if j_name not in filtered:
+                    # First frame: seed EMA with raw so it doesn't pull back
+                    filtered[j_name] = raw
+                    pos[j_name] = raw
+                else:
+                    prev = filtered[j_name]
+                    smooth = prev + ema * (raw - prev)
+                    filtered[j_name] = smooth
+                    pos[j_name] = smooth
 
             frames.append({f"{k}.pos": v for k, v in pos.items()})
 
