@@ -502,7 +502,7 @@ def execute_visual_align(
         # the AGV can make one clean final move.  Damped micro-steps
         # are often under-executed by the AGV (<5mm command → 0mm actual)
         # which wastes iterations.
-        if abs(raw_dtheta) < 3.0 and abs(raw_forward) < 0.05:
+        if abs(raw_dtheta) < 1.5 and abs(raw_forward) < 0.05:
             gain = 1.0
             logger.warning(
                 f"  gain=1.0 (final undamped step: "
@@ -557,7 +557,7 @@ def execute_visual_align(
             forward_dist = math.copysign(max_fwd, forward_dist)
 
         # Step 1a: Turn AGV
-        if abs(dtheta_deg) > 1.0:  # skip turns < 1° (below AGV precision)
+        if abs(dtheta_deg) > 0.5:  # skip turns < 0.5° (below AGV precision)
             turn_deg = dtheta_deg
             vw = config.turn_speed * DEG_TO_RAD
             if turn_deg < 0:
@@ -645,10 +645,35 @@ def execute_visual_align(
                     logger.warning("Phase 2 dual-tag: heading converged")
                     return True, "Aligned (dual-tag, heading OK)"
 
-                if dh_prev is not None and dheading_deg * dh_prev < 0:
-                    dheading_deg *= 0.5  # damp oscillation
+                # ── Heading gain + two-way overshoot detection ─────
+                raw_dheading = dheading_deg  # save for oscillation detection
+                # First iteration: no gain — let the AGV make a clean
+                # turn so the overshoot bias (±1.5°) works in our favour.
+                # Subsequent iterations: decaying gain to damp overshoot.
+                if dh_iter == 0:
+                    gain_p2 = 1.0
+                else:
+                    gains_p2 = [0.7, 0.5, 0.4]
+                    gain_p2 = gains_p2[dh_iter - 1] if dh_iter - 1 < len(gains_p2) else 0.4
+
+                if dh_prev is not None:
+                    if raw_dheading * dh_prev < 0:
+                        # Direction flipped — classical oscillation
+                        gain_p2 = min(gain_p2, 0.3)
+                        logger.warning(
+                            f"  oscillation detected → gain clamped to {gain_p2}"
+                        )
+                    elif abs(raw_dheading) >= abs(dh_prev) * 0.95:
+                        # Error barely shrinking (or growing) — overshoot
+                        gain_p2 = min(gain_p2, 0.4)
+                        logger.warning(
+                            f"  overshoot (not converging) → gain clamped to {gain_p2}"
+                        )
+
+                dheading_deg = raw_dheading * gain_p2
+                if gain_p2 < 1.0:
                     logger.warning(
-                        f"  oscillation detected — halved to {dheading_deg:.1f}°"
+                        f"  gain={gain_p2:.1f} (raw={raw_dheading:.1f}° → cmd={dheading_deg:.1f}°)"
                     )
 
                 vw_s = 1.0 if dheading_deg > 0 else -1.0
@@ -659,67 +684,54 @@ def execute_visual_align(
                 )
                 agv_controller.wait_for_turn_complete(timeout=10.0)
                 time.sleep(0.3)
-                dh_prev = dheading_deg
+                dh_prev = raw_dheading  # store RAW for next comparison
 
-                # ── Step B: lateral offset correction (mini Phase 1) ──
-                obs = robot.get_observation()
-                img = obs.get("images", {}).get("head_cam")
-                if img is None:
-                    continue
+            # ── Step B: one-shot lateral correction (after heading settled) ──
+            # Moved outside the heading loop so the lateral turn doesn't
+            # undo Step A's work.  Compute the lateral→angle correction
+            # once and apply it after heading has converged or loop exhausted.
+            obs = robot.get_observation()
+            img = obs.get("images", {}).get("head_cam")
+            if img is not None:
                 bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
                 m0 = detect_marker(bgr, config, detector,
                                    target_id=config.marker_id)
-                if m0 is None:
+                if m0 is not None:
+                    cur_x, cur_y = _marker_to_agv_xy(m0["tvec"], config)
+                    dy = cur_y - ref_y
+                    lateral_err = abs(dy)
                     logger.warning(
-                        f"Phase 2 iter {dh_iter} lateral: tag_0 lost, skipping"
+                        f"  lateral (post-heading): cur=({cur_x:.3f},{cur_y:.3f}) "
+                        f"ref=({ref_x:.3f},{ref_y:.3f}) dy={dy*100:.1f}cm"
                     )
-                    continue
-
-                cur_x, cur_y = _marker_to_agv_xy(m0["tvec"], config)
-                dx = cur_x - ref_x
-                dy = cur_y - ref_y
-                lateral_err = abs(dy)
-                logger.warning(
-                    f"  lateral: cur=({cur_x:.3f},{cur_y:.3f}) "
-                    f"ref=({ref_x:.3f},{ref_y:.3f}) "
-                    f"dy={dy*100:.1f}cm"
-                )
-                if lateral_err < 0.01:  # < 1cm, good enough
-                    continue
-
-                # Approach the tag from current position: turn toward it,
-                # drive forward, then re-check heading next iteration
-                dtheta_lat, dforward_lat = compute_alignment_to_reference(
-                    m0["tvec"], m0["rvec"], ref_tvec, ref_rvec, config,
-                )
-                if abs(dtheta_lat) > 1.0:
-                    logger.warning(f"  lateral turn: {dtheta_lat:.1f}°")
-                    vw = config.turn_speed * DEG_TO_RAD
-                    if dtheta_lat > 0:
-                        vw = abs(vw)
-                    else:
-                        vw = -abs(vw)
-                    agv_controller.turn(
-                        angle=abs(dtheta_lat) * DEG_TO_RAD,
-                        vw=vw,
-                        mode=0,
-                    )
-                    agv_controller.wait_for_turn_complete(timeout=10.0)
-                    time.sleep(0.3)
-
-                if abs(dforward_lat) > 0.005:
-                    dforward_lat = min(dforward_lat, 0.15)  # cap lateral step
-                    logger.warning(f"  lateral drive: {dforward_lat:.3f}m")
-                    vx = config.translate_speed
-                    if dforward_lat < 0:
-                        vx = -vx
-                    agv_controller.translate(
-                        dist=abs(dforward_lat),
-                        vx=vx,
-                        mode=0,
-                    )
-                    agv_controller.wait_for_translate_complete(timeout=10.0)
-                    time.sleep(0.3)
+                    if lateral_err >= 0.01:
+                        dtheta_lat, dforward_lat = compute_alignment_to_reference(
+                            m0["tvec"], m0["rvec"], ref_tvec, ref_rvec, config,
+                        )
+                        if abs(dtheta_lat) > 1.0:
+                            logger.warning(f"  lateral turn: {dtheta_lat:.1f}°")
+                            vw = config.turn_speed * DEG_TO_RAD
+                            if dtheta_lat > 0:
+                                vw = abs(vw)
+                            else:
+                                vw = -abs(vw)
+                            agv_controller.turn(
+                                angle=abs(dtheta_lat) * DEG_TO_RAD,
+                                vw=vw, mode=0,
+                            )
+                            agv_controller.wait_for_turn_complete(timeout=10.0)
+                            time.sleep(0.3)
+                        if abs(dforward_lat) > 0.005:
+                            dforward_lat = math.copysign(min(abs(dforward_lat), 0.15), dforward_lat)
+                            logger.warning(f"  lateral drive: {dforward_lat:.3f}m")
+                            vx = config.translate_speed
+                            if dforward_lat < 0:
+                                vx = -vx
+                            agv_controller.translate(
+                                dist=abs(dforward_lat), vx=vx, mode=0,
+                            )
+                            agv_controller.wait_for_translate_complete(timeout=10.0)
+                            time.sleep(0.3)
 
             # Exhausted iterations without convergence
             msg = (f"Aligned (dual-tag, heading leftover {dheading_deg:.1f}°)"
