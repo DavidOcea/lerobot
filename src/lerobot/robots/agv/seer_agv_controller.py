@@ -32,6 +32,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+RAD_TO_DEG = 180.0 / math.pi
+
 logger = logging.getLogger(__name__)
 
 
