@@ -1453,6 +1453,10 @@ class SeerAGVController:
                 # stayed at this station from a previous task, the
                 # string may match even though the physical position
                 # is wrong.  Verify against known coordinates.
+                # Lazy-load from onboard map on first encounter so we
+                # don't add a network call to init() and don't re-query
+                # every time.
+                self._ensure_station_in_map(target_station)
                 if target_station in self._station_map:
                     target_pos = self._station_map[target_station]
                     current_pos = status.position
@@ -1564,6 +1568,42 @@ class SeerAGVController:
         else:
             logger.warning(f"Timeout waiting for arrival at {target_station}")
         return False
+
+    def _ensure_station_in_map(self, station_id: str) -> None:
+        """Lazy-load a station's coordinates from the AGV's onboard map.
+
+        Only called during wait_for_arrival when a station name isn't
+        already in _station_map (i.e. real station names like LM16
+        rather than YAML aliases).  Memoized: queries once and caches
+        all stations so subsequent calls are free.
+        """
+        if station_id in self._station_map:
+            return
+        try:
+            response = self._send_request(
+                self.PORT_STATUS,
+                self.API_STATION_QUERY,
+                {},
+            )
+            stations = response.get('stations', [])
+            added = 0
+            for station in stations:
+                sid = station.get('id', '')
+                if sid and station.get('type') == 'LocationMark' and sid not in self._station_map:
+                    self._station_map[sid] = AGVPosition(
+                        x=float(station.get('x', 0.0)),
+                        y=float(station.get('y', 0.0)),
+                        theta=float(station.get('r', 0.0)),
+                    )
+                    added += 1
+            logger.info(
+                f"Lazy-loaded {added} station(s) from AGV map "
+                f"(requested by '{station_id}')"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to query onboard map for '{station_id}': {e}"
+            )
 
     def wait_for_idle(self, timeout: float = 30.0, poll_interval: float = 0.2) -> bool:
         """等待AGV变为空闲状态.
