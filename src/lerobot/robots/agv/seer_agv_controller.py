@@ -24,6 +24,7 @@ Reference: /root/workspace/dc_dir/ros2_ws/src/sm_test_tcp_bridge/sm_test_tcp_bri
 
 import json
 import logging
+import math
 import socket
 import struct
 import threading
@@ -1448,6 +1449,30 @@ class SeerAGVController:
 
             # 检查站点ID匹配 (XY位置已到达)
             if status.current_station == target_station:
+                # Guard against stale current_station: if the AGV
+                # stayed at this station from a previous task, the
+                # string may match even though the physical position
+                # is wrong.  Verify against known coordinates.
+                if target_station in self._station_map:
+                    target_pos = self._station_map[target_station]
+                    current_pos = status.position
+                    distance = math.hypot(
+                        current_pos.x - target_pos.x,
+                        current_pos.y - target_pos.y,
+                    )
+                    if distance > tolerance:
+                        if time.time() - start_time < 0.5:
+                            # First poll cycle — don't spam
+                            pass
+                        else:
+                            logger.warning(
+                                f"Station {target_station} reported but "
+                                f"distance={distance:.3f}m > tolerance={tolerance:.3f}m "
+                                f"— not accepting stale station match"
+                            )
+                        time.sleep(poll_interval)
+                        continue
+
                 if not station_reached:
                     station_reached = True
                     logger.info(f"Station reached: {target_station} (position arrived)")
