@@ -647,8 +647,14 @@ def execute_visual_align(
 
                 # ── Heading gain + two-way overshoot detection ─────
                 raw_dheading = dheading_deg  # save for oscillation detection
-                gains_p2 = [0.7, 0.5, 0.4]
-                gain_p2 = gains_p2[dh_iter] if dh_iter < len(gains_p2) else 0.4
+                # First iteration: no gain — let the AGV make a clean
+                # turn so the overshoot bias (±1.5°) works in our favour.
+                # Subsequent iterations: decaying gain to damp overshoot.
+                if dh_iter == 0:
+                    gain_p2 = 1.0
+                else:
+                    gains_p2 = [0.7, 0.5, 0.4]
+                    gain_p2 = gains_p2[dh_iter - 1] if dh_iter - 1 < len(gains_p2) else 0.4
 
                 if dh_prev is not None:
                     if raw_dheading * dh_prev < 0:
@@ -657,8 +663,8 @@ def execute_visual_align(
                         logger.warning(
                             f"  oscillation detected → gain clamped to {gain_p2}"
                         )
-                    elif abs(raw_dheading) >= abs(dh_prev) * 0.8:
-                        # Error not shrinking — persistent same-side overshoot
+                    elif abs(raw_dheading) >= abs(dh_prev) * 0.95:
+                        # Error barely shrinking (or growing) — overshoot
                         gain_p2 = min(gain_p2, 0.4)
                         logger.warning(
                             f"  overshoot (not converging) → gain clamped to {gain_p2}"
