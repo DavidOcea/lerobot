@@ -1445,6 +1445,7 @@ class SeerAGVController:
         logger.info(f"Waiting for arrival at {target_station} (timeout={timeout}s, wait_orientation={wait_for_orientation})")
 
         station_reached = False
+        stale_theta_count = 0  # counter for stale-theta escape hatch
 
         while time.time() - start_time < timeout:
             status = self.get_status(use_cache=False)
@@ -1468,6 +1469,7 @@ class SeerAGVController:
 
                     STALE_THETA_THRESHOLD = 0.174  # ~10°
                     if abs(theta_err) > STALE_THETA_THRESHOLD:
+                        stale_theta_count += 1
                         if time.time() - start_time >= 0.5:
                             logger.warning(
                                 f"Stale station match: {target_station} reported "
@@ -1475,6 +1477,20 @@ class SeerAGVController:
                                 f"(>{STALE_THETA_THRESHOLD*RAD_TO_DEG:.0f}°) "
                                 f"— waiting for actual arrival"
                             )
+                        # Escape hatch: after 15 consecutive stale-theta
+                        # polls (≈3s), the AGV's move_to_station won't
+                        # fix the orientation — force a turn ourselves.
+                        if stale_theta_count >= 15:
+                            logger.warning(
+                                f"Stale theta persisted for {stale_theta_count} cycles "
+                                f"— forcing turn of {theta_err*RAD_TO_DEG:.0f}°"
+                            )
+                            self.turn(
+                                angle=abs(theta_err),
+                                vw=-0.3 if theta_err > 0 else 0.3,
+                                mode=0,
+                            )
+                            stale_theta_count = 0
                         time.sleep(poll_interval)
                         continue
 
