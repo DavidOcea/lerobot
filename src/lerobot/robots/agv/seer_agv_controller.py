@@ -1460,15 +1460,17 @@ class SeerAGVController:
                         current_pos.x - target_pos.x,
                         current_pos.y - target_pos.y,
                     )
-                    if distance > tolerance:
-                        if time.time() - start_time < 0.5:
-                            # First poll cycle — don't spam
-                            pass
-                        else:
+                    # Use a tighter threshold than arrival_tolerance:
+                    # 0.3 m is normal for "just arrived"; anything beyond
+                    # 0.05 m while sitting idle means the AGV never
+                    # actually re-navigated (stale current_station).
+                    STALE_STATION_THRESHOLD = 0.05
+                    if distance > STALE_STATION_THRESHOLD:
+                        if time.time() - start_time >= 0.5:
                             logger.warning(
-                                f"Station {target_station} reported but "
-                                f"distance={distance:.3f}m > tolerance={tolerance:.3f}m "
-                                f"— not accepting stale station match"
+                                f"Stale station match: {target_station} reported "
+                                f"but distance={distance:.3f}m > {STALE_STATION_THRESHOLD:.3f}m "
+                                f"— waiting for actual arrival"
                             )
                         time.sleep(poll_interval)
                         continue
