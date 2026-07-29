@@ -45,6 +45,7 @@ class TrajectoryGenerator:
         self.steps = steps
         self.fps = fps
         self.all_joint_names = all_joint_names
+        self.hold_frames = hold_frames
         # Populated by generate()
         self._actual_frames: int = 0
         self._actual_duration: float = 0.0
@@ -178,7 +179,7 @@ class TrajectoryGenerator:
         total_dur = const_dur + ease_dur
         # Settling hold frames so EMA converges to the final waypoint
         # (mirrors orchestrator's hold_frames=5)
-        hold_frames = 5
+        hold_frames = self.hold_frames
         total_frames = max(1, int(total_dur * fps)) + hold_frames
 
         # ── 4. Generate frames ────────────────────────────────────────
