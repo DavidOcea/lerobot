@@ -436,7 +436,8 @@ def collect_trajectory(cfg: CollectTrajectoryConfig):
 
     start_position = robot.get_current_position()  # {"joint_name": float} no suffix
 
-    # Generate per-task trajectories and concatenate
+    # Pre-generate trajectory ONCE using current robot position as start.
+    # (same trajectory for all episodes — deterministic, consistent dataset)
     full_trajectory = []
     for task in selected_tasks:
         generator = TrajectoryGenerator(task.steps, cfg.dataset.fps, joint_names)
@@ -448,7 +449,6 @@ def collect_trajectory(cfg: CollectTrajectoryConfig):
         full_trajectory.extend(task_trajectory)
 
         # Update start_position for next task (chain from end of this trajectory)
-        # Last frame's values become the next task's start
         last_frame = task_trajectory[-1]
         for key, value in last_frame.items():
             start_position[key.removesuffix(".pos")] = value
@@ -492,14 +492,20 @@ def collect_trajectory(cfg: CollectTrajectoryConfig):
                 theta=cfg.noise.noise_theta,
             )
 
-        # Move robot to trajectory start position
-        log_say(f"Episode {episode_idx + 1}, resetting to start", cfg.play_sounds, blocking=False)
-        reset_to_start_position(
-            robot,
-            full_trajectory[0],
-            duration=cfg.reset_duration,
-            control_frequency=cfg.control_frequency,
-        )
+        # Regenerate trajectory from robot's ACTUAL current position
+        # (robot may not be exactly at the first waypoint after previous episode)
+        start_position = robot.get_current_position()
+        full_trajectory = []
+        for task in selected_tasks:
+            generator = TrajectoryGenerator(task.steps, cfg.dataset.fps, joint_names)
+            task_trajectory = generator.generate(start_position)
+            full_trajectory.extend(task_trajectory)
+            last_frame = task_trajectory[-1]
+            for key, value in last_frame.items():
+                start_position[key.removesuffix(".pos")] = value
+
+        # Skip reset_to_start_position — the generator already starts from current pose
+        log_say(f"Episode {episode_idx + 1}, starting", cfg.play_sounds, blocking=False)
 
         # Execute trajectory with noise and recording
         success = collect_frame_loop(
