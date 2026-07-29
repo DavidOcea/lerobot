@@ -255,6 +255,10 @@ class ClassifyConfig:
     classes: list = field(default_factory=lambda: ["short", "long"])  # cls_id → label
     conf_threshold: float = 0.50  # minimum YOLO confidence
 
+    # --- YOLO + ROI-IoU method ("yolo_roi") ---
+    roi_reference_path: str = ""  # JSON file with ROI region definitions
+    iou_threshold: float = 0.3    # minimum IOU for a valid match
+
     # --- Label counter (for alternating placements) ---
     label_counter_enable: bool = False  # enable label counting (e.g. long→long_1, long_2)
     counter_keywords: list = field(default_factory=list)  # which labels to count

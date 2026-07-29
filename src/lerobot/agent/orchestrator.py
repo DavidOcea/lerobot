@@ -1821,6 +1821,9 @@ class TaskAgentOrchestrator:
             "model_path": cc.model_path,
             "classes": cc.classes,
             "conf_threshold": cc.conf_threshold,
+            # ROI-IoU (used by "yolo_roi" method, ignored by others)
+            "roi_reference_path": cc.roi_reference_path,
+            "iou_threshold": cc.iou_threshold,
         }
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
