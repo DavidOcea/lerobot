@@ -492,10 +492,14 @@ def collect_trajectory(cfg: CollectTrajectoryConfig):
                 theta=cfg.noise.noise_theta,
             )
 
-        # Use robot's ACTUAL current position as trajectory start
-        # (NOT the first waypoint). This gives the first chain segment
-        # meaningful distance to travel, matching agent's behavior.
-        start_position = robot.get_current_position()
+        # Move robot to trajectory start position
+        log_say(f"Episode {episode_idx + 1}, resetting to start", cfg.play_sounds, blocking=False)
+        reset_to_start_position(
+            robot,
+            full_trajectory[0],
+            duration=cfg.reset_duration,
+            control_frequency=cfg.control_frequency,
+        )
 
         # Execute trajectory with noise and recording
         success = collect_frame_loop(
