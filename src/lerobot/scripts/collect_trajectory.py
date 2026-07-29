@@ -436,8 +436,7 @@ def collect_trajectory(cfg: CollectTrajectoryConfig):
 
     start_position = robot.get_current_position()  # {"joint_name": float} no suffix
 
-    # Pre-generate trajectory ONCE using current robot position as start.
-    # (same trajectory for all episodes — deterministic, consistent dataset)
+    # Generate per-task trajectories and concatenate
     full_trajectory = []
     for task in selected_tasks:
         generator = TrajectoryGenerator(task.steps, cfg.dataset.fps, joint_names)
