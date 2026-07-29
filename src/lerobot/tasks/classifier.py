@@ -236,7 +236,7 @@ class RoiIouClassifier(YOLOClassifier):
         self.roi_reference_path = roi_reference_path
         self.iou_threshold = iou_threshold
         self._roi_regions = {}
-        self._roi_boxes = []
+        self._roi_boxes: list[tuple[str, tuple, float]] = []
         self._roi_loaded = False
 
     def _load_rois(self):
@@ -251,7 +251,8 @@ class RoiIouClassifier(YOLOClassifier):
                 data = json.load(f)
             self._roi_regions = data.get("regions", {})
             for label, r in self._roi_regions.items():
-                self._roi_boxes.append((label, (r["x"], r["y"], r["w"], r["h"])))
+                threshold = r.get("iou_threshold", self.iou_threshold)
+                self._roi_boxes.append((label, (r["x"], r["y"], r["w"], r["h"]), threshold))
             print(f"[RoiIouClassifier] {len(self._roi_boxes)} ROIs from {self.roi_reference_path}")
         except Exception as e:
             print(f"[RoiIouClassifier] Failed to load ROIs: {e}")
@@ -323,17 +324,19 @@ class RoiIouClassifier(YOLOClassifier):
 
         best_label = self.default_label
         best_iou = 0.0
-        for label, roi_box in self._roi_boxes:
+        best_threshold = self.iou_threshold
+        for label, roi_box, threshold in self._roi_boxes:
             iou = self._bbox_iou(det_px, roi_box)
             if iou > best_iou:
                 best_iou = iou
                 best_label = label
+                best_threshold = threshold
 
-        if best_iou < self.iou_threshold:
-            print(f"[RoiIou] IoU={best_iou:.3f}<{self.iou_threshold} -> {self.default_label}")
+        if best_iou < best_threshold:
+            print(f"[RoiIou] IoU={best_iou:.3f}<{best_threshold} -> {self.default_label}")
             return ClassifyResult(label=self.default_label, confidence=float(best_iou))
 
-        print(f"[RoiIou] {yolo_result.label} -> {best_label} (IoU={best_iou:.3f})")
+        print(f"[RoiIou] {yolo_result.label} -> {best_label} (IoU={best_iou:.3f}, thr={best_threshold})")
         return ClassifyResult(label=best_label, confidence=float(best_iou))
 
     def reset(self):
