@@ -270,6 +270,8 @@ class ClassifyConfig:
     retry_max_attempts: int = 10      # max retries before giving up
     retry_command: str = ""  # shell command run before each retry (e.g. TTS)
     recovery_task: str = ""  # task name to jump to after retries exhausted (""→FAIL)
+    # Labels that trigger a retry (e.g. ["short","box","unknown"]). Empty = only "no_detection".
+    retry_labels: list = field(default_factory=list)
 
     # ===== 安全配置 =====
     check_arm_safe_position: bool = True  # AGV 微调前检查机械臂安全位置

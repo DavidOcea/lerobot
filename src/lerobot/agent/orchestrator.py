@@ -1828,21 +1828,27 @@ class TaskAgentOrchestrator:
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
 
-            # Retry loop for no_detection
+            # Build set of labels that trigger a retry
+            retry_labels_set = set(cc.retry_labels or [])
+            if cc.retry_on_no_detect:
+                retry_labels_set.add("no_detection")
+
+            # Retry loop
             retry_attempts = 0
-            max_retries = cc.retry_max_attempts if cc.retry_on_no_detect else 1
+            max_retries = cc.retry_max_attempts if retry_labels_set else 1
             result = None
             for retry_attempts in range(max_retries):
                 result = classifier.classify(bgr)
-                if result.label == "no_detection" and cc.retry_on_no_detect:
+                if result.label in retry_labels_set:
                     logger.warning(
                         f"Classify retry {retry_attempts + 1}/{max_retries}: "
-                        f"no detection, waiting {cc.retry_wait_seconds}s ..."
+                        f"label={result.label}, waiting {cc.retry_wait_seconds}s ..."
                     )
                     if cc.retry_command:
                         import subprocess as _sp
                         parts = cc.retry_command.split()
-                        if parts and parts[0] in ("espeak-ng", "espeak", "aplay", "speaker-test"):
+                        if parts and parts[0] in ("espeak-ng", "espeak", "aplay",
+                                                  "speaker-test", "python", "python3"):
                             try:
                                 _sp.run(parts, shell=False, timeout=10)
                             except Exception:
@@ -1863,8 +1869,8 @@ class TaskAgentOrchestrator:
                     error_message="Classification failed after retries",
                 )
 
-            # No-detection even after retries: recovery or fail
-            if result.label == "no_detection" and cc.retry_on_no_detect:
+            # Retry label even after all retries: recovery or fail
+            if result is not None and result.label in retry_labels_set:
                 if cc.recovery_task:
                     logger.warning(
                         f"Classify failed after {max_retries} retries — "
