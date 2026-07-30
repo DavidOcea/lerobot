@@ -272,6 +272,9 @@ class ClassifyConfig:
     recovery_task: str = ""  # task name to jump to after retries exhausted (""→FAIL)
     # Labels that trigger a retry (e.g. ["short","box","unknown"]). Empty = only "no_detection".
     retry_labels: list = field(default_factory=list)
+    # Per-label TTS commands: {"short": "python /path/to/speak.py '错误料片'", ...}
+    # Fires ONCE on FIRST non-matching detection before the retry loop begins.
+    label_tts_commands: dict[str, str] = field(default_factory=dict)
 
     # ===== 安全配置 =====
     check_arm_safe_position: bool = True  # AGV 微调前检查机械臂安全位置

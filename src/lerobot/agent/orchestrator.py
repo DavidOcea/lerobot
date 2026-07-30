@@ -1808,7 +1808,24 @@ class TaskAgentOrchestrator:
             )
 
         import numpy as np
+        import subprocess as _sp
+        import os
         bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
+
+        # Helper: speak TTS safely
+        _ALLOWED_SPEAK = os.path.realpath("/home/t/workspace/dc_dir/tts_cache/speak.py")
+        def _speak_tts(cmd: str):
+            try:
+                parts = cmd.split()
+                if not parts:
+                    return
+                if parts[0] in ("espeak-ng", "espeak", "aplay", "speaker-test"):
+                    _sp.run(parts, shell=False, timeout=10)
+                elif len(parts) >= 2 and parts[0] in ("python", "python3"):
+                    if os.path.realpath(parts[1]) == _ALLOWED_SPEAK:
+                        _sp.run(parts, shell=False, timeout=10)
+            except Exception:
+                pass
 
         # Build classifier
         classifier_kwargs = {
@@ -1852,15 +1869,14 @@ class TaskAgentOrchestrator:
                                 _sp.run(parts, shell=False, timeout=10)
                             except Exception:
                                 pass
-                        elif len(parts) >= 3 and parts[0] in ("python", "python3"):
-                            # allow python/python3 only for tts_cache/speak.py (hardcoded path check)
-                            script_path = parts[1]
-                            if script_path.endswith("/tts_cache/speak.py") or \
-                               "/tts_cache/speak.py" in script_path:
-                                try:
+                        elif len(parts) >= 2 and parts[0] in ("python", "python3"):
+                            import os
+                            ALLOWED = os.path.realpath("/home/t/workspace/dc_dir/tts_cache/speak.py")
+                            try:
+                                if os.path.realpath(parts[1]) == ALLOWED:
                                     _sp.run(parts, shell=False, timeout=10)
-                                except Exception:
-                                    pass
+                            except Exception:
+                                pass
                     time.sleep(cc.retry_wait_seconds)
                     # Re-capture image
                     obs = self.robot.get_observation()
