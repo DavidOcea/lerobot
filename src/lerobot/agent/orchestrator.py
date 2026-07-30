@@ -1847,12 +1847,20 @@ class TaskAgentOrchestrator:
                     if cc.retry_command:
                         import subprocess as _sp
                         parts = cc.retry_command.split()
-                        if parts and parts[0] in ("espeak-ng", "espeak", "aplay",
-                                                  "speaker-test", "python", "python3"):
+                        if parts and parts[0] in ("espeak-ng", "espeak", "aplay", "speaker-test"):
                             try:
                                 _sp.run(parts, shell=False, timeout=10)
                             except Exception:
                                 pass
+                        elif len(parts) >= 3 and parts[0] in ("python", "python3"):
+                            # allow python/python3 only for tts_cache/speak.py (hardcoded path check)
+                            script_path = parts[1]
+                            if script_path.endswith("/tts_cache/speak.py") or \
+                               "/tts_cache/speak.py" in script_path:
+                                try:
+                                    _sp.run(parts, shell=False, timeout=10)
+                                except Exception:
+                                    pass
                     time.sleep(cc.retry_wait_seconds)
                     # Re-capture image
                     obs = self.robot.get_observation()
