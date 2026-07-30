@@ -1820,8 +1820,9 @@ class TaskAgentOrchestrator:
                 if not parts:
                     return
                 if parts[0] in ("espeak-ng", "espeak", "aplay", "speaker-test"):
-                    _sp.run(parts, shell=False, timeout=10)
-                elif len(parts) >= 2 and parts[0] in ("python", "python3"):
+                    if len(parts) == 2 and not parts[1].startswith("-"):
+                        _sp.run(parts, shell=False, timeout=10)
+                elif len(parts) == 2 and parts[0] in ("python", "python3"):
                     if os.path.realpath(parts[1]) == _ALLOWED_SPEAK:
                         _sp.run(parts, shell=False, timeout=10)
             except Exception:
