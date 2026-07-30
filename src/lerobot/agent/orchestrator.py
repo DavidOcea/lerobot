@@ -1850,6 +1850,9 @@ class TaskAgentOrchestrator:
             if cc.retry_on_no_detect:
                 retry_labels_set.add("no_detection")
 
+            # Per-label TTS on first failure (label_tts_commands)
+            label_tts = cc.label_tts_commands or {}
+
             # Retry loop
             retry_attempts = 0
             max_retries = cc.retry_max_attempts if retry_labels_set else 1
@@ -1857,6 +1860,9 @@ class TaskAgentOrchestrator:
             for retry_attempts in range(max_retries):
                 result = classifier.classify(bgr)
                 if result.label in retry_labels_set:
+                    # On FIRST failure, fire label-specific TTS if configured
+                    if retry_attempts == 0 and result.label in label_tts:
+                        _speak_tts(label_tts[result.label])
                     logger.warning(
                         f"Classify retry {retry_attempts + 1}/{max_retries}: "
                         f"label={result.label}, waiting {cc.retry_wait_seconds}s ..."
