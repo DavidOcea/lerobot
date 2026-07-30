@@ -1518,6 +1518,18 @@ class TaskAgentOrchestrator:
                 f"{result.error_message}"
             )
 
+        # ── Generic next_tasks routing ────────────────────────────────
+        # success: if task completed and task.next_tasks["success"] is set,
+        #   set next_task so the orchestrator branches to it.
+        if (last_result.status == TaskStatus.COMPLETED
+                and last_result.next_task == ""
+                and task.next_tasks
+                and "success" in task.next_tasks):
+            last_result.next_task = task.next_tasks["success"]
+            logger.info(
+                f"Task {task.name} completed — branching to {last_result.next_task}"
+            )
+
         # ── Generic next_tasks recovery ──────────────────────────────
         # If all retries exhausted and task.next_tasks["failed"] is set,
         # convert to COMPLETED + branch to the recovery task (like
