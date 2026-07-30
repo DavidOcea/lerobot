@@ -238,6 +238,8 @@ class RoiIouClassifier(YOLOClassifier):
         self._roi_regions = {}
         self._roi_boxes: list[tuple[str, tuple, float]] = []
         self._roi_loaded = False
+        self._boundary_box = None          # {"x","y","w","h"} — workspace outer boundary
+        self._out_of_bounds_label = "unknown"  # label returned when bbox exceeds boundary
 
     def _load_rois(self):
         if self._roi_loaded:
@@ -251,8 +253,13 @@ class RoiIouClassifier(YOLOClassifier):
                 data = json.load(f)
             self._roi_regions = data.get("regions", {})
             for label, r in self._roi_regions.items():
+                if label == "_boundary":
+                    self._boundary_box = (r["x"], r["y"], r["w"], r["h"])
+                    continue
                 threshold = r.get("iou_threshold", self.iou_threshold)
                 self._roi_boxes.append((label, (r["x"], r["y"], r["w"], r["h"]), threshold))
+            if self._boundary_box:
+                print(f"[RoiIouClassifier] Boundary box: {self._boundary_box}")
             print(f"[RoiIouClassifier] {len(self._roi_boxes)} ROIs from {self.roi_reference_path}")
         except Exception as e:
             print(f"[RoiIouClassifier] Failed to load ROIs: {e}")
@@ -269,6 +276,15 @@ class RoiIouClassifier(YOLOClassifier):
         inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
         union = aw * ah + bw * bh - inter
         return inter / union if union > 0 else 0.0
+
+    @staticmethod
+    def _bbox_contained(inner, outer):
+        """True if inner bbox is fully inside outer bbox."""
+        ix1, iy1, iw, ih = inner
+        ix2, iy2 = ix1 + iw, iy1 + ih
+        ox1, oy1, ow, oh = outer
+        ox2, oy2 = ox1 + ow, oy1 + oh
+        return ix1 >= ox1 and iy1 >= oy1 and ix2 <= ox2 and iy2 <= oy2
 
     @staticmethod
     def _det_to_px_bbox(x1, y1, x2, y2):
@@ -322,15 +338,31 @@ class RoiIouClassifier(YOLOClassifier):
             boxes_xywh[best][1] + boxes_xywh[best][3],
         )
 
+        # ── Boundary check: reject if any part of bbox is outside workspace ─
+        if self._boundary_box is not None:
+            bx, by, bw, bh = det_px
+            if not self._bbox_contained(det_px, self._boundary_box):
+                print(f"[RoiIou] bbox partially outside boundary → {self.default_label}")
+                return ClassifyResult(label=self.default_label, confidence=0.0)
+
         best_label = self.default_label
         best_iou = 0.0
+        second_iou = 0.0
         best_threshold = self.iou_threshold
         for label, roi_box, threshold in self._roi_boxes:
             iou = self._bbox_iou(det_px, roi_box)
             if iou > best_iou:
+                second_iou = best_iou
                 best_iou = iou
                 best_label = label
                 best_threshold = threshold
+            elif iou > second_iou:
+                second_iou = iou
+
+        # Ambiguity check: top two IOU values too close → reject
+        if best_iou - second_iou < 0.10 and second_iou > 0:
+            print(f"[RoiIou] Ambiguous: best={best_label}({best_iou:.3f}) vs 2nd({second_iou:.3f}) → {self.default_label}")
+            return ClassifyResult(label=self.default_label, confidence=float(best_iou))
 
         if best_iou < best_threshold:
             print(f"[RoiIou] IoU={best_iou:.3f}<{best_threshold} -> {self.default_label}")
