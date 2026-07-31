@@ -214,6 +214,195 @@ class YOLOClassifier(BaseClassifier):
         pass  # stateless
 
 
+class RoiIouClassifier(YOLOClassifier):
+    """YOLO + ROI-IoU classifier for workpiece position disambiguation.
+
+    Extends YOLOClassifier: runs detection first, then computes IoU of
+    the detected bounding-box against pre-defined ROI regions loaded
+    from a JSON reference file (created by capture_roi_regions.py).
+
+    The region with the highest IoU wins. If no region exceeds
+    iou_threshold, returns default_label (for voice prompt / fallback).
+    """
+
+    def __init__(self, model_path: str, classes=None,
+                 default_label="unknown", default_next_task="",
+                 conf_threshold=0.15,
+                 roi_reference_path="", iou_threshold=0.3,
+                 boundary_check_mode="contain",
+                 boundary_iou_threshold=0.6):
+        """
+        Args:
+            boundary_check_mode: "contain" (default) or "iou".
+                - "contain": reject if any pixel of bbox is outside boundary.
+                - "iou": reject if bbox-boundary IoU < boundary_iou_threshold.
+                - None/"" (from YAML empty string): treated as "contain".
+            boundary_iou_threshold: IoU threshold for "iou" mode.
+        """
+        super().__init__(model_path=model_path, classes=classes,
+                         default_label=default_label,
+                         default_next_task=default_next_task,
+                         conf_threshold=conf_threshold)
+        self.roi_reference_path = roi_reference_path
+        self.iou_threshold = iou_threshold
+        # YAML empty string or "contain" → literal contain mode
+        if boundary_check_mode in (None, "", "contain"):
+            self.boundary_check_mode = "contain"
+        else:
+            self.boundary_check_mode = boundary_check_mode
+        self.boundary_iou_threshold = boundary_iou_threshold
+        self._roi_regions = {}
+        self._roi_boxes: list[tuple[str, tuple, float]] = []
+        self._roi_loaded = False
+        self._boundary_box = None
+        self._out_of_bounds_label = "unknown"
+
+    def _load_rois(self):
+        if self._roi_loaded:
+            return
+        if not self.roi_reference_path:
+            self._roi_loaded = True
+            return
+        import json
+        try:
+            with open(self.roi_reference_path) as f:
+                data = json.load(f)
+            self._roi_regions = data.get("regions", {})
+            for label, r in self._roi_regions.items():
+                if label == "_boundary":
+                    self._boundary_box = (r["x"], r["y"], r["w"], r["h"])
+                    continue
+                threshold = r.get("iou_threshold", self.iou_threshold)
+                self._roi_boxes.append((label, (r["x"], r["y"], r["w"], r["h"]), threshold))
+            if self._boundary_box:
+                print(f"[RoiIouClassifier] Boundary box: {self._boundary_box}")
+            print(f"[RoiIouClassifier] {len(self._roi_boxes)} ROIs from {self.roi_reference_path}")
+        except Exception as e:
+            print(f"[RoiIouClassifier] Failed to load ROIs: {e}")
+        self._roi_loaded = True
+
+    @staticmethod
+    def _bbox_iou(a, b):
+        ax1, ay1, aw, ah = a
+        ax2, ay2 = ax1 + aw, ay1 + ah
+        bx1, by1, bw, bh = b
+        bx2, by2 = bx1 + bw, by1 + bh
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+        union = aw * ah + bw * bh - inter
+        return inter / union if union > 0 else 0.0
+
+    @staticmethod
+    def _bbox_contained(inner, outer):
+        """True if inner bbox is fully inside outer bbox."""
+        ix1, iy1, iw, ih = inner
+        ix2, iy2 = ix1 + iw, iy1 + ih
+        ox1, oy1, ow, oh = outer
+        ox2, oy2 = ox1 + ow, oy1 + oh
+        return ix1 >= ox1 and iy1 >= oy1 and ix2 <= ox2 and iy2 <= oy2
+
+    @staticmethod
+    def _det_to_px_bbox(x1, y1, x2, y2):
+        return (max(0, int(x1)), max(0, int(y1)), int(x2 - x1), int(y2 - y1))
+
+    def classify(self, image):
+        yolo_result = super().classify(image)
+        if yolo_result.label in ("no_detection", "unknown", self.default_label):
+            return yolo_result
+
+        self._load_rois()
+        if not self._roi_boxes:
+            return yolo_result
+
+        if not self._init_session():
+            return ClassifyResult(label=self.default_label, confidence=0.0)
+
+        h0, w0 = image.shape[:2]
+        img = image[:, :, ::-1].copy()
+        img = cv2.resize(img, (640, 640)).transpose(2, 0, 1).astype(np.float32) / 255.0
+        img = np.expand_dims(img, axis=0)
+        outputs = self._session.run(None, {"images": img})
+        preds = outputs[0][0]
+        nc = len(self.classes)
+
+        boxes_xywh, scores = [], []
+        for i in range(preds.shape[1]):
+            cx, cy, bw, bh = preds[0:4, i]
+            cc = preds[4:4 + nc, i]
+            mc = float(cc.max())
+            if mc < self.conf_threshold:
+                continue
+            x1 = (cx - bw / 2) / 640 * w0
+            y1 = (cy - bh / 2) / 640 * h0
+            x2 = x1 + bw / 640 * w0
+            y2 = y1 + bh / 640 * h0
+            boxes_xywh.append([x1, y1, x2 - x1, y2 - y1])
+            scores.append(mc)
+
+        if not boxes_xywh:
+            return ClassifyResult(label=self.default_label, confidence=0.0)
+
+        idxs = cv2.dnn.NMSBoxes(boxes_xywh, scores, self.conf_threshold, 0.45)
+        if len(idxs) == 0:
+            return ClassifyResult(label=self.default_label, confidence=0.0)
+
+        best = max(idxs.flatten(), key=lambda i: scores[i])
+        det_px = self._det_to_px_bbox(
+            boxes_xywh[best][0], boxes_xywh[best][1],
+            boxes_xywh[best][0] + boxes_xywh[best][2],
+            boxes_xywh[best][1] + boxes_xywh[best][3],
+        )
+
+        # ── Boundary check ──────────────────────────────────────────────
+        # Two modes available (configured in classify_config):
+        #   "contain" (default): reject if ANY pixel of bbox is outside
+        #     boundary — used for pre-pickup safety checks.
+        #   "iou": reject if bbox-boundary IoU < boundary_iou_threshold —
+        #     used for post-pickup checks where the workpiece appears
+        #     larger near the camera.
+        if self._boundary_box is not None:
+            if self.boundary_check_mode == "iou":
+                iou = self._bbox_iou(det_px, self._boundary_box)
+                if iou < self.boundary_iou_threshold:
+                    print(f"[RoiIou] bbox-boundary IoU={iou:.3f} < {self.boundary_iou_threshold} → {self.default_label}")
+                    return ClassifyResult(label=self.default_label, confidence=0.0)
+            else:  # default: "contain"
+                if not self._bbox_contained(det_px, self._boundary_box):
+                    print(f"[RoiIou] bbox partially outside boundary → {self.default_label}")
+                    return ClassifyResult(label=self.default_label, confidence=0.0)
+
+        best_label = self.default_label
+        best_iou = 0.0
+        second_iou = 0.0
+        best_threshold = self.iou_threshold
+        for label, roi_box, threshold in self._roi_boxes:
+            iou = self._bbox_iou(det_px, roi_box)
+            if iou > best_iou:
+                second_iou = best_iou
+                best_iou = iou
+                best_label = label
+                best_threshold = threshold
+            elif iou > second_iou:
+                second_iou = iou
+
+        # Ambiguity check: top two IOU values too close → reject
+        if best_iou - second_iou < 0.03 and second_iou > 0:
+            print(f"[RoiIou] Ambiguous: best={best_label}({best_iou:.3f}) vs 2nd({second_iou:.3f}) → {self.default_label}")
+            return ClassifyResult(label=self.default_label, confidence=float(best_iou))
+        print(f"[set RoiIou] Ambiguous: best={best_label}({best_iou:.3f}) vs 2nd({second_iou:.3f}) → {self.default_label}")
+        print("bestiou-secondiou = :", best_iou - second_iou)
+        if best_iou < best_threshold:
+            print(f"[RoiIou] IoU={best_iou:.3f}<{best_threshold} -> {self.default_label}")
+            return ClassifyResult(label=self.default_label, confidence=float(best_iou))
+
+        print(f"[RoiIou] {yolo_result.label} -> {best_label} (IoU={best_iou:.3f}, thr={best_threshold})")
+        return ClassifyResult(label=best_label, confidence=float(best_iou))
+
+    def reset(self):
+        super().reset()
+
+
 import cv2  # needed for resize, cvtColor in YOLOClassifier.classify
 
 
@@ -223,6 +412,7 @@ def make_classifier(method: str, **kwargs) -> BaseClassifier:
     Supported methods:
       - "apriltag":     AprilTagClassifier (marker-based)
       - "yolo_detect":  YOLOClassifier (ONNX, no marker needed)
+      - "yolo_roi":     RoiIouClassifier (YOLO + ROI-IoU position matching)
     """
     method = method.lower()
     if method == "apriltag":
@@ -240,5 +430,17 @@ def make_classifier(method: str, **kwargs) -> BaseClassifier:
             default_label=kwargs.get("default_label", "unknown"),
             default_next_task=kwargs.get("default_next_task", ""),
             conf_threshold=kwargs.get("conf_threshold", 0.15),
+        )
+    if method == "yolo_roi":
+        return RoiIouClassifier(
+            model_path=kwargs.get("model_path", ""),
+            classes=kwargs.get("classes", ["short", "long"]),
+            default_label=kwargs.get("default_label", "unknown"),
+            default_next_task=kwargs.get("default_next_task", ""),
+            conf_threshold=kwargs.get("conf_threshold", 0.15),
+            roi_reference_path=kwargs.get("roi_reference_path", ""),
+            iou_threshold=kwargs.get("iou_threshold", 0.3),
+            boundary_check_mode=kwargs.get("boundary_check_mode", "contain") or "contain",
+            boundary_iou_threshold=kwargs.get("boundary_iou_threshold", 0.6),
         )
     raise ValueError(f"Unknown classify method: {method}")

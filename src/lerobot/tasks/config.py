@@ -255,6 +255,14 @@ class ClassifyConfig:
     classes: list = field(default_factory=lambda: ["short", "long"])  # cls_id → label
     conf_threshold: float = 0.50  # minimum YOLO confidence
 
+    # --- YOLO + ROI-IoU method ("yolo_roi") ---
+    roi_reference_path: str = ""  # JSON file with ROI region definitions
+    iou_threshold: float = 0.3    # minimum IOU for a valid match
+    # Boundary check mode: "contain" (default, strict) or "iou" (loose, for
+    # post-pickup checks where the workpiece appears larger near the camera).
+    boundary_check_mode: str = "contain"   # "contain" or "iou"
+    boundary_iou_threshold: float = 0.6    # only used when boundary_check_mode="iou"
+
     # --- Label counter (for alternating placements) ---
     label_counter_enable: bool = False  # enable label counting (e.g. long→long_1, long_2)
     counter_keywords: list = field(default_factory=list)  # which labels to count
@@ -266,6 +274,11 @@ class ClassifyConfig:
     retry_max_attempts: int = 10      # max retries before giving up
     retry_command: str = ""  # shell command run before each retry (e.g. TTS)
     recovery_task: str = ""  # task name to jump to after retries exhausted (""→FAIL)
+    # Labels that trigger a retry (e.g. ["short","box","unknown"]). Empty = only "no_detection".
+    retry_labels: list = field(default_factory=list)
+    # Per-label TTS commands: {"short": "python /path/to/speak.py '错误料片'", ...}
+    # Fires ONCE on FIRST non-matching detection before the retry loop begins.
+    label_tts_commands: dict[str, str] = field(default_factory=dict)
 
     # ===== 安全配置 =====
     check_arm_safe_position: bool = True  # AGV 微调前检查机械臂安全位置

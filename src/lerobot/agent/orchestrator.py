@@ -1518,6 +1518,18 @@ class TaskAgentOrchestrator:
                 f"{result.error_message}"
             )
 
+        # ── Generic next_tasks routing ────────────────────────────────
+        # success: if task completed and task.next_tasks["success"] is set,
+        #   set next_task so the orchestrator branches to it.
+        if (last_result.status == TaskStatus.COMPLETED
+                and last_result.next_task == ""
+                and task.next_tasks
+                and "success" in task.next_tasks):
+            last_result.next_task = task.next_tasks["success"]
+            logger.info(
+                f"Task {task.name} completed — branching to {last_result.next_task}"
+            )
+
         # ── Generic next_tasks recovery ──────────────────────────────
         # If all retries exhausted and task.next_tasks["failed"] is set,
         # convert to COMPLETED + branch to the recovery task (like
@@ -1808,7 +1820,25 @@ class TaskAgentOrchestrator:
             )
 
         import numpy as np
+        import subprocess as _sp
+        import os
         bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
+
+        # Helper: speak TTS safely
+        _ALLOWED_SPEAK = os.path.realpath("/home/t/workspace/dc_dir/tts_cache/speak.py")
+        def _speak_tts(cmd: str):
+            try:
+                parts = cmd.split()
+                if not parts:
+                    return
+                if parts[0] in ("espeak-ng", "espeak", "aplay", "speaker-test"):
+                    if len(parts) == 2 and not parts[1].startswith("-"):
+                        _sp.run(parts, shell=False, timeout=10)
+                elif len(parts) == 2 and parts[0] in ("python", "python3"):
+                    if os.path.realpath(parts[1]) == _ALLOWED_SPEAK:
+                        _sp.run(parts, shell=False, timeout=10)
+            except Exception:
+                pass
 
         # Build classifier
         classifier_kwargs = {
@@ -1821,20 +1851,34 @@ class TaskAgentOrchestrator:
             "model_path": cc.model_path,
             "classes": cc.classes,
             "conf_threshold": cc.conf_threshold,
+            # ROI-IoU (used by "yolo_roi" method, ignored by others)
+            "roi_reference_path": cc.roi_reference_path,
+            "iou_threshold": cc.iou_threshold,
         }
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
 
-            # Retry loop for no_detection
+            # Build set of labels that trigger a retry
+            retry_labels_set = set(cc.retry_labels or [])
+            if cc.retry_on_no_detect:
+                retry_labels_set.add("no_detection")
+
+            # Per-label TTS on first failure (label_tts_commands)
+            label_tts = cc.label_tts_commands or {}
+
+            # Retry loop
             retry_attempts = 0
-            max_retries = cc.retry_max_attempts if cc.retry_on_no_detect else 1
+            max_retries = cc.retry_max_attempts if retry_labels_set else 1
             result = None
             for retry_attempts in range(max_retries):
                 result = classifier.classify(bgr)
-                if result.label == "no_detection" and cc.retry_on_no_detect:
+                if result.label in retry_labels_set:
+                    # On FIRST failure, fire label-specific TTS if configured
+                    if retry_attempts == 0 and result.label in label_tts:
+                        _speak_tts(label_tts[result.label])
                     logger.warning(
                         f"Classify retry {retry_attempts + 1}/{max_retries}: "
-                        f"no detection, waiting {cc.retry_wait_seconds}s ..."
+                        f"label={result.label}, waiting {cc.retry_wait_seconds}s ..."
                     )
                     if cc.retry_command:
                         import subprocess as _sp
@@ -1842,6 +1886,14 @@ class TaskAgentOrchestrator:
                         if parts and parts[0] in ("espeak-ng", "espeak", "aplay", "speaker-test"):
                             try:
                                 _sp.run(parts, shell=False, timeout=10)
+                            except Exception:
+                                pass
+                        elif len(parts) >= 2 and parts[0] in ("python", "python3"):
+                            import os
+                            ALLOWED = os.path.realpath("/home/t/workspace/dc_dir/tts_cache/speak.py")
+                            try:
+                                if os.path.realpath(parts[1]) == ALLOWED:
+                                    _sp.run(parts, shell=False, timeout=10)
                             except Exception:
                                 pass
                     time.sleep(cc.retry_wait_seconds)
@@ -1860,8 +1912,8 @@ class TaskAgentOrchestrator:
                     error_message="Classification failed after retries",
                 )
 
-            # No-detection even after retries: recovery or fail
-            if result.label == "no_detection" and cc.retry_on_no_detect:
+            # Retry label even after all retries: recovery or fail
+            if result is not None and result.label in retry_labels_set:
                 if cc.recovery_task:
                     logger.warning(
                         f"Classify failed after {max_retries} retries — "
