@@ -390,7 +390,8 @@ class RoiIouClassifier(YOLOClassifier):
         if best_iou - second_iou < 0.03 and second_iou > 0:
             print(f"[RoiIou] Ambiguous: best={best_label}({best_iou:.3f}) vs 2nd({second_iou:.3f}) → {self.default_label}")
             return ClassifyResult(label=self.default_label, confidence=float(best_iou))
-
+        print(f"[set RoiIou] Ambiguous: best={best_label}({best_iou:.3f}) vs 2nd({second_iou:.3f}) → {self.default_label}")
+        print("bestiou-secondiou = :", best_iou - second_iou)
         if best_iou < best_threshold:
             print(f"[RoiIou] IoU={best_iou:.3f}<{best_threshold} -> {self.default_label}")
             return ClassifyResult(label=self.default_label, confidence=float(best_iou))
