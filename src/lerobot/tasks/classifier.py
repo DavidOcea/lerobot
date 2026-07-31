@@ -228,18 +228,34 @@ class RoiIouClassifier(YOLOClassifier):
     def __init__(self, model_path: str, classes=None,
                  default_label="unknown", default_next_task="",
                  conf_threshold=0.15,
-                 roi_reference_path="", iou_threshold=0.3):
+                 roi_reference_path="", iou_threshold=0.3,
+                 boundary_check_mode="contain",
+                 boundary_iou_threshold=0.6):
+        """
+        Args:
+            boundary_check_mode: "contain" (default) or "iou".
+                - "contain": reject if any pixel of bbox is outside boundary.
+                - "iou": reject if bbox-boundary IoU < boundary_iou_threshold.
+                - None/"" (from YAML empty string): treated as "contain".
+            boundary_iou_threshold: IoU threshold for "iou" mode.
+        """
         super().__init__(model_path=model_path, classes=classes,
                          default_label=default_label,
                          default_next_task=default_next_task,
                          conf_threshold=conf_threshold)
         self.roi_reference_path = roi_reference_path
         self.iou_threshold = iou_threshold
+        # YAML empty string or "contain" → literal contain mode
+        if boundary_check_mode in (None, "", "contain"):
+            self.boundary_check_mode = "contain"
+        else:
+            self.boundary_check_mode = boundary_check_mode
+        self.boundary_iou_threshold = boundary_iou_threshold
         self._roi_regions = {}
         self._roi_boxes: list[tuple[str, tuple, float]] = []
         self._roi_loaded = False
-        self._boundary_box = None          # {"x","y","w","h"} — workspace outer boundary
-        self._out_of_bounds_label = "unknown"  # label returned when bbox exceeds boundary
+        self._boundary_box = None
+        self._out_of_bounds_label = "unknown"
 
     def _load_rois(self):
         if self._roi_loaded:
@@ -338,12 +354,23 @@ class RoiIouClassifier(YOLOClassifier):
             boxes_xywh[best][1] + boxes_xywh[best][3],
         )
 
-        # ── Boundary check: reject if any part of bbox is outside workspace ─
+        # ── Boundary check ──────────────────────────────────────────────
+        # Two modes available (configured in classify_config):
+        #   "contain" (default): reject if ANY pixel of bbox is outside
+        #     boundary — used for pre-pickup safety checks.
+        #   "iou": reject if bbox-boundary IoU < boundary_iou_threshold —
+        #     used for post-pickup checks where the workpiece appears
+        #     larger near the camera.
         if self._boundary_box is not None:
-            bx, by, bw, bh = det_px
-            if not self._bbox_contained(det_px, self._boundary_box):
-                print(f"[RoiIou] bbox partially outside boundary → {self.default_label}")
-                return ClassifyResult(label=self.default_label, confidence=0.0)
+            if self.boundary_check_mode == "iou":
+                iou = self._bbox_iou(det_px, self._boundary_box)
+                if iou < self.boundary_iou_threshold:
+                    print(f"[RoiIou] bbox-boundary IoU={iou:.3f} < {self.boundary_iou_threshold} → {self.default_label}")
+                    return ClassifyResult(label=self.default_label, confidence=0.0)
+            else:  # default: "contain"
+                if not self._bbox_contained(det_px, self._boundary_box):
+                    print(f"[RoiIou] bbox partially outside boundary → {self.default_label}")
+                    return ClassifyResult(label=self.default_label, confidence=0.0)
 
         best_label = self.default_label
         best_iou = 0.0
@@ -360,7 +387,7 @@ class RoiIouClassifier(YOLOClassifier):
                 second_iou = iou
 
         # Ambiguity check: top two IOU values too close → reject
-        if best_iou - second_iou < 0.10 and second_iou > 0:
+        if best_iou - second_iou < 0.03 and second_iou > 0:
             print(f"[RoiIou] Ambiguous: best={best_label}({best_iou:.3f}) vs 2nd({second_iou:.3f}) → {self.default_label}")
             return ClassifyResult(label=self.default_label, confidence=float(best_iou))
 
@@ -412,5 +439,7 @@ def make_classifier(method: str, **kwargs) -> BaseClassifier:
             conf_threshold=kwargs.get("conf_threshold", 0.15),
             roi_reference_path=kwargs.get("roi_reference_path", ""),
             iou_threshold=kwargs.get("iou_threshold", 0.3),
+            boundary_check_mode=kwargs.get("boundary_check_mode", "contain") or "contain",
+            boundary_iou_threshold=kwargs.get("boundary_iou_threshold", 0.6),
         )
     raise ValueError(f"Unknown classify method: {method}")

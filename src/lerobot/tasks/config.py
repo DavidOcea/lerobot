@@ -258,6 +258,10 @@ class ClassifyConfig:
     # --- YOLO + ROI-IoU method ("yolo_roi") ---
     roi_reference_path: str = ""  # JSON file with ROI region definitions
     iou_threshold: float = 0.3    # minimum IOU for a valid match
+    # Boundary check mode: "contain" (default, strict) or "iou" (loose, for
+    # post-pickup checks where the workpiece appears larger near the camera).
+    boundary_check_mode: str = "contain"   # "contain" or "iou"
+    boundary_iou_threshold: float = 0.6    # only used when boundary_check_mode="iou"
 
     # --- Label counter (for alternating placements) ---
     label_counter_enable: bool = False  # enable label counting (e.g. long→long_1, long_2)
