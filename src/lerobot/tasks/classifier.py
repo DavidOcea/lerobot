@@ -309,7 +309,11 @@ class RoiIouClassifier(YOLOClassifier):
     def classify(self, image):
         yolo_result = super().classify(image)
         if yolo_result.label in ("no_detection", "unknown", self.default_label):
-            return yolo_result
+            # Allow unknown/default_label to pass through for boundary-only checks
+            if self.boundary_check_mode == "iou" and yolo_result.label == self.default_label:
+                pass  # will check boundary below, then return default_label
+            else:
+                return yolo_result
 
         self._load_rois()
         if not self._roi_boxes:
@@ -394,8 +398,7 @@ class RoiIouClassifier(YOLOClassifier):
         if best_iou - second_iou < 0.03 and second_iou > 0:
             print(f"[RoiIou] Ambiguous: best={best_label}({best_iou:.3f}) vs 2nd({second_iou:.3f}) → {self.default_label}")
             return ClassifyResult(label=self.default_label, confidence=float(best_iou))
-        print(f"[set RoiIou] Ambiguous: best={best_label}({best_iou:.3f}) vs 2nd({second_iou:.3f}) → {self.default_label}")
-        print("bestiou-secondiou = :", best_iou - second_iou)
+        print(f"[RoiIou] Ambiguous: best={best_label}({best_iou:.3f}) vs 2nd({second_iou:.3f}) → {self.default_label}")
         if best_iou < best_threshold:
             print(f"[RoiIou] IoU={best_iou:.3f}<{best_threshold} -> {self.default_label}")
             return ClassifyResult(label=self.default_label, confidence=float(best_iou))
