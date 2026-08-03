@@ -1854,6 +1854,8 @@ class TaskAgentOrchestrator:
             # ROI-IoU (used by "yolo_roi" method, ignored by others)
             "roi_reference_path": cc.roi_reference_path,
             "iou_threshold": cc.iou_threshold,
+            "boundary_check_mode": cc.boundary_check_mode or "contain",
+            "boundary_iou_threshold": cc.boundary_iou_threshold,
         }
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
