@@ -1825,7 +1825,10 @@ class TaskAgentOrchestrator:
         bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
 
         # Helper: speak TTS safely
-        _ALLOWED_SPEAK = os.path.realpath("/home/t/workspace/dc_dir/tts_cache/speak.py")
+        _ALLOWED_SPEAK_PATHS = {
+            os.path.realpath("/home/t/workspace/dc_dir/tts_cache/speak.py"),
+            os.path.realpath("/home/t/workspace/gitprj/lerobot/../dc_dir/tts_cache/speak.py"),
+        }
         def _speak_tts(cmd: str):
             try:
                 parts = cmd.split()
@@ -1836,7 +1839,8 @@ class TaskAgentOrchestrator:
                         logger.info(f"TTS: {cmd[:80]}")
                         _sp.run(parts, shell=False, timeout=10)
                 elif len(parts) == 2 and parts[0] in ("python", "python3"):
-                    if os.path.realpath(parts[1]) == _ALLOWED_SPEAK:
+                    real = os.path.realpath(parts[1])
+                    if real in _ALLOWED_SPEAK_PATHS:
                         logger.info(f"TTS: {cmd[:80]}")
                         _sp.run(parts, shell=False, timeout=10)
             except Exception:
