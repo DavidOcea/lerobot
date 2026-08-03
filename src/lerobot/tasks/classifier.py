@@ -372,6 +372,10 @@ class RoiIouClassifier(YOLOClassifier):
                     print(f"[RoiIou] bbox partially outside boundary → {self.default_label}")
                     return ClassifyResult(label=self.default_label, confidence=0.0)
 
+        # ── IOI mode: boundary check ONLY, skip ROI position matching ─────
+        if self.boundary_check_mode == "iou":
+            return yolo_result  # just yes/no inside workspace
+
         best_label = self.default_label
         best_iou = 0.0
         second_iou = 0.0
