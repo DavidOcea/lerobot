@@ -309,7 +309,11 @@ class RoiIouClassifier(YOLOClassifier):
     def classify(self, image):
         yolo_result = super().classify(image)
         if yolo_result.label in ("no_detection", "unknown", self.default_label):
-            return yolo_result
+            # Allow unknown/default_label to pass through for boundary-only checks
+            if self.boundary_check_mode == "iou" and yolo_result.label == self.default_label:
+                pass  # will check boundary below, then return default_label
+            else:
+                return yolo_result
 
         self._load_rois()
         if not self._roi_boxes:
@@ -364,6 +368,7 @@ class RoiIouClassifier(YOLOClassifier):
         if self._boundary_box is not None:
             if self.boundary_check_mode == "iou":
                 iou = self._bbox_iou(det_px, self._boundary_box)
+                print(f"[RoiIou] bbox-boundary IoU={iou:.3f}")
                 if iou < self.boundary_iou_threshold:
                     print(f"[RoiIou] bbox-boundary IoU={iou:.3f} < {self.boundary_iou_threshold} → {self.default_label}")
                     return ClassifyResult(label=self.default_label, confidence=0.0)
@@ -371,6 +376,10 @@ class RoiIouClassifier(YOLOClassifier):
                 if not self._bbox_contained(det_px, self._boundary_box):
                     print(f"[RoiIou] bbox partially outside boundary → {self.default_label}")
                     return ClassifyResult(label=self.default_label, confidence=0.0)
+
+        # ── IOI mode: boundary check ONLY, skip ROI position matching ─────
+        if self.boundary_check_mode == "iou":
+            return yolo_result  # just yes/no inside workspace
 
         best_label = self.default_label
         best_iou = 0.0
