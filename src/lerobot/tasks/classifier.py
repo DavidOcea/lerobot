@@ -230,14 +230,13 @@ class RoiIouClassifier(YOLOClassifier):
                  conf_threshold=0.15,
                  roi_reference_path="", iou_threshold=0.3,
                  boundary_check_mode="contain",
-                 boundary_iou_threshold=0.6):
+                 boundary_iou_threshold=0.6,
+                 target_class=""):
         """
         Args:
-            boundary_check_mode: "contain" (default) or "iou".
-                - "contain": reject if any pixel of bbox is outside boundary.
-                - "iou": reject if bbox-boundary IoU < boundary_iou_threshold.
-                - None/"" (from YAML empty string): treated as "contain".
-            boundary_iou_threshold: IoU threshold for "iou" mode.
+            target_class: Only this YOLO label gets ROI-IoU matching.
+                          All other labels pass through directly.
+                          "" (default) means no ROI matching for any label.
         """
         super().__init__(model_path=model_path, classes=classes,
                          default_label=default_label,
@@ -245,6 +244,7 @@ class RoiIouClassifier(YOLOClassifier):
                          conf_threshold=conf_threshold)
         self.roi_reference_path = roi_reference_path
         self.iou_threshold = iou_threshold
+        self.target_class = target_class
         # YAML empty string or "contain" → literal contain mode
         if boundary_check_mode in (None, "", "contain"):
             self.boundary_check_mode = "contain"
@@ -316,9 +316,11 @@ class RoiIouClassifier(YOLOClassifier):
                 return yolo_result
 
         # ── Non-target type: return raw label for label_tts_commands matching ─
-        # Only "long" gets ROI position matching.  short/box/non-target labels
-        # pass through directly so the orchestrator can route to label_tts_commands.
-        if yolo_result.label != "long" and self.boundary_check_mode != "iou":
+        # Only target_class gets ROI position matching.  Other labels pass
+        # through directly so the orchestrator can route to label_tts_commands.
+        if (self.target_class
+                and yolo_result.label != self.target_class
+                and self.boundary_check_mode != "iou"):
             return yolo_result
 
         self._load_rois()
@@ -455,5 +457,6 @@ def make_classifier(method: str, **kwargs) -> BaseClassifier:
             iou_threshold=kwargs.get("iou_threshold", 0.3),
             boundary_check_mode=kwargs.get("boundary_check_mode", "contain") or "contain",
             boundary_iou_threshold=kwargs.get("boundary_iou_threshold", 0.6),
+            target_class=kwargs.get("target_class", ""),
         )
     raise ValueError(f"Unknown classify method: {method}")
