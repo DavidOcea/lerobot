@@ -1885,7 +1885,7 @@ class TaskAgentOrchestrator:
                     # On FIRST failure, fire label-specific TTS if configured
                     if retry_attempts == 0 and result.label in label_tts:
                         _speak_tts(label_tts[result.label])
-                        time.sleep(2.0)  # gap between label TTS and retry TTS
+                        time.sleep(4.0)  # gap between label TTS and retry TTS
                     logger.warning(
                         f"Classify retry {retry_attempts + 1}/{max_retries}: "
                         f"label={result.label}, waiting {cc.retry_wait_seconds}s ..."
