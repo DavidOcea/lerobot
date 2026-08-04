@@ -1825,7 +1825,10 @@ class TaskAgentOrchestrator:
         bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
 
         # Helper: speak TTS safely
-        _ALLOWED_SPEAK = os.path.realpath("/home/t/workspace/dc_dir/tts_cache/speak.py")
+        _ALLOWED_SPEAK_PATHS = {
+            os.path.realpath("/home/t/workspace/dc_dir/tts_cache/speak.py"),
+            os.path.realpath("/home/t/workspace/gitprj/lerobot/../dc_dir/tts_cache/speak.py"),
+        }
         def _speak_tts(cmd: str):
             try:
                 parts = cmd.split()
@@ -1833,9 +1836,12 @@ class TaskAgentOrchestrator:
                     return
                 if parts[0] in ("espeak-ng", "espeak", "aplay", "speaker-test"):
                     if len(parts) == 2 and not parts[1].startswith("-"):
+                        logger.info(f"TTS: {cmd[:80]}")
                         _sp.run(parts, shell=False, timeout=10)
-                elif len(parts) == 2 and parts[0] in ("python", "python3"):
-                    if os.path.realpath(parts[1]) == _ALLOWED_SPEAK:
+                elif len(parts) >= 2 and parts[0] in ("python", "python3"):
+                    real = os.path.realpath(parts[1])
+                    if real in _ALLOWED_SPEAK_PATHS:
+                        logger.info(f"TTS: {cmd[:80]}")
                         _sp.run(parts, shell=False, timeout=10)
             except Exception:
                 pass
@@ -1856,6 +1862,7 @@ class TaskAgentOrchestrator:
             "iou_threshold": cc.iou_threshold,
             "boundary_check_mode": cc.boundary_check_mode or "contain",
             "boundary_iou_threshold": cc.boundary_iou_threshold,
+            "target_class": cc.target_class or "",
         }
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
@@ -1878,6 +1885,7 @@ class TaskAgentOrchestrator:
                     # On FIRST failure, fire label-specific TTS if configured
                     if retry_attempts == 0 and result.label in label_tts:
                         _speak_tts(label_tts[result.label])
+                        time.sleep(4.0)  # gap between label TTS and retry TTS
                     logger.warning(
                         f"Classify retry {retry_attempts + 1}/{max_retries}: "
                         f"label={result.label}, waiting {cc.retry_wait_seconds}s ..."

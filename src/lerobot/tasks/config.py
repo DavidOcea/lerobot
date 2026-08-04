@@ -258,6 +258,7 @@ class ClassifyConfig:
     # --- YOLO + ROI-IoU method ("yolo_roi") ---
     roi_reference_path: str = ""  # JSON file with ROI region definitions
     iou_threshold: float = 0.3    # minimum IOU for a valid match
+    target_class: str = ""         # Only this YOLO label gets ROI-IoU matching ("" = none, all pass through)
     # Boundary check mode: "contain" (default, strict) or "iou" (loose, for
     # post-pickup checks where the workpiece appears larger near the camera).
     boundary_check_mode: str = "contain"   # "contain" or "iou"
