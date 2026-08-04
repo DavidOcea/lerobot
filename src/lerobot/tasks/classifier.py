@@ -315,6 +315,12 @@ class RoiIouClassifier(YOLOClassifier):
             else:
                 return yolo_result
 
+        # ── Non-target type: return raw label for label_tts_commands matching ─
+        # Only "long" gets ROI position matching.  short/box/non-target labels
+        # pass through directly so the orchestrator can route to label_tts_commands.
+        if yolo_result.label != "long" and self.boundary_check_mode != "iou":
+            return yolo_result
+
         self._load_rois()
         if not self._roi_boxes:
             return yolo_result
