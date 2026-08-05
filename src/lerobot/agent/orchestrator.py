@@ -1846,6 +1846,8 @@ class TaskAgentOrchestrator:
             except Exception:
                 pass
 
+        import cv2
+
         # ── Auto-align helper ───────────────────────────────────────────
         _agv = getattr(self, 'agv_controller', None)
         def _run_auto_align(classifier, cc, bgr_img, speak_fn):
