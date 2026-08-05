@@ -1822,6 +1822,7 @@ class TaskAgentOrchestrator:
         import numpy as np
         import subprocess as _sp
         import os
+        import math
         bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
 
         # Helper: speak TTS safely
@@ -1903,9 +1904,6 @@ class TaskAgentOrchestrator:
                 best_label, second_label, best_iou, second_iou = \
                     classifier.get_best_two_rois(det_px)
 
-                if second_iou == 0 or best_iou - second_iou > 0.05:
-                    return  # already clear, no need to adjust
-
                 best_center = classifier.get_roi_center(best_label)
                 if best_center is None:
                     return
@@ -1915,43 +1913,56 @@ class TaskAgentOrchestrator:
                 dx_px = det_cx - best_center[0]
                 dy_px = det_cy - best_center[1]
 
+                # Converged?  bbox center within ~15px of best ROI center
+                if abs(dx_px) <= 15 and abs(dy_px) <= 15:
+                    logger.info(
+                        f"Auto-align [{attempt+1}/{cc.auto_align_max_attempts}]: "
+                        f"converged dx={dx_px:.0f}px dy={dy_px:.0f}px"
+                    )
+                    return
+
                 # ── Micro adjust AGV toward best ROI ──────────────────
-                # The detection bbox is on the workpiece (fixed). When we
-                # move the AGV, the camera (=ROIs) moves with it. To bring
-                # the bbox closer to the best ROI's center, we translate
-                # the AGV toward the bbox:
-                #   dx_px > 0 (bbox right of ROI) → vy = -step (right)
-                #   dy_px > 0 (bbox below ROI)    → vx =  step (forward)
+                # Differential-drive AGV cannot crab sideways (no vy).
+                #   dx_px > 0 (bbox to the right of ROI) → turn CCW to face it
+                #   dy_px > 0 (bbox below ROI)          → translate forward
                 step_m = cc.auto_align_step_m
-                vx_used, vy_used = 0.0, 0.0
+                step_rad = math.radians(cc.auto_align_step_deg)
+                moved = False
 
                 if abs(dx_px) > 15:
-                    vy_used = -step_m if dx_px > 0 else step_m
-                if abs(dy_px) > 15:
-                    vx_used = step_m if dy_px > 0 else -step_m
-
-                if vx_used == 0.0 and vy_used == 0.0:
-                    return  # deviation too small to correct
-
-                if cc.auto_align_voice_command:
-                    speak_fn(cc.auto_align_voice_command)
-
-                if _agv is None:
-                    return
-                logger.info(
-                    f"Auto-align: bbox→best={best_label} "
-                    f"dx={dx_px:.0f}px dy={dy_px:.0f}px → "
-                    f"AGV vx={vx_used:.3f} vy={vy_used:.3f}"
-                )
-                try:
-                    _agv.translate(
-                        dist=step_m,
-                        vx=vx_used,
-                        vy=vy_used,
-                        mode=0,
+                    # Lateral misalignment → yaw correct
+                    angle = step_rad if dx_px > 0 else -step_rad
+                    logger.info(
+                        f"Auto-align [{attempt+1}/{cc.auto_align_max_attempts}]: "
+                        f"best={best_label} dx={dx_px:.0f}px → turn angle={angle:.4f}rad"
                     )
-                except Exception:
-                    pass
+                    if cc.auto_align_voice_command:
+                        speak_fn(cc.auto_align_voice_command)
+                    try:
+                        _agv.turn(angle=abs(angle), vw=angle/abs(angle)*0.26, mode=0)
+                        _agv.wait_for_turn_complete(timeout=5.0)
+                    except Exception:
+                        pass
+                    moved = True
+
+                if abs(dy_px) > 15:
+                    # Fore-aft misalignment → translate
+                    vx = step_m if dy_px > 0 else -step_m
+                    logger.info(
+                        f"Auto-align [{attempt+1}/{cc.auto_align_max_attempts}]: "
+                        f"best={best_label} dy={dy_px:.0f}px → translate vx={vx:.3f}"
+                    )
+                    if not moved and cc.auto_align_voice_command:
+                        speak_fn(cc.auto_align_voice_command)
+                    try:
+                        _agv.translate(dist=step_m, vx=vx, mode=0)
+                        _agv.wait_for_translate_complete(timeout=5.0)
+                    except Exception:
+                        pass
+                    moved = True
+
+                if not moved:
+                    return  # deviation too small to correct
 
                 time.sleep(2.0)
                 obs = self.robot.get_observation()
