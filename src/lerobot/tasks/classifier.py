@@ -257,6 +257,30 @@ class RoiIouClassifier(YOLOClassifier):
         self._boundary_box = None
         self._out_of_bounds_label = "unknown"
 
+    def get_best_two_rois(self, det_bbox: tuple[int, int, int, int]
+                          ) -> tuple[str, str, float, float]:
+        """Return (best_label, second_label, best_iou, second_iou)
+        for a given detection bbox against all ROIs.
+        Used by the orchestrator's auto-align logic.
+        """
+        best_label, second_label = "", ""
+        best_iou, second_iou = 0.0, 0.0
+        for label, roi_box, _ in self._roi_boxes:
+            iou = self._bbox_iou(det_bbox, roi_box)
+            if iou > best_iou:
+                second_label, second_iou = best_label, best_iou
+                best_label, best_iou = label, iou
+            elif iou > second_iou:
+                second_label, second_iou = label, iou
+        return best_label, second_label, best_iou, second_iou
+
+    def get_roi_center(self, label: str) -> tuple[float, float] | None:
+        """Return (cx, cy) pixel center of a named ROI, or None."""
+        for l, box, _ in self._roi_boxes:
+            if l == label:
+                return (box[0] + box[2] / 2.0, box[1] + box[3] / 2.0)
+        return None
+
     def _load_rois(self):
         if self._roi_loaded:
             return
