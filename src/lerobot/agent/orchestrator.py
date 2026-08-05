@@ -1847,7 +1847,8 @@ class TaskAgentOrchestrator:
                 pass
 
         # ── Auto-align helper ───────────────────────────────────────────
-        def _run_auto_align(classifier, cc: "ClassifyConfig", bgr_img, speak_fn):
+        _agv = getattr(self, 'agv_controller', None)
+        def _run_auto_align(classifier, cc, bgr_img, speak_fn):
             """Micro-adjust AGV to align detection bbox with the nearest ROI.
 
             Called once before the retry loop.  When best/second IoU are
@@ -1912,19 +1913,43 @@ class TaskAgentOrchestrator:
                 dx_px = det_cx - best_center[0]
                 dy_px = det_cy - best_center[1]
 
+                # ── Micro adjust AGV toward best ROI ──────────────────
+                # The detection bbox is on the workpiece (fixed). When we
+                # move the AGV, the camera (=ROIs) moves with it. To bring
+                # the bbox closer to the best ROI's center, we translate
+                # the AGV toward the bbox:
+                #   dx_px > 0 (bbox right of ROI) → vy = -step (right)
+                #   dy_px > 0 (bbox below ROI)    → vx =  step (forward)
+                step_m = cc.auto_align_step_m
+                vx_used, vy_used = 0.0, 0.0
+
+                if abs(dx_px) > 15:
+                    vy_used = -step_m if dx_px > 0 else step_m
+                if abs(dy_px) > 15:
+                    vx_used = step_m if dy_px > 0 else -step_m
+
+                if vx_used == 0.0 and vy_used == 0.0:
+                    return  # deviation too small to correct
+
                 if cc.auto_align_voice_command:
                     speak_fn(cc.auto_align_voice_command)
 
-                agv = getattr(self, 'agv_controller', None)
-                if agv is None:
+                if _agv is None:
                     return
-                step_m = cc.auto_align_step_m
-                if abs(dx_px) > 15:
-                    agv.translate(vy=step_m if dx_px > 0 else -step_m, timeout=5.0, mode=0)
-                elif abs(dy_px) > 15:
-                    agv.translate(vx=step_m if dy_px > 0 else -step_m, timeout=5.0, mode=0)
-                else:
-                    return  # deviation too small to correct
+                logger.info(
+                    f"Auto-align: bbox→best={best_label} "
+                    f"dx={dx_px:.0f}px dy={dy_px:.0f}px → "
+                    f"AGV vx={vx_used:.3f} vy={vy_used:.3f}"
+                )
+                try:
+                    _agv.translate(
+                        dist=step_m,
+                        vx=vx_used,
+                        vy=vy_used,
+                        mode=0,
+                    )
+                except Exception:
+                    pass
 
                 time.sleep(2.0)
                 obs = self.robot.get_observation()
@@ -1978,7 +2003,7 @@ class TaskAgentOrchestrator:
                     # On FIRST failure, fire label-specific TTS if configured
                     if retry_attempts == 0 and result.label in label_tts:
                         _speak_tts(label_tts[result.label])
-                        time.sleep(4.0)  # gap between label TTS and retry TTS
+                        time.sleep(8.0)  # gap between label TTS and retry TTS
                     logger.warning(
                         f"Classify retry {retry_attempts + 1}/{max_retries}: "
                         f"label={result.label}, waiting {cc.retry_wait_seconds}s ..."
