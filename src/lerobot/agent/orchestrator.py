@@ -1822,6 +1822,7 @@ class TaskAgentOrchestrator:
         import numpy as np
         import subprocess as _sp
         import os
+        import math
         bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
 
         # Helper: speak TTS safely
@@ -1846,6 +1847,122 @@ class TaskAgentOrchestrator:
             except Exception:
                 pass
 
+        import cv2
+
+        # ── Auto-align helper ───────────────────────────────────────────
+        _agv = getattr(self, 'agv_controller', None)
+        def _run_auto_align(classifier, cc, bgr_img, speak_fn):
+            """Micro-adjust AGV to align detection bbox with the nearest ROI.
+
+            Called once before the retry loop.  When best/second IoU are
+            too close (ambiguous), this nudges the AGV laterally or
+            forward/backward by a small step toward the detection bbox.
+            If still ambiguous after max_attempts, falls back to normal
+            retry loop + label_tts_commands.
+            """
+            for _ in range(cc.auto_align_max_attempts):
+                det = classifier.classify(bgr_img)
+                if det.label not in (cc.retry_labels or []) and det.label != (cc.default_label or "unknown"):
+                    return  # already a valid long_XX match → done
+
+                if not hasattr(classifier, '_session') or classifier._session is None:
+                    return
+
+                # Manually get bbox + best-two ROIs
+                h0, w0 = bgr_img.shape[:2]
+                img = bgr_img[:, :, ::-1].copy()
+                img = cv2.resize(img, (640, 640)).transpose(2, 0, 1).astype(np.float32) / 255.0
+                img = np.expand_dims(img, axis=0)
+                try:
+                    outputs = classifier._session.run(None, {"images": img})
+                except Exception:
+                    return
+                preds = outputs[0][0]
+                nc = len(classifier.classes)
+                boxes, scores = [], []
+                for i in range(preds.shape[1]):
+                    cx, cy, bw, bh = preds[0:4, i]
+                    cc_conf = preds[4:4 + nc, i]
+                    mc = float(cc_conf.max())
+                    if mc < classifier.conf_threshold:
+                        continue
+                    x1 = (cx - bw / 2) / 640 * w0
+                    y1 = (cy - bh / 2) / 640 * h0
+                    x2 = x1 + bw / 640 * w0
+                    y2 = y1 + bh / 640 * h0
+                    boxes.append([x1, y1, x2 - x1, y2 - y1])
+                    scores.append(mc)
+                if not boxes:
+                    return
+                idxs = cv2.dnn.NMSBoxes(boxes, scores, classifier.conf_threshold, 0.45)
+                if len(idxs) == 0:
+                    return
+                best = max(idxs.flatten(), key=lambda i: scores[i])
+                x1, y1, w, h = boxes[best]
+                det_px = (int(x1), int(y1), int(w), int(h))
+
+                best_label, second_label, best_iou, second_iou = \
+                    classifier.get_best_two_rois(det_px)
+
+                if second_iou == 0 or best_iou - second_iou > 0.05:
+                    return  # already clear, no need to adjust
+
+                best_center = classifier.get_roi_center(best_label)
+                if best_center is None:
+                    return
+
+                det_cx = det_px[0] + det_px[2] / 2.0
+                det_cy = det_px[1] + det_px[3] / 2.0
+                dx_px = det_cx - best_center[0]
+                dy_px = det_cy - best_center[1]
+
+                # ── Micro adjust AGV toward best ROI ──────────────────
+                # Differential-drive AGV cannot crab sideways (no vy).
+                #   dx_px > 0 (bbox to the right of ROI) → turn CCW to face it
+                #   dy_px > 0 (bbox below ROI)          → translate forward
+                step_m = cc.auto_align_step_m
+                step_rad = math.radians(cc.auto_align_step_deg)
+                moved = False
+
+                if abs(dx_px) > 15:
+                    # Lateral misalignment → yaw correct
+                    angle = step_rad if dx_px > 0 else -step_rad
+                    logger.info(
+                        f"Auto-align: dx={dx_px:.0f}px → turn angle={angle:.4f}rad"
+                    )
+                    if cc.auto_align_voice_command:
+                        speak_fn(cc.auto_align_voice_command)
+                    try:
+                        _agv.turn(angle=abs(angle), vw=angle/abs(angle)*0.26, mode=0)
+                        _agv.wait_for_turn_complete(timeout=5.0)
+                    except Exception:
+                        pass
+                    moved = True
+
+                if abs(dy_px) > 15:
+                    # Fore-aft misalignment → translate
+                    vx = step_m if dy_px > 0 else -step_m
+                    logger.info(
+                        f"Auto-align: dy={dy_px:.0f}px → translate vx={vx:.3f}"
+                    )
+                    if not moved and cc.auto_align_voice_command:
+                        speak_fn(cc.auto_align_voice_command)
+                    try:
+                        _agv.translate(dist=step_m, vx=vx, mode=0)
+                        _agv.wait_for_translate_complete(timeout=5.0)
+                    except Exception:
+                        pass
+                    moved = True
+
+                if not moved:
+                    return  # deviation too small to correct
+
+                time.sleep(2.0)
+                obs = self.robot.get_observation()
+                img = obs.get("images", {}).get("head_cam")
+                if img is not None:
+                    bgr_img = img if img.dtype == np.uint8 else img.astype(np.uint8)
+
         # Build classifier
         classifier_kwargs = {
             "marker_id_map": cc.marker_id_map,
@@ -1867,6 +1984,13 @@ class TaskAgentOrchestrator:
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
 
+            # ── Auto-align: AGV micro-adjustment on ambiguous IoU ────────
+            if (cc.auto_align_enabled
+                    and hasattr(self, 'agv_controller')
+                    and self.agv_controller is not None
+                    and hasattr(classifier, 'get_best_two_rois')):
+                _run_auto_align(classifier, cc, bgr, _speak_tts)
+
             # Build set of labels that trigger a retry
             retry_labels_set = set(cc.retry_labels or [])
             if cc.retry_on_no_detect:
@@ -1885,7 +2009,7 @@ class TaskAgentOrchestrator:
                     # On FIRST failure, fire label-specific TTS if configured
                     if retry_attempts == 0 and result.label in label_tts:
                         _speak_tts(label_tts[result.label])
-                        time.sleep(4.0)  # gap between label TTS and retry TTS
+                        time.sleep(8.0)  # gap between label TTS and retry TTS
                     logger.warning(
                         f"Classify retry {retry_attempts + 1}/{max_retries}: "
                         f"label={result.label}, waiting {cc.retry_wait_seconds}s ..."

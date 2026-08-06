@@ -264,6 +264,13 @@ class ClassifyConfig:
     boundary_check_mode: str = "contain"   # "contain" or "iou"
     boundary_iou_threshold: float = 0.6    # only used when boundary_check_mode="iou"
 
+    # --- Auto-align (AGV micro-adjustment on ambiguous IoU) ---
+    auto_align_enabled: bool = False       # enable AGV auto-alignment
+    auto_align_max_attempts: int = 3       # max micro-adjustments
+    auto_align_step_m: float = 0.02        # translate step in meters
+    auto_align_step_deg: float = 2.0       # rotate step in degrees
+    auto_align_voice_command: str = ""     # TTS fired before each alignment attempt
+
     # --- Label counter (for alternating placements) ---
     label_counter_enable: bool = False  # enable label counting (e.g. long→long_1, long_2)
     counter_keywords: list = field(default_factory=list)  # which labels to count
