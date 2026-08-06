@@ -1912,18 +1912,21 @@ class TaskAgentOrchestrator:
                 dy_px = det_cy - best_center[1]
 
                 # Converged?  bbox center within ~15px of best ROI center
-                if abs(dx_px) <= 15 and abs(dy_px) <= 15:
+                # and bbox IoU with best ROI is above threshold → trust it
+                best_threshold = None
+                for name, _, thr in classifier._roi_boxes:
+                    if name == best_label:
+                        best_threshold = thr
+                        break
+                if (abs(dx_px) <= 15 and abs(dy_px) <= 15
+                        and best_threshold is not None
+                        and best_iou >= best_threshold):
                     logger.info(
                         f"Auto-align [{attempt+1}/{cc.auto_align_max_attempts}]: "
-                        f"converged dx={dx_px:.0f}px dy={dy_px:.0f}px → re-classify"
+                        f"converged — trusting best_label={best_label} "
+                        f"(IoU={best_iou:.3f} >= thr={best_threshold:.3f})"
                     )
-                    obs = self.robot.get_observation()
-                    img = obs.get("images", {}).get("head_cam")
-                    if img is not None:
-                        bgr_img = img if img.dtype == np.uint8 else img.astype(np.uint8)
-                    # next iteration's classifier.classify(bgr_img) will
-                    # re-evaluate with the converged image
-                    continue
+                    return best_label
 
                 # ── Micro adjust AGV toward best ROI ──────────────────
                 step_m = cc.auto_align_step_m
