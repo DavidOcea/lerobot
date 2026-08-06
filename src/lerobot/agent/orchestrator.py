@@ -1933,6 +1933,17 @@ class TaskAgentOrchestrator:
                 step_rad = math.radians(cc.auto_align_step_deg)
                 moved = False
 
+                # Oscillation damping: when best ROI label flips,
+                # halve step to avoid overshooting
+                _prev = getattr(_run_auto_align, '_prev_label', '')
+                if _prev and _prev != best_label:
+                    step_m, step_rad = step_m / 2.0, step_rad / 2.0
+                    logger.info(
+                        f"Auto-align [{attempt+1}/{cc.auto_align_max_attempts}]: "
+                        f"oscillation {_prev}→{best_label} → damping"
+                    )
+                _run_auto_align._prev_label = best_label
+
                 if abs(dx_px) > 15:
                     angle = step_rad if dx_px > 0 else -step_rad
                     logger.info(
