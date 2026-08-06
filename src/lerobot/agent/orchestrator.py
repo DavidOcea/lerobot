@@ -1860,13 +1860,13 @@ class TaskAgentOrchestrator:
             If still ambiguous after max_attempts, falls back to normal
             retry loop + label_tts_commands.
             """
-            for _ in range(cc.auto_align_max_attempts):
+            for attempt in range(cc.auto_align_max_attempts):
                 det = classifier.classify(bgr_img)
                 if det.label not in (cc.retry_labels or []) and det.label != (cc.default_label or "unknown"):
-                    return  # already a valid long_XX match → done
+                    return bgr_img  # already a valid long_XX match → done
 
                 if not hasattr(classifier, '_session') or classifier._session is None:
-                    return
+                    return bgr_img
 
                 # Manually get bbox + best-two ROIs
                 h0, w0 = bgr_img.shape[:2]
@@ -1876,7 +1876,7 @@ class TaskAgentOrchestrator:
                 try:
                     outputs = classifier._session.run(None, {"images": img})
                 except Exception:
-                    return
+                    return bgr_img
                 preds = outputs[0][0]
                 nc = len(classifier.classes)
                 boxes, scores = [], []
@@ -1893,10 +1893,10 @@ class TaskAgentOrchestrator:
                     boxes.append([x1, y1, x2 - x1, y2 - y1])
                     scores.append(mc)
                 if not boxes:
-                    return
+                    return bgr_img
                 idxs = cv2.dnn.NMSBoxes(boxes, scores, classifier.conf_threshold, 0.45)
                 if len(idxs) == 0:
-                    return
+                    return bgr_img
                 best = max(idxs.flatten(), key=lambda i: scores[i])
                 x1, y1, w, h = boxes[best]
                 det_px = (int(x1), int(y1), int(w), int(h))
@@ -1906,7 +1906,7 @@ class TaskAgentOrchestrator:
 
                 best_center = classifier.get_roi_center(best_label)
                 if best_center is None:
-                    return
+                    return bgr_img
 
                 det_cx = det_px[0] + det_px[2] / 2.0
                 det_cy = det_px[1] + det_px[3] / 2.0
@@ -1919,7 +1919,7 @@ class TaskAgentOrchestrator:
                         f"Auto-align [{attempt+1}/{cc.auto_align_max_attempts}]: "
                         f"converged dx={dx_px:.0f}px dy={dy_px:.0f}px"
                     )
-                    return
+                    return bgr_img
 
                 # ── Micro adjust AGV toward best ROI ──────────────────
                 # Differential-drive AGV cannot crab sideways (no vy).
@@ -1962,13 +1962,15 @@ class TaskAgentOrchestrator:
                     moved = True
 
                 if not moved:
-                    return  # deviation too small to correct
+                    return bgr_img  # return current image even if no movement
 
                 time.sleep(2.0)
                 obs = self.robot.get_observation()
                 img = obs.get("images", {}).get("head_cam")
                 if img is not None:
                     bgr_img = img if img.dtype == np.uint8 else img.astype(np.uint8)
+
+            return bgr_img  # exhausted attempts, return last image
 
         # Build classifier
         classifier_kwargs = {
@@ -1996,7 +1998,9 @@ class TaskAgentOrchestrator:
                     and hasattr(self, 'agv_controller')
                     and self.agv_controller is not None
                     and hasattr(classifier, 'get_best_two_rois')):
-                _run_auto_align(classifier, cc, bgr, _speak_tts)
+                new_bgr = _run_auto_align(classifier, cc, bgr, _speak_tts)
+                if new_bgr is not None:
+                    bgr = new_bgr
 
             # Build set of labels that trigger a retry
             retry_labels_set = set(cc.retry_labels or [])
