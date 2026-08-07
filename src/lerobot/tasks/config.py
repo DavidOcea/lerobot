@@ -201,6 +201,9 @@ class VisualAlignConfig:
     angle_tolerance: float = 2.0  # 角度收敛阈值 (度)
     max_iterations: int = 3  # 闭环最大迭代次数
 
+    # ===== Warm-start overrides (None = use defaults) =====
+    warm_gain_sequence: list[float] | None = None  # override default [0.8, 0.6, 0.5, 0.4]
+
     # ===== AGV 微调速度 =====
     translate_speed: float = 0.15  # 前进/后退微调速度 (m/s)
     turn_speed: float = 15.0  # 转动微调速度 (度/s)

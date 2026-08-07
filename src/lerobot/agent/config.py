@@ -51,6 +51,19 @@ class AGVGlobalConfig:
 
 
 @dataclass
+class TaskMemoryConfig:
+    """Task execution memory configuration.
+
+    When enabled, stores per-task execution results (e.g., visual_align
+    convergence data) in a JSON file so later cycles can warm-start with
+    proven parameters.  Disabled by default — flip to True in YAML to opt in.
+    """
+
+    enabled: bool = False
+    store_path: str = ""  # "" = auto ~/.lerobot/task_memory.json
+
+
+@dataclass
 class OrchestratorConfig(TasksOrchestratorConfig):
     """Extended orchestrator configuration with additional agent-specific settings.
 
@@ -69,6 +82,9 @@ class OrchestratorConfig(TasksOrchestratorConfig):
 
     # AGV configuration (NEW)
     agv_config: AGVGlobalConfig = field(default_factory=AGVGlobalConfig)
+
+    # Task memory configuration (opt-in)
+    task_memory_config: TaskMemoryConfig = field(default_factory=TaskMemoryConfig)
 
     # New feature settings
     enable_interactive_mode: bool = False  # Enable interactive task selection before each task
