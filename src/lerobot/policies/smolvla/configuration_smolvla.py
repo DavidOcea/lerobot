@@ -29,7 +29,7 @@ class SmolVLAConfig(PreTrainedConfig):
     # 增加一个cfg用来控制是否用state
     use_state: bool = True
     # 使用state_dropout
-    state_dropout = 0.0
+    state_dropout: float = 0.0
     # 只对chunk的第一步使用相对角度，避免累积误差
     use_relative_action: bool = False
 
