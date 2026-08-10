@@ -766,6 +766,11 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     agv_config_dict = config_dict.get("agv_config", {})
     agv_global_config = AGVGlobalConfig(**agv_config_dict) if agv_config_dict else AGVGlobalConfig()
 
+    # Parse task_memory_config (opt-in — disabled by default, zero impact if absent)
+    from lerobot.tasks.task_memory import TaskMemoryConfig as TMC
+    tmc_dict = config_dict.get("task_memory_config", {})
+    task_memory_config = TMC(**tmc_dict) if isinstance(tmc_dict, dict) else TMC()
+
     # Create main config - use the extended orchestrator config if available
     try:
         # Try to import the extended config from agent module
@@ -796,6 +801,7 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             ),
             enable_monitoring_dashboard=config_dict.get("enable_monitoring_dashboard", False),
             monitoring_dashboard_port=config_dict.get("monitoring_dashboard_port", 8080),
+            task_memory_config=task_memory_config,
         )
     except ImportError:
         # Fall back to base config
