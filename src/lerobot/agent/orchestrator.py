@@ -800,6 +800,123 @@ class TaskAgentOrchestrator:
         except Exception as e:
             logger.warning("TaskMemory: failed to record '%s': %s", task.name, e)
 
+    # ── Global Memory failure recovery ─────────────────────────────────
+    # Idea 2: uses _stats.failure_modes from task_memory to recognise
+    # recurring failure signatures and insert a targeted recovery action
+    # BEFORE the next blind retry.
+
+    # Matches: error → (min_count, recovery_action_dict)
+    # min_count: trigger only after this many occurrences of this failure mode
+    # action: passed to _execute_recovery_action()
+    _FAILURE_RECOVERY_RULES: dict[str, tuple[int, dict[str, Any]]] = {
+        # Tag lost repeatedly → don't waste time on retries
+        "Tag lost": (3, {
+            "action": "skip_retries",
+            "reason": "tag_lost_persistent",
+        }),
+        # Classification failed after retries → skip, not recoverable
+        "Classification failed after retries": (3, {
+            "action": "skip_retries",
+            "reason": "classify_exhausted",
+        }),
+        # No workpiece detected after retries → skip
+        "No workpiece detected after": (3, {
+            "action": "skip_retries",
+            "reason": "no_detect_exhausted",
+        }),
+        # AGV navigation timeout → can't navigate, skip
+        "AGV navigation timeout": (3, {
+            "action": "skip_retries",
+            "reason": "navigation_stuck",
+        }),
+    }
+
+    def _classify_failure_mode(self, error_message: str | None) -> str:
+        """Extract a coarse failure signature from *error_message*.
+
+        Uses the same ``split(":")[0]`` heuristic as
+        ``TaskMemoryStore._merge()`` so the mode keys match.
+        """
+        if not error_message:
+            return ""
+        return error_message.split(":")[0].strip()[:80]
+
+    def _recovery_for_failure(
+        self, task_name: str, error_message: str | None,
+    ) -> dict[str, Any] | None:
+        """Return a recovery action dict, or None if no recovery applies.
+
+        Looks up the coarse failure mode in the task's ``_stats.failure_modes``
+        and compares the count against ``_FAILURE_RECOVERY_RULES``.  Only
+        triggers when the mode has been seen enough times to justify a
+        recovery intervention.
+        """
+        if self.task_memory is None or not error_message:
+            return None
+        mode_key = self._classify_failure_mode(error_message)
+        if not mode_key:
+            return None
+
+        rule = self._FAILURE_RECOVERY_RULES.get(mode_key)
+        if rule is None:
+            # Find by prefix match in case error message varies slightly
+            for prefix, r in self._FAILURE_RECOVERY_RULES.items():
+                if mode_key.startswith(prefix):
+                    rule = r
+                    break
+        if rule is None:
+            return None
+
+        min_count, action = rule
+        stats = self.task_memory.stats(task_name)
+        failure_modes: dict[str, int] = stats.get("failure_modes") or {}
+        current_count = failure_modes.get(mode_key, 0)
+
+        if current_count >= min_count:
+            logger.warning(
+                "TaskMemory: failure mode '%s' seen %d times (threshold=%d) "
+                "— applying recovery: %s",
+                mode_key, current_count, min_count, action.get("action", "?"),
+            )
+            return action
+        return None
+
+    def _execute_recovery_action(
+        self, action: dict[str, Any], task: TaskConfig,
+    ) -> bool:
+        """Execute a recovery action and return True if the task should be
+        skipped (i.e. retries aborted).
+
+        Currently supported actions:
+        - ``skip_retries`` — immediately fail the task, don't waste cycles.
+        """
+        action_type = action.get("action", "")
+
+        if action_type == "skip_retries":
+            reason = action.get("reason", "unknown")
+            logger.info(
+                "TaskMemory: recovery skip_retries for '%s' (reason=%s)",
+                task.name, reason,
+            )
+            return True  # caller should stop retrying
+
+        logger.debug("TaskMemory: unknown recovery action '%s'", action_type)
+        return False
+
+    def _maybe_recovery_before_retry(
+        self, task: TaskConfig, error_message: str | None,
+    ) -> bool:
+        """Called before each retry.  Returns True if the task should be
+        skipped entirely (retries aborted).
+
+        This is the public hook for the retry loop in
+        ``_execute_single_task``.
+        """
+        action = self._recovery_for_failure(task.name, error_message)
+        if action is None:
+            return False
+        return self._execute_recovery_action(action, task)
+
     def _wait_for_input(
         self,
         terminal_prompt: str,
@@ -1689,6 +1806,30 @@ class TaskAgentOrchestrator:
             last_result = result
             if result.status in (TaskStatus.COMPLETED, TaskStatus.SKIPPED, TaskStatus.FATAL_FAILURE):
                 break  # no retry needed
+
+            # ── Global Memory recovery (Idea 2) ──────────────────────
+            # Before the next blind retry, check whether this error pattern
+            # has occurred enough times to justify a recovery intervention
+            # (e.g. skipping further retries for persistent tag-loss).
+            if attempt < max_retries:
+                should_skip = self._maybe_recovery_before_retry(
+                    task, result.error_message,
+                )
+                if should_skip:
+                    # Replace the result with a FATAL_FAILURE so the outer
+                    # next_tasks["failed"] routing still picks it up cleanly.
+                    result = TaskResult(
+                        task_name=task.name,
+                        status=TaskStatus.FATAL_FAILURE,
+                        duration=result.duration,
+                        error_message=(
+                            f"Recovery: skipped retries — "
+                            f"{result.error_message}"
+                        ),
+                    )
+                    last_result = result
+                    break
+
             # result.status == TaskStatus.FAILED → continue to next attempt
             logger.warning(
                 f"Task {task.name} attempt {attempt}/{max_retries} failed: "

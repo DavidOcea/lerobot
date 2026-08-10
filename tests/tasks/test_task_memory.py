@@ -698,3 +698,154 @@ def test_cumulative_empty_trace(enabled_cfg: TaskMemoryConfig) -> None:
     assert st["failure_count"] == 0
     assert st["failure_modes"] == {}
 
+
+# ── Idea 2: Global Memory failure recovery tests ─────────────────────────
+# These validate the failure-mode classification and recovery-action
+# dispatch logic for the orchestrator's _maybe_recovery_before_retry hook.
+
+
+def _make_fake_orch(store: TaskMemoryStore):
+    """Stub orchestrator-like object with just enough API for recovery tests."""
+    class Fake:
+        pass
+    o = Fake()
+    o.task_memory = store
+    return o
+
+
+def _classify_failure_mode(error_message: str | None) -> str:
+    """Replicate orchestrator._classify_failure_mode for unit testing.
+
+    Extracts the failure signature by splitting on the first colon.
+    """
+    if not error_message:
+        return ""
+    return error_message.split(":")[0].strip()[:80]
+
+
+def test_recovery_classify_failure_mode() -> None:
+    """Error messages are parsed to coarse signatures matching _stats keys."""
+    assert _classify_failure_mode(None) == ""
+    assert _classify_failure_mode("") == ""
+    assert _classify_failure_mode("Tag lost: no detection for 5 frames") == "Tag lost"
+    assert _classify_failure_mode("Classification failed after retries") == "Classification failed after retries"
+    assert _classify_failure_mode("No workpiece detected after max attempts") == "No workpiece detected after max attempts"
+
+
+def _recovery_for_failure(
+    store: TaskMemoryStore, task_name: str, error_message: str | None,
+    rules: dict | None = None,
+) -> dict | None:
+    """Replicate orchestrator._recovery_for_failure logic."""
+    if rules is None:
+        rules = {
+            "Tag lost": (3, {"action": "skip_retries", "reason": "tag_lost_persistent"}),
+            "Classification failed after retries": (3, {"action": "skip_retries", "reason": "classify_exhausted"}),
+        }
+    if store is None or not error_message:
+        return None
+    mode_key = _classify_failure_mode(error_message)
+    if not mode_key:
+        return None
+
+    rule = rules.get(mode_key)
+    if rule is None:
+        for prefix, r in rules.items():
+            if mode_key.startswith(prefix):
+                rule = r
+                break
+    if rule is None:
+        return None
+
+    min_count, action = rule
+    stats = store.stats(task_name)
+    failure_modes = stats.get("failure_modes") or {}
+    current_count = failure_modes.get(mode_key, 0)
+    if current_count >= min_count:
+        return action
+    return None
+
+
+def test_recovery_not_triggered_below_threshold(enabled_cfg: TaskMemoryConfig) -> None:
+    """Recovery does NOT fire when failure count < threshold (3)."""
+    store = TaskMemoryStore(enabled_cfg)
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "success": False,
+        "error": "Tag lost: no detection for 5 frames",
+    })
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "success": False,
+        "error": "Tag lost: no detection for 5 frames",
+    })
+    # Only 2 failures → below threshold of 3
+    result = _recovery_for_failure(store, "va_station", "Tag lost: no detection")
+    assert result is None
+
+
+def test_recovery_triggered_at_threshold(enabled_cfg: TaskMemoryConfig) -> None:
+    """Recovery fires when failure count reaches threshold (3)."""
+    store = TaskMemoryStore(enabled_cfg)
+    for _ in range(3):
+        store.record("va_station", {
+            "task_type": "visual_align",
+            "success": False,
+            "error": "Tag lost: no detection for 5 frames",
+        })
+
+    result = _recovery_for_failure(store, "va_station", "Tag lost: no detection")
+    assert result == {"action": "skip_retries", "reason": "tag_lost_persistent"}
+
+
+def test_recovery_different_error_keys_isolated(enabled_cfg: TaskMemoryConfig) -> None:
+    """Different failure modes have independent counts."""
+    store = TaskMemoryStore(enabled_cfg)
+    # 3 "Tag lost" failures
+    for _ in range(3):
+        store.record("va_station", {
+            "task_type": "visual_align",
+            "success": False,
+            "error": "Tag lost: no detection for 5 frames",
+        })
+    # Only 1 "Classification failed"
+    store.record("va_station", {
+        "task_type": "classify",
+        "success": False,
+        "error": "Classification failed after retries",
+    })
+
+    # Tag lost → triggered
+    assert _recovery_for_failure(store, "va_station", "Tag lost: ...") is not None
+    # Classification → below threshold
+    assert _recovery_for_failure(store, "va_station", "Classification failed after retries") is None
+
+
+def test_recovery_skip_retries_action(enabled_cfg: TaskMemoryConfig) -> None:
+    """Recovery action skip_retries is recognised."""
+    import dataclasses
+
+    @dataclasses.dataclass
+    class FakeTask:
+        name: str = "test_task"
+
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = None
+
+    fake_task = FakeTask()
+
+    # skip_retries action → True (should stop retries)
+    result = orch._execute_recovery_action(
+        {"action": "skip_retries", "reason": "tag_lost_persistent"},
+        fake_task,
+    )
+    assert result is True
+
+    # Unknown action → False
+    result = orch._execute_recovery_action(
+        {"action": "unknown_future_action"},
+        fake_task,
+    )
+    assert result is False
+
