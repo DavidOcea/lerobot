@@ -68,9 +68,13 @@ def test_store_file_persistence(enabled_cfg: TaskMemoryConfig) -> None:
     result = s2.lookup("align_station_B")
     assert result == trace
 
-    # Verify the file actually exists and contains valid JSON
+    # Verify the file actually exists and contains valid JSON with stats
     raw = json.loads(Path(enabled_cfg.store_path).read_text())
-    assert raw["align_station_B"] == trace
+    entry = raw["align_station_B"]
+    for k, v in trace.items():
+        assert entry.get(k) == v
+    assert "_stats" in entry
+    assert entry["_stats"]["total_count"] >= 1
 
 
 def test_store_corrupt_json(tmp_path: Path) -> None:
@@ -124,9 +128,10 @@ def test_store_flush_and_close(enabled_cfg: TaskMemoryConfig) -> None:
     store.flush()
     assert store.lookup("flush_test") == {"data": "present"}
 
-    # Verify on-disk
+    # Verify on-disk (contains stats + trace fields)
     raw = json.loads(Path(enabled_cfg.store_path).read_text())
-    assert raw["flush_test"] == {"data": "present"}
+    assert raw["flush_test"]["data"] == "present"
+    assert "_stats" in raw["flush_test"]
 
     # close() clears in-memory state
     store.close()
@@ -376,3 +381,320 @@ def test_warmstart_mixed_traces_isolation(enabled_cfg: TaskMemoryConfig) -> None
     assert cls_trace.get("task_type") != "visual_align"
     # VA trace should NOT trigger classify cache
     assert va_trace.get("task_type") != "classify"
+
+
+# ── Cumulative merge tests ───────────────────────────────────────────────
+# These validate the new _merge() accumulation logic while ensuring
+# lookup() stays backward-compatible with the warm-start tests above.
+
+
+def test_cumulative_success_count(enabled_cfg: TaskMemoryConfig) -> None:
+    """Record same task 3 times → success_count=3, total_count=3."""
+    store = TaskMemoryStore(enabled_cfg)
+    for _ in range(3):
+        store.record("va_station", {
+            "task_type": "visual_align",
+            "phase1": {"iterations": 2, "converged": True},
+            "search": {"attempts": 1},
+        })
+
+    st = store.stats("va_station")
+    assert st["total_count"] == 3
+    assert st["success_count"] == 3
+    assert st["failure_count"] == 0
+
+    # lookup() should still return latest trace without _stats
+    latest = store.lookup("va_station")
+    assert "task_type" in latest
+    assert "_stats" not in latest
+
+
+def test_cumulative_failure_modes(enabled_cfg: TaskMemoryConfig) -> None:
+    """Failures with different error messages cluster into failure_modes."""
+    store = TaskMemoryStore(enabled_cfg)
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "success": False,
+        "error": "Classification failed after retries",
+    })
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "success": False,
+        "error": "Classification failed after retries",
+    })
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "success": False,
+        "error": "Tag lost: no detection for 5 frames",
+    })
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "success": True,
+        "phase1": {"iterations": 2, "converged": True},
+    })
+
+    st = store.stats("va_station")
+    assert st["total_count"] == 4
+    assert st["success_count"] == 1
+    assert st["failure_count"] == 3
+    assert st["failure_modes"] == {
+        "Classification failed after retries": 2,
+        "Tag lost": 1,
+    }
+
+
+def test_cumulative_best_gain_schedule(enabled_cfg: TaskMemoryConfig) -> None:
+    """Track gain schedule from the run with fewest phase1 iterations."""
+    store = TaskMemoryStore(enabled_cfg)
+
+    # First run: 3 iterations
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {
+            "iterations": 3, "converged": True,
+            "gain_sequence": [0.8, 0.6, 0.5],
+        },
+        "search": {"attempts": 1},
+    })
+    assert store.stats("va_station")["best_gain_schedule"] == [0.8, 0.6, 0.5]
+
+    # Second run: 2 iterations (better — should replace)
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {
+            "iterations": 2, "converged": True,
+            "gain_sequence": [0.7, 0.5],
+        },
+        "search": {"attempts": 1},
+    })
+    assert store.stats("va_station")["best_gain_schedule"] == [0.7, 0.5]
+
+    # Third run: 4 iterations (worse — keep [0.7, 0.5])
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {
+            "iterations": 4, "converged": True,
+            "gain_sequence": [0.9, 0.8, 0.7, 0.6],
+        },
+        "search": {"attempts": 2},
+    })
+    assert store.stats("va_station")["best_gain_schedule"] == [0.7, 0.5]
+
+
+def test_cumulative_running_averages(enabled_cfg: TaskMemoryConfig) -> None:
+    """phase1_iters_avg uses 0.7/0.3 exponential decay."""
+    store = TaskMemoryStore(enabled_cfg)
+
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {
+            "iterations": 2, "converged": True,
+            "gain_sequence": [0.8, 0.6],
+        },
+        "search": {"attempts": 1},
+    })
+    assert store.stats("va_station")["phase1_iters_avg"] == 2.0
+
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {
+            "iterations": 4, "converged": True,
+            "gain_sequence": [0.8, 0.6, 0.5, 0.4],
+        },
+        "search": {"attempts": 2},
+    })
+    # EMA: 2.0*0.7 + 4*0.3 = 1.4 + 1.2 = 2.6
+    assert store.stats("va_station")["phase1_iters_avg"] == 2.6
+
+    # search_attempts_avg: 1.0*0.7 + 2*0.3 = 1.3
+    assert store.stats("va_station")["search_attempts_avg"] == 1.3
+
+
+def test_cumulative_oscillation_rate(enabled_cfg: TaskMemoryConfig) -> None:
+    """Oscillation rate tracks proportion of runs with oscillation."""
+    store = TaskMemoryStore(enabled_cfg)
+
+    # Run 1: no oscillation
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {
+            "iterations": 2, "converged": True,
+            "oscillation_detected": False,
+            "gain_sequence": [0.8, 0.6],
+        },
+        "search": {"attempts": 1},
+    })
+    assert store.stats("va_station")["oscillation_rate"] == 0.0
+
+    # Run 2: oscillation
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {
+            "iterations": 4, "converged": True,
+            "oscillation_detected": True,
+            "gain_sequence": [0.8, 0.6, 0.5, 0.4],
+        },
+        "search": {"attempts": 2},
+    })
+    assert store.stats("va_station")["oscillation_rate"] == 0.5
+
+    # Run 3: no oscillation
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {
+            "iterations": 2, "converged": True,
+            "oscillation_detected": False,
+            "gain_sequence": [0.8, 0.6],
+        },
+        "search": {"attempts": 1},
+    })
+    assert store.stats("va_station")["oscillation_rate"] == round(1 / 3, 3)
+
+
+def test_cumulative_label_counts(enabled_cfg: TaskMemoryConfig) -> None:
+    """Classify trace accumulates per-label counts."""
+    store = TaskMemoryStore(enabled_cfg)
+
+    store.record("classify_workpiece", {
+        "task_type": "classify",
+        "label": "long_00", "confidence": 0.93, "duration_s": 1.5,
+    })
+    store.record("classify_workpiece", {
+        "task_type": "classify",
+        "label": "long_00", "confidence": 0.95, "duration_s": 1.2,
+    })
+    store.record("classify_workpiece", {
+        "task_type": "classify",
+        "label": "long_01", "confidence": 0.88, "duration_s": 1.8,
+    })
+
+    lc = store.stats("classify_workpiece")["label_counts"]
+    assert lc == {"long_00": 2, "long_01": 1}
+
+
+def test_cumulative_confidence_avg(enabled_cfg: TaskMemoryConfig) -> None:
+    """Classify confidence_avg is running arithmetic mean."""
+    store = TaskMemoryStore(enabled_cfg)
+
+    store.record("classify_workpiece", {
+        "task_type": "classify",
+        "label": "long_00", "confidence": 0.90, "duration_s": 1.0,
+    })
+    assert store.stats("classify_workpiece")["confidence_avg"] == 0.90
+
+    store.record("classify_workpiece", {
+        "task_type": "classify",
+        "label": "long_00", "confidence": 0.80, "duration_s": 1.0,
+    })
+    assert store.stats("classify_workpiece")["confidence_avg"] == 0.85
+
+    store.record("classify_workpiece", {
+        "task_type": "classify",
+        "label": "long_01", "confidence": 1.0, "duration_s": 1.0,
+    })
+    assert store.stats("classify_workpiece")["confidence_avg"] == 0.90
+
+
+def test_cumulative_auto_align_oscillation(enabled_cfg: TaskMemoryConfig) -> None:
+    """Classify with auto_align tracks oscillation count."""
+    store = TaskMemoryStore(enabled_cfg)
+
+    store.record("classify_wp", {
+        "task_type": "classify",
+        "label": "long_00", "confidence": 0.90,
+        "auto_align": {"ran": True, "oscillation_detected": True},
+    })
+    store.record("classify_wp", {
+        "task_type": "classify",
+        "label": "long_01", "confidence": 0.92,
+        "auto_align": {"ran": True, "oscillation_detected": False},
+    })
+    store.record("classify_wp", {
+        "task_type": "classify",
+        "label": "long_00", "confidence": 0.95,
+        "auto_align": {"ran": True, "oscillation_detected": True},
+    })
+
+    assert store.stats("classify_wp")["auto_align_oscillation_count"] == 2
+
+
+def test_cumulative_backward_compat_lookup(enabled_cfg: TaskMemoryConfig) -> None:
+    """lookup() returns trace without _stats — existing warm-start code unchanged."""
+    store = TaskMemoryStore(enabled_cfg)
+
+    trace = {
+        "task_type": "visual_align",
+        "phase1": {
+            "converged": True, "iterations": 2,
+            "oscillation_detected": False, "gain_sequence": [0.8, 0.6],
+        },
+        "search": {"attempts": 1, "total_turned_deg": 0.0},
+    }
+    store.record("va_station", trace)
+    assert store.lookup("va_station") == trace
+    assert "_stats" not in store.lookup("va_station")
+
+    st = store.stats("va_station")
+    assert st["total_count"] == 1
+    assert st["success_count"] == 1
+
+
+def test_cumulative_non_dict_trace(enabled_cfg: TaskMemoryConfig) -> None:
+    """Non-dict traces stored as-is, no stats, no crash."""
+    store = TaskMemoryStore(enabled_cfg)
+
+    store.record("list_task", [1, 2, 3])
+    store.record("str_task", "hello")
+    store.record("int_task", 42)
+
+    assert store.lookup("list_task") == [1, 2, 3]
+    assert store.lookup("str_task") == "hello"
+    assert store.lookup("int_task") == 42
+    assert store.stats("list_task") == {}
+
+
+def test_cumulative_existing_stats_migration(enabled_cfg: TaskMemoryConfig) -> None:
+    """File with _stats from a previous session is migrated, not discarded."""
+    store = TaskMemoryStore(enabled_cfg)
+
+    # Simulate an old-format file with _stats already present
+    store._data["va_station"] = {
+        "task_type": "visual_align",
+        "phase1": {"iterations": 2, "converged": True},
+        "_stats": {
+            "total_count": 5,
+            "success_count": 4,
+            "failure_count": 1,
+            "phase1_iters_avg": 2.3,
+        },
+    }
+    store._save()
+
+    # Record a new trace — should migrate prev_stats
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {
+            "iterations": 1, "converged": True,
+            "gain_sequence": [0.7],
+        },
+        "search": {"attempts": 1},
+    })
+
+    st = store.stats("va_station")
+    assert st["total_count"] == 6  # 5 + 1
+    assert st["success_count"] == 5  # 4 + 1
+    assert st["failure_count"] == 1
+    assert st["best_gain_schedule"] == [0.7]
+
+
+def test_cumulative_empty_trace(enabled_cfg: TaskMemoryConfig) -> None:
+    """Empty dict trace creates minimal stats without crashing."""
+    store = TaskMemoryStore(enabled_cfg)
+    store.record("empty_task", {})
+
+    st = store.stats("empty_task")
+    assert st["total_count"] == 1
+    assert st["success_count"] == 1  # success=True is the default
+    assert st["failure_count"] == 0
+    assert st["failure_modes"] == {}
+
