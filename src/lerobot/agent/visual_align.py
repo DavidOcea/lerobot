@@ -408,6 +408,16 @@ def execute_visual_align(
     # ── Trace accumulator ───────────────────────────────────────────
     # Built incrementally during execution; returned as the 3rd element.
     # Phase 1 fields:
+    #   raw_dtheta_initial (float) — first-iteration raw dtheta before gain.
+    #     Captures the station's typical initial angular deviation.  Used
+    #     by Idea 3 (per-station operating-range learning) to decide
+    #     whether a station needs a custom gain schedule or a retreat
+    #     before alignment.
+    #   per_iteration_log (list[dict]) — per-iteration record of raw
+    #     angles/distances before and after gain, so later analysis can
+    #     tell which gain step was too aggressive or too conservative.
+    #     Fields: iteration, raw_dtheta, gain, applied_dtheta,
+    #             raw_forward, applied_forward, capped (bool).
     #   phase1_iterations, phase1_converged, convergence_reason,
     #   final_dtheta_deg, final_forward_m, gain_sequence,
     #   oscillation_detected, mode
@@ -420,6 +430,7 @@ def execute_visual_align(
     trace: dict[str, Any] = {}
     _gain_seq: list[float] = []
     _osc_detected = False
+    _iter_log: list[dict[str, Any]] = []   # per-iteration trace (Idea 3)
     detector = _get_detector(config.marker_family)
 
     # Step 0: Search for marker
@@ -545,6 +556,22 @@ def execute_visual_align(
         forward_dist = raw_forward * gain
         last_raw = raw_dtheta  # store RAW for next oscillation comparison
 
+        # ── Per-iteration trace (Idea 3) ─────────────────────────────
+        # Capture raw & applied values so later analysis can determine
+        # which gain step was too aggressive / too conservative for this
+        # specific station.
+        if iteration == 0:
+            trace["raw_dtheta_initial"] = round(raw_dtheta, 2)
+        _iter_log.append({
+            "iteration": iteration,
+            "raw_dtheta": round(raw_dtheta, 2),
+            "gain": round(gain, 3),
+            "applied_dtheta": round(dtheta_deg, 2),
+            "raw_forward": round(raw_forward, 4),
+            "applied_forward": round(forward_dist, 4),
+            "capped": False,  # set True below if FOV cap engages
+        })
+
         # ── Stuck check: corrections below AGV execution thresholds ──
         # Only accept if raw values are within a loose envelope —
         # otherwise a ~1.2cm residual × 0.4 gain ≈ 5mm would falsely
@@ -572,6 +599,7 @@ def execute_visual_align(
         # stays visible between iterations.
         max_turn = 15.0  # degrees
         max_fwd  = 0.30  # meters
+        did_cap = False
         if abs(dtheta_deg) > max_turn:
             # Scale forward proportionally (shorten turn → shorter path)
             ratio = max_turn / abs(dtheta_deg)
@@ -581,12 +609,16 @@ def execute_visual_align(
             )
             dtheta_deg = dtheta_deg * ratio
             forward_dist *= ratio
+            did_cap = True
         if abs(forward_dist) > max_fwd:
             logger.warning(
                 f"  capping forward {forward_dist:.3f}m → "
                 f"{math.copysign(max_fwd, forward_dist):.3f}m"
             )
             forward_dist = math.copysign(max_fwd, forward_dist)
+            did_cap = True
+        if did_cap and _iter_log:
+            _iter_log[-1]["capped"] = True
 
         # Step 1a: Turn AGV
         if abs(dtheta_deg) > 0.5:  # skip turns < 0.5° (below AGV precision)
@@ -637,6 +669,7 @@ def execute_visual_align(
     trace["gain_sequence"] = _gain_seq
     trace["oscillation_detected"] = _osc_detected
     trace["mode"] = "reference" if use_reference else "approach"
+    trace["per_iteration_log"] = _iter_log
     trace["search"] = {
         "attempts": search_attempts + 1 if marker else search_attempts,
         "total_turned_deg": search_total_turned,
