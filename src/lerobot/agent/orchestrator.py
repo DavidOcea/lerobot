@@ -782,6 +782,76 @@ class TaskAgentOrchestrator:
                     old_step_deg, cc.auto_align_step_deg,
                 )
 
+    def _apply_explore_deploy_mode(self, task: TaskConfig) -> dict[str, Any] | None:
+        """Apply explore/deploy two-mode parameter tuning (Idea 5).
+
+        Exploration mode (``success_count < 3``):
+        - Boost ``max_retries`` to 5 (or keep higher if already above).
+        - Double visual-align position/angle tolerances to gather more data.
+        - Increase visual-align max iterations to 5.
+
+        Deployment mode (``success_count >= 3``):
+        - Use tight/default parameters — warm-start already applied the
+          best gain schedule from prior runs.
+
+        Returns a dict of original values to restore after execution,
+        or ``None`` when the gate is disabled or the task type cannot be
+        tuned.
+        """
+        if self.task_memory is None:
+            return None
+
+        stats = self.task_memory.stats(task.name)
+        success_count: int = stats.get("success_count", 0)
+
+        explore = success_count < 3
+        log_prefix = (
+            "TaskMemory: explore mode" if explore
+            else "TaskMemory: deploy mode"
+        )
+        logger.info(
+            "%s '%s' (success_count=%d, threshold=3) ",
+            log_prefix, task.name, success_count,
+        )
+
+        # Track original values so we can restore them after execution.
+        # Each field gets None when we did NOT override it — the restore
+        # block skips None entries.
+        restore: dict[str, Any] = {
+            "va_position_tolerance": None,
+            "va_angle_tolerance": None,
+            "va_max_iterations": None,
+        }
+
+        # ── Exploration mode ─────────────────────────────────────────
+        if explore:
+            # Boost retries so the robot can try more approaches.
+            task.max_retries = max(task.max_retries, 5)
+            logger.info(
+                "  boost max_retries: %d", task.max_retries,
+            )
+
+            # Loosen visual-align convergence so borderline runs still
+            # succeed and contribute trace data to _stats.
+            va = task.visual_align_config
+            if va is not None:
+                restore["va_position_tolerance"] = va.position_tolerance
+                restore["va_angle_tolerance"] = va.angle_tolerance
+                restore["va_max_iterations"] = va.max_iterations
+
+                va.position_tolerance = va.position_tolerance * 2.0
+                va.angle_tolerance = va.angle_tolerance * 2.0
+                va.max_iterations = max(va.max_iterations, 5)
+                logger.info(
+                    "  loosen va tolerances: pos=%.3f→%.3f, "
+                    "angle=%.1f→%.1f, max_iter=%d→%d",
+                    restore["va_position_tolerance"], va.position_tolerance,
+                    restore["va_angle_tolerance"], va.angle_tolerance,
+                    restore["va_max_iterations"], va.max_iterations,
+                )
+
+        return restore
+
     def _memory_record(self, task: TaskConfig, result: TaskResult) -> None:
         """Extract trace data from *result* and store in task memory (post-exec hook).
 
@@ -1653,6 +1723,14 @@ class TaskAgentOrchestrator:
         if multiplier != 1.0:
             task.speed_multiplier = multiplier
 
+        # ── Explore / Deploy dual-mode (Idea 5) ─────────────────────────
+        # When a task has few (or zero) prior successes, boost retries and
+        # loosen convergence tolerances so the robot can safely gather data
+        # while still making progress.  After 3+ successes the accumulated
+        # per-task warm-start parameters are trusted — switch to tight
+        # "deploy" mode for speed.
+        _mode_state = self._apply_explore_deploy_mode(task)
+
         # ── Retry loop ──────────────────────────────────────────────
         # max_retries controls how many times a FAILED task is re-attempted.
         # COMPLETED, SKIPPED, and FATAL_FAILURE exit immediately.
@@ -1873,6 +1951,16 @@ class TaskAgentOrchestrator:
         task.max_duration = original_max_duration
         if hasattr(task, 'speed_multiplier'):
             delattr(task, 'speed_multiplier')
+
+        # Restore visual_align config overridden by explore/deploy mode
+        if _mode_state is not None:
+            va = task.visual_align_config
+            if va is not None and _mode_state["va_position_tolerance"] is not None:
+                va.position_tolerance = _mode_state["va_position_tolerance"]
+            if va is not None and _mode_state["va_angle_tolerance"] is not None:
+                va.angle_tolerance = _mode_state["va_angle_tolerance"]
+            if va is not None and _mode_state["va_max_iterations"] is not None:
+                va.max_iterations = _mode_state["va_max_iterations"]
 
         self._add_monitor_event(
             "info" if last_result.status == TaskStatus.COMPLETED else "warn", task.name,

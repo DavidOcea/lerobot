@@ -849,3 +849,231 @@ def test_recovery_skip_retries_action(enabled_cfg: TaskMemoryConfig) -> None:
     )
     assert result is False
 
+
+# ── Explore / Deploy dual-mode tests (Idea 5) ──────────────────────────────
+
+
+def _build_fake_task(
+    name: str = "test_task",
+    task_type: str = "visual_align",
+    max_retries: int = 1,
+    pos_tol: float = 0.02,
+    angle_tol: float = 2.0,
+    max_iter: int = 3,
+):
+    """Build a lightweight fake TaskConfig for explore/deploy tests."""
+    import dataclasses
+
+    @dataclasses.dataclass
+    class FakeVisualAlignConfig:
+        position_tolerance: float = 0.02
+        angle_tolerance: float = 2.0
+        max_iterations: int = 3
+        warm_gain_sequence: list | None = None
+
+    @dataclasses.dataclass
+    class FakeTaskConfig:
+        name: str = "test_task"
+        task_type: str = "visual_align"
+        max_retries: int = 1
+        visual_align_config: object | None = None
+
+    va = (
+        FakeVisualAlignConfig(
+            position_tolerance=pos_tol,
+            angle_tolerance=angle_tol,
+            max_iterations=max_iter,
+        )
+        if task_type == "visual_align"
+        else None
+    )
+    return FakeTaskConfig(
+        name=name,
+        task_type=task_type,
+        max_retries=max_retries,
+        visual_align_config=va,
+    )
+
+
+def test_explore_deploy_disabled_gate() -> None:
+    """When task_memory is None, _apply_explore_deploy_mode returns None."""
+    import dataclasses
+
+    @dataclasses.dataclass
+    class FakeTask:
+        name: str = "any_task"
+
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = None
+
+    task = FakeTask()
+    result = orch._apply_explore_deploy_mode(task)
+    assert result is None
+
+
+def test_explore_deploy_initial_state_no_stats(enabled_cfg: TaskMemoryConfig) -> None:
+    """When no prior record exists → success_count=0 → explore mode active."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+    store = TaskMemoryStore(enabled_cfg)
+    # No records at all — store is empty
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = store
+
+    task = _build_fake_task(name="new_station_A", task_type="visual_align")
+    original_max_retries = task.max_retries
+
+    restore = orch._apply_explore_deploy_mode(task)
+
+    # Explore: max_retries boosted
+    assert task.max_retries >= 5
+    assert task.visual_align_config.position_tolerance == 0.04  # doubled
+    assert task.visual_align_config.angle_tolerance == 4.0  # doubled
+    assert task.visual_align_config.max_iterations >= 5
+
+    # Restore dict holds originals
+    assert restore is not None
+    assert restore["va_position_tolerance"] == 0.02
+    assert restore["va_angle_tolerance"] == 2.0
+    assert restore["va_max_iterations"] == 3
+
+    # ── Simulate restore ───────────────────────────────────────
+    va = task.visual_align_config
+    va.position_tolerance = restore["va_position_tolerance"]
+    va.angle_tolerance = restore["va_angle_tolerance"]
+    va.max_iterations = restore["va_max_iterations"]
+    task.max_retries = original_max_retries
+
+    assert va.position_tolerance == 0.02
+    assert va.angle_tolerance == 2.0
+    assert va.max_iterations == 3
+
+
+def test_explore_deploy_after_three_successes(enabled_cfg: TaskMemoryConfig) -> None:
+    """After 3 successes → deploy mode → no parameter changes."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+    store = TaskMemoryStore(enabled_cfg)
+
+    # Accumulate 3 successful runs
+    for _ in range(3):
+        store.record("station_B", {
+            "task_type": "visual_align",
+            "success": True,
+            "phase1": {"converged": True, "iterations": 2, "gain_sequence": [0.7, 0.5]},
+            "duration_s": 18.0,
+        })
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = store
+
+    task = _build_fake_task(name="station_B", task_type="visual_align")
+    original_pos_tol = task.visual_align_config.position_tolerance
+    original_angle_tol = task.visual_align_config.angle_tolerance
+    original_max_iter = task.visual_align_config.max_iterations
+    original_max_retries = task.max_retries
+
+    restore = orch._apply_explore_deploy_mode(task)
+
+    # Deploy mode: no overrides
+    assert task.visual_align_config.position_tolerance == original_pos_tol
+    assert task.visual_align_config.angle_tolerance == original_angle_tol
+    assert task.visual_align_config.max_iterations == original_max_iter
+    assert task.max_retries == original_max_retries
+
+    # Restore dict exists but has all None values (nothing overridden)
+    assert restore is not None
+    assert restore["va_position_tolerance"] is None
+    assert restore["va_angle_tolerance"] is None
+    assert restore["va_max_iterations"] is None
+
+
+def test_explore_deploy_exactly_at_threshold(enabled_cfg: TaskMemoryConfig) -> None:
+    """success_count == 3 is deploy mode (>= is the gate, not >)."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+    store = TaskMemoryStore(enabled_cfg)
+
+    # Precisely 3 successful runs
+    for i in range(3):
+        store.record("station_C", {
+            "task_type": "visual_align",
+            "success": True,
+            "phase1": {"converged": True, "iterations": 1, "gain_sequence": [0.6]},
+            "duration_s": 15.0,
+        })
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = store
+
+    task = _build_fake_task(name="station_C", task_type="visual_align")
+    original_tol = task.visual_align_config.position_tolerance
+
+    orch._apply_explore_deploy_mode(task)
+
+    # Exactly 3 → deploy, no tolerance change
+    assert task.visual_align_config.position_tolerance == original_tol
+
+
+def test_explore_deploy_below_threshold_still_explore(enabled_cfg: TaskMemoryConfig) -> None:
+    """2 successes → still explore mode (threshold is 3)."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+    store = TaskMemoryStore(enabled_cfg)
+
+    for _ in range(2):
+        store.record("station_D", {
+            "task_type": "visual_align",
+            "success": True,
+            "phase1": {"converged": True, "iterations": 2, "gain_sequence": [0.7, 0.5]},
+            "duration_s": 18.0,
+        })
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = store
+
+    task = _build_fake_task(name="station_D", task_type="visual_align")
+
+    restore = orch._apply_explore_deploy_mode(task)
+
+    # 2 successes → still explore → tolerances doubled
+    assert task.visual_align_config.position_tolerance == 0.04
+    assert restore["va_position_tolerance"] == 0.02
+
+
+def test_explore_deploy_max_retries_already_high(enabled_cfg: TaskMemoryConfig) -> None:
+    """When max_retries is already ≥ 5, explore mode doesn't lower it."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+    store = TaskMemoryStore(enabled_cfg)
+    # No prior records → explore
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = store
+
+    task = _build_fake_task(
+        name="station_E", task_type="visual_align", max_retries=7,
+    )
+
+    orch._apply_explore_deploy_mode(task)
+
+    # max_retries should stay at 7 (not lowered to 5)
+    assert task.max_retries == 7
+
+
+def test_explore_deploy_non_visual_align_task(enabled_cfg: TaskMemoryConfig) -> None:
+    """Explore mode still boosts max_retries even without visual_align_config."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+    store = TaskMemoryStore(enabled_cfg)
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = store
+
+    # agv task — no visual_align_config
+    task = _build_fake_task(name="navigate_home", task_type="agv", max_retries=2)
+
+    restore = orch._apply_explore_deploy_mode(task)
+
+    # Still boosts retries
+    assert task.max_retries >= 5
+    # Restore exists but VA fields are None (no VA config to override)
+    assert restore is not None
+    assert restore["va_position_tolerance"] is None
+    assert restore["va_angle_tolerance"] is None
