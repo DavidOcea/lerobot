@@ -139,7 +139,12 @@ class DiffusionPolicy(PreTrainedPolicy):
         batch = self.normalize_inputs(batch)
         if self.config.image_features:
             batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
-            batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
+            if self.config.n_obs_steps == 1:
+                batch[OBS_IMAGES] = torch.stack(
+                    [batch[key].unsqueeze(1) for key in self.config.image_features], dim=2
+                )
+            else:
+                batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
         # Note: It's important that this happens after stacking the images into a single key.
         self._queues = populate_queues(self._queues, batch)
 
@@ -155,7 +160,15 @@ class DiffusionPolicy(PreTrainedPolicy):
         batch = self.normalize_inputs(batch)
         if self.config.image_features:
             batch = dict(batch)  # shallow copy so that adding a key doesn't modify the original
-            batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
+            if self.config.n_obs_steps == 1:
+                # Single-frame images arrive as (B, C, H, W) per camera.
+                # Insert sequence dim then stack cameras so the result matches
+                # the expected (B, n_obs_steps, n_cams, C, H, W) layout.
+                batch[OBS_IMAGES] = torch.stack(
+                    [batch[key].unsqueeze(1) for key in self.config.image_features], dim=2
+                )
+            else:
+                batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
         batch = self.normalize_targets(batch)
         loss = self.diffusion.compute_loss(batch)
         # no output_dict so returning None

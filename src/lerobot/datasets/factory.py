@@ -90,7 +90,9 @@ def make_dataset(cfg: TrainPipelineConfig) -> LeRobotDataset | MultiLeRobotDatas
         # P2 optimization: when n_obs_steps > 1, the policy receives multi-frame
         # state/force but single-frame images (to avoid GPU memory explosion of
         # 8×3=24 images per sample). Strip image keys from delta_timestamps.
-        if delta_timestamps is not None:
+        # NOTE: Diffusion Policy needs multi-frame images for correct shape stacking
+        # (modeling_diffusion expects (B, n_obs_steps, num_cams, C, H, W)).
+        if delta_timestamps is not None and cfg.policy.type != "diffusion":
             delta_timestamps = {
                 k: v for k, v in delta_timestamps.items()
                 if not any(k.startswith(prefix) for prefix in ds_meta.video_keys + ds_meta.image_keys)
