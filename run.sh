@@ -72,6 +72,31 @@ CUDA_VISIBLE_DEVICES=0 nohup python -m lerobot.scripts.train \
   --wandb.enable=false \
   --policy.push_to_hub=false  >  1222_dp_0.log 2>&1 &
 
+#diffusion train -- resize-84 (full FOV) + no spatial aug, fixes "找不到料片"
+# same policy hyperparams as dp_0814_pickup_long_ddim5_nact1, but:
+#   customer_transforms/only_head_transforms -> off (default), crop_is_random -> false (pure resize)
+CUDA_VISIBLE_DEVICES=0 nohup python -m lerobot.scripts.train \
+  --policy.type=diffusion \
+  --dataset.root=/root/data2/dc_dir/datasets/dataset_0729_pickup_long_all \
+  --dataset.repo_id=dataset_0729_pickup_long_all \
+  --batch_size=64 \
+  --steps=200000 \
+  --eval_freq=20000 \
+  --save_freq=40000 \
+  --policy.horizon=8 \
+  --policy.n_action_steps=1 \
+  --policy.drop_n_last_frames=6 \
+  --policy.down_dims=[256,512] \
+  --policy.noise_scheduler_type=DDIM \
+  --policy.num_inference_steps=5 \
+  --policy.crop_is_random=false \
+  --dataset.time_warp=true \
+  --output_dir=outputs/train/dp_0818_pickup_long_resize84_noaug \
+  --job_name=dp_0818_pickup_long_resize84_noaug \
+  --policy.device=cuda \
+  --wandb.enable=false \
+  --policy.push_to_hub=false  >  dp_0818_pickup_long_resize84_noaug.log 2>&1 &
+
   --batch_size=64 \
   --dataset.customer_transforms=True \
   --dataset.only_head_transforms=True \

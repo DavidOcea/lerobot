@@ -467,12 +467,20 @@ class DiffusionRgbEncoder(nn.Module):
         # Set up optional preprocessing.
         if config.crop_shape is not None:
             self.do_crop = True
-            # Always use center crop for eval
-            self.center_crop = torchvision.transforms.CenterCrop(config.crop_shape)
+            # Resize the whole image down to crop_shape instead of cropping a tiny
+            # window out of the full-resolution frame. The previous CenterCrop/RandomCrop
+            # kept only (84/640)*(84/480) ~ 2.3% of a 640x480 image, which could drop the
+            # workpiece entirely and break localization. Resizing first preserves the full
+            # field of view.
+            self.resize = torchvision.transforms.Resize(config.crop_shape)
             if config.crop_is_random:
-                self.maybe_random_crop = torchvision.transforms.RandomCrop(config.crop_shape)
+                # Mild random-resized-crop: keeps >=90% of the field of view while still
+                # giving a little translation augmentation.
+                self.maybe_random_crop = torchvision.transforms.RandomResizedCrop(
+                    config.crop_shape, scale=(0.9, 1.0), ratio=(1.0, 1.0)
+                )
             else:
-                self.maybe_random_crop = self.center_crop
+                self.maybe_random_crop = self.resize
         else:
             self.do_crop = False
 
@@ -523,8 +531,8 @@ class DiffusionRgbEncoder(nn.Module):
             if self.training:  # noqa: SIM108
                 x = self.maybe_random_crop(x)
             else:
-                # Always use center crop for eval.
-                x = self.center_crop(x)
+                # Resize to the full field of view for eval (no crop).
+                x = self.resize(x)
         # Extract backbone feature.
         x = torch.flatten(self.pool(self.backbone(x)), start_dim=1)
         # Final linear layer with non-linearity.
