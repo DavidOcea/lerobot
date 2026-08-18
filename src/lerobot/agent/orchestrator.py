@@ -2163,6 +2163,32 @@ class TaskAgentOrchestrator:
             logger=logger,
         )
 
+        # ── Normalize trace for task-memory consumers ──────────────────
+        # execute_visual_align returns a FLAT trace (phase1_iterations,
+        # gain_sequence, oscillation_detected at the top level), but both
+        # TaskMemoryStore._acc_va_success_stats and _memory_warmstart expect
+        # a `task_type` key plus a nested `phase1` dict.  Without this the
+        # align trace is never dispatched to the visual_align accumulator
+        # (its _stats stay empty) and never warm-starts.  Flat fields are
+        # kept for backward compatibility and the per-iteration Idea 3 log.
+        if va_trace is not None:
+            va_trace = {
+                "task_type": "visual_align",
+                "success": success,
+                **va_trace,
+                "phase1": {
+                    "iterations": va_trace.get("phase1_iterations", 0),
+                    "converged": va_trace.get("phase1_converged", False),
+                    "gain_sequence": va_trace.get("gain_sequence", []),
+                    "oscillation_detected": va_trace.get(
+                        "oscillation_detected", False
+                    ),
+                    "final_dtheta_deg": va_trace.get("final_dtheta_deg"),
+                    "final_forward_m": va_trace.get("final_forward_m"),
+                    "convergence_reason": va_trace.get("convergence_reason"),
+                },
+            }
+
         duration = time.time() - start_time
         status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
 

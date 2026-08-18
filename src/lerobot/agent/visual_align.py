@@ -402,8 +402,7 @@ def execute_visual_align(
         (success, message, trace) — trace is a dict of execution metrics,
         or None on early failure (marker not found, etc.).
     """
-    import time as _time
-    _t_start = _time.time()
+    t_start = time.time()
 
     # ── Trace accumulator ───────────────────────────────────────────
     # Built incrementally during execution; returned as the 3rd element.
