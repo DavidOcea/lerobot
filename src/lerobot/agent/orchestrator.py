@@ -126,6 +126,9 @@ class TaskAgentOrchestrator:
         self.monitor_collector: "MonitorCollector | None" = None
         self.http_dashboard: "HTTPDashboard | None" = None
 
+        # Task memory (opt-in, cross-cycle parameter memorization)
+        self.task_memory: "TaskMemoryStore | None" = None
+
         # Execution state
         self.is_initialized = False
         self.is_running = False
@@ -284,6 +287,9 @@ class TaskAgentOrchestrator:
 
         # 11. Initialize monitoring dashboard (NEW)
         self._init_monitoring()
+
+        # 12. Initialize task memory if enabled (opt-in)
+        self._init_task_memory()
 
         self.is_initialized = True
         logger.info("Initialization complete (LOCAL mode)")
@@ -634,6 +640,352 @@ class TaskAgentOrchestrator:
             self.interactive_selector._monitor_collector = self.monitor_collector
             self.interactive_selector._robot = self.robot
             logger.info("Interactive selector connected to MonitorCollector")
+
+    def _init_task_memory(self):
+        """Initialize the task execution memory store (optional module).
+
+        Reads config.task_memory_config. When disabled (default), this
+        method returns immediately at zero cost.  When enabled, creates a
+        TaskMemoryStore backed by a JSON file.
+
+        All errors are caught — a failed init sets ``self.task_memory``
+        to None so the orchestrator runs without memory.
+        """
+        tmc = getattr(self.config, 'task_memory_config', None)
+        if tmc is None or not tmc.enabled:
+            return
+        try:
+            from lerobot.tasks.task_memory import TaskMemoryStore
+            self.task_memory = TaskMemoryStore(tmc)
+            logger.info("Task memory enabled (%d existing entries)", len(self.task_memory._data))
+        except Exception as e:
+            logger.warning(f"Task memory init failed (will run without memory): {e}")
+            self.task_memory = None
+
+    def _memory_warmstart(self, task: TaskConfig) -> None:
+        """Apply stored memory parameters to *task* config (pre-execution hook).
+
+        Read the trace dict from a previous successful execution of the same
+        task and apply warm-start optimisations:
+
+        - Visual-align: reuse a proven gain schedule (fast-converge, no-oscillation)
+          or apply a more conservative schedule if oscillation was detected.
+        - Classify: cache the label+next_task when confidence >= 0.85 so the
+          next cycle can skip the classifier entirely.
+        - Classify auto-align: halve micro-adjustment step sizes if the last
+          run oscillated (label flipping).
+
+        Only modifies config fields that have stored values; all others stay
+        at their YAML defaults.
+        """
+        if self.task_memory is None:
+            return
+        warm = self.task_memory.lookup(task.name)
+        if warm is None:
+            logger.debug("TaskMemory: no stored data for '%s'", task.name)
+            return
+
+        task_type = warm.get("task_type", "")
+
+        # ── Visual-align warm-start ────────────────────────────────────
+        if task_type == "visual_align" and task.visual_align_config is not None:
+            p1 = warm.get("phase1", {})
+            phase1_ok = (
+                p1.get("converged") is True
+                and p1.get("iterations", 99) <= 2
+                and p1.get("oscillation_detected") is False
+            )
+            if phase1_ok and p1.get("gain_sequence"):
+                task.visual_align_config.warm_gain_sequence = list(p1["gain_sequence"])
+                logger.info(
+                    "TaskMemory: warm-start '%s' — reusing gain seq %s",
+                    task.name, p1["gain_sequence"],
+                )
+            elif p1.get("oscillation_detected") is True:
+                task.visual_align_config.warm_gain_sequence = [0.5, 0.4, 0.3]
+                logger.info(
+                    "TaskMemory: warm-start '%s' — oscillation detected, "
+                    "using conservative gains [0.5, 0.4, 0.3]",
+                    task.name,
+                )
+            else:
+                logger.debug(
+                    "TaskMemory: '%s' trace found but not eligible for warm-start "
+                    "(converged=%s, iters=%s, osc=%s)",
+                    task.name,
+                    p1.get("converged"), p1.get("iterations"),
+                    p1.get("oscillation_detected"),
+                )
+
+        # ── Classify warm-start (cache skip) ───────────────────────────
+        if task_type == "classify" and task.classify_config is not None:
+            # Skip cache for YOLO+ROI tasks that produce position-specific
+            # labels (e.g. "long_00".."long_32") — caching a label from one
+            # workpiece position would route the AGV to the wrong station
+            # when the workpiece is placed elsewhere in the next cycle.
+            # Tasks with target_class=None do simple presence checks
+            # ("long"/"none"/"unknown") and are safe to cache.
+            _is_positional_roi = (
+                task.classify_config.method == "yolo_roi"
+                and task.classify_config.target_class is not None
+            )
+            if _is_positional_roi:
+                logger.debug(
+                    "TaskMemory: '%s' is YOLO+ROI with target_class — "
+                    "skipping classify cache (position-dependent labels)",
+                    task.name,
+                )
+            # ── cache block (only when NOT positional ROI) ────────────
+            if not _is_positional_roi:
+                label = warm.get("label")
+                confidence = warm.get("confidence", 0.0)
+                # Only cache high-confidence results that aren't retry/detection labels
+                retry_set = set(task.classify_config.retry_labels or [])
+                if task.classify_config.retry_on_no_detect:
+                    retry_set.add("no_detection")
+                if (
+                    label is not None
+                    and label not in retry_set
+                    and label != task.classify_config.default_label
+                    and confidence >= 0.85
+                ):
+                    next_task = warm.get("next_task") or task.next_tasks.get(
+                        label, task.classify_config.default_next_task
+                    )
+                    task._warmstart_label = label          # type: ignore[attr-defined]
+                    task._warmstart_next_task = next_task  # type: ignore[attr-defined]
+                    logger.info(
+                        "TaskMemory: warm-start '%s' — classify cache "
+                        "label=%s confidence=%.2f",
+                        task.name, label, confidence,
+                    )
+                else:
+                    logger.debug(
+                        "TaskMemory: '%s' classify trace not eligible for cache "
+                        "(label=%s conf=%.2f)",
+                        task.name, label, confidence,
+                    )
+
+            # ── Auto-align warm-start (step damping) ───────────────────
+            aa = warm.get("auto_align")
+            if aa and aa.get("oscillation_detected") is True:
+                cc = task.classify_config
+                old_step_m = cc.auto_align_step_m
+                old_step_deg = cc.auto_align_step_deg
+                cc.auto_align_step_m = max(old_step_m / 2.0, 0.005)
+                cc.auto_align_step_deg = max(old_step_deg / 2.0, 0.5)
+                logger.info(
+                    "TaskMemory: warm-start '%s' — auto-align oscillation, "
+                    "damping steps %.3f→%.3f m, %.1f→%.1f°",
+                    task.name,
+                    old_step_m, cc.auto_align_step_m,
+                    old_step_deg, cc.auto_align_step_deg,
+                )
+
+    def _apply_explore_deploy_mode(self, task: TaskConfig) -> dict[str, Any] | None:
+        """Apply explore/deploy two-mode parameter tuning (Idea 5).
+
+        Exploration mode (``success_count < 3``):
+        - Boost ``max_retries`` to 5 (or keep higher if already above).
+        - Double visual-align position/angle tolerances to gather more data.
+        - Increase visual-align max iterations to 5.
+
+        Deployment mode (``success_count >= 3``):
+        - Use tight/default parameters — warm-start already applied the
+          best gain schedule from prior runs.
+
+        Returns a dict of original values to restore after execution,
+        or ``None`` when the gate is disabled or the task type cannot be
+        tuned.
+        """
+        if self.task_memory is None:
+            return None
+
+        stats = self.task_memory.stats(task.name)
+        success_count: int = stats.get("success_count", 0)
+
+        explore = success_count < 3
+        log_prefix = (
+            "TaskMemory: explore mode" if explore
+            else "TaskMemory: deploy mode"
+        )
+        logger.info(
+            "%s '%s' (success_count=%d, threshold=3) ",
+            log_prefix, task.name, success_count,
+        )
+
+        # Track original values so we can restore them after execution.
+        # Each field gets None when we did NOT override it — the restore
+        # block skips None entries.
+        restore: dict[str, Any] = {
+            "va_position_tolerance": None,
+            "va_angle_tolerance": None,
+            "va_max_iterations": None,
+        }
+
+        # ── Exploration mode ─────────────────────────────────────────
+        if explore:
+            # Boost retries so the robot can try more approaches.
+            task.max_retries = max(task.max_retries, 5)
+            logger.info(
+                "  boost max_retries: %d", task.max_retries,
+            )
+
+            # Loosen visual-align convergence so borderline runs still
+            # succeed and contribute trace data to _stats.
+            va = task.visual_align_config
+            if va is not None:
+                restore["va_position_tolerance"] = va.position_tolerance
+                restore["va_angle_tolerance"] = va.angle_tolerance
+                restore["va_max_iterations"] = va.max_iterations
+
+                va.position_tolerance = va.position_tolerance * 2.0
+                va.angle_tolerance = va.angle_tolerance * 2.0
+                va.max_iterations = max(va.max_iterations, 5)
+                logger.info(
+                    "  loosen va tolerances: pos=%.3f→%.3f, "
+                    "angle=%.1f→%.1f, max_iter=%d→%d",
+                    restore["va_position_tolerance"], va.position_tolerance,
+                    restore["va_angle_tolerance"], va.angle_tolerance,
+                    restore["va_max_iterations"], va.max_iterations,
+                )
+
+        return restore
+
+    def _memory_record(self, task: TaskConfig, result: TaskResult) -> None:
+        """Extract trace data from *result* and store in task memory (post-exec hook).
+
+        Sources trace data from ``result.final_observation`` (populated by
+        task-type-specific executors).  Returns silently when no trace
+        data is available or memory is disabled.
+        """
+        if self.task_memory is None:
+            return
+        trace = result.final_observation.get("task_trace") if result.final_observation else None
+        if trace is None:
+            return
+        try:
+            self.task_memory.record(task.name, trace)
+            logger.info("TaskMemory: recorded trace for '%s'", task.name)
+        except Exception as e:
+            logger.warning("TaskMemory: failed to record '%s': %s", task.name, e)
+
+    # ── Global Memory failure recovery ─────────────────────────────────
+    # Idea 2: uses _stats.failure_modes from task_memory to recognise
+    # recurring failure signatures and insert a targeted recovery action
+    # BEFORE the next blind retry.
+
+    # Matches: error → (min_count, recovery_action_dict)
+    # min_count: trigger only after this many occurrences of this failure mode
+    # action: passed to _execute_recovery_action()
+    _FAILURE_RECOVERY_RULES: dict[str, tuple[int, dict[str, Any]]] = {
+        # Tag lost repeatedly → don't waste time on retries
+        "Tag lost": (3, {
+            "action": "skip_retries",
+            "reason": "tag_lost_persistent",
+        }),
+        # Classification failed after retries → skip, not recoverable
+        "Classification failed after retries": (3, {
+            "action": "skip_retries",
+            "reason": "classify_exhausted",
+        }),
+        # No workpiece detected after retries → skip
+        "No workpiece detected after": (3, {
+            "action": "skip_retries",
+            "reason": "no_detect_exhausted",
+        }),
+        # AGV navigation timeout → can't navigate, skip
+        "AGV navigation timeout": (3, {
+            "action": "skip_retries",
+            "reason": "navigation_stuck",
+        }),
+    }
+
+    def _classify_failure_mode(self, error_message: str | None) -> str:
+        """Extract a coarse failure signature from *error_message*.
+
+        Uses the same ``split(":")[0]`` heuristic as
+        ``TaskMemoryStore._merge()`` so the mode keys match.
+        """
+        if not error_message:
+            return ""
+        return error_message.split(":")[0].strip()[:80]
+
+    def _recovery_for_failure(
+        self, task_name: str, error_message: str | None,
+    ) -> dict[str, Any] | None:
+        """Return a recovery action dict, or None if no recovery applies.
+
+        Looks up the coarse failure mode in the task's ``_stats.failure_modes``
+        and compares the count against ``_FAILURE_RECOVERY_RULES``.  Only
+        triggers when the mode has been seen enough times to justify a
+        recovery intervention.
+        """
+        if self.task_memory is None or not error_message:
+            return None
+        mode_key = self._classify_failure_mode(error_message)
+        if not mode_key:
+            return None
+
+        rule = self._FAILURE_RECOVERY_RULES.get(mode_key)
+        if rule is None:
+            # Find by prefix match in case error message varies slightly
+            for prefix, r in self._FAILURE_RECOVERY_RULES.items():
+                if mode_key.startswith(prefix):
+                    rule = r
+                    break
+        if rule is None:
+            return None
+
+        min_count, action = rule
+        stats = self.task_memory.stats(task_name)
+        failure_modes: dict[str, int] = stats.get("failure_modes") or {}
+        current_count = failure_modes.get(mode_key, 0)
+
+        if current_count >= min_count:
+            logger.warning(
+                "TaskMemory: failure mode '%s' seen %d times (threshold=%d) "
+                "— applying recovery: %s",
+                mode_key, current_count, min_count, action.get("action", "?"),
+            )
+            return action
+        return None
+
+    def _execute_recovery_action(
+        self, action: dict[str, Any], task: TaskConfig,
+    ) -> bool:
+        """Execute a recovery action and return True if the task should be
+        skipped (i.e. retries aborted).
+
+        Currently supported actions:
+        - ``skip_retries`` — immediately fail the task, don't waste cycles.
+        """
+        action_type = action.get("action", "")
+
+        if action_type == "skip_retries":
+            reason = action.get("reason", "unknown")
+            logger.info(
+                "TaskMemory: recovery skip_retries for '%s' (reason=%s)",
+                task.name, reason,
+            )
+            return True  # caller should stop retrying
+
+        logger.debug("TaskMemory: unknown recovery action '%s'", action_type)
+        return False
+
+    def _maybe_recovery_before_retry(
+        self, task: TaskConfig, error_message: str | None,
+    ) -> bool:
+        """Called before each retry.  Returns True if the task should be
+        skipped entirely (retries aborted).
+
+        This is the public hook for the retry loop in
+        ``_execute_single_task``.
+        """
+        action = self._recovery_for_failure(task.name, error_message)
+        if action is None:
+            return False
+        return self._execute_recovery_action(action, task)
 
     def _wait_for_input(
         self,
@@ -1174,9 +1526,15 @@ class TaskAgentOrchestrator:
 
                     logger.info(f"Executing task {idx + 1}/{len(task_list)}: {task.name}")
 
+                    # ── Task memory warm-start ──────────────────────────────
+                    self._memory_warmstart(task)
+
                     # Execute the task
                     result = self._execute_single_task(task)
                     results.append(result)
+
+                    # ── Task memory record ──────────────────────────────────
+                    self._memory_record(task, result)
 
                     # Update collision count
                     if result.collision_detected:
@@ -1236,10 +1594,16 @@ class TaskAgentOrchestrator:
 
             logger.info(f"Executing task {current_idx + 1}/{len(self.config.tasks)}: {task.name}")
 
+            # ── Task memory warm-start ──────────────────────────────────
+            self._memory_warmstart(task)
+
             # Execute the task
             result = self._execute_single_task(task)
 
             results.append(result)
+
+            # ── Task memory record ──────────────────────────────────────
+            self._memory_record(task, result)
 
             # Record task execution
             if self.interactive_selector is not None:
@@ -1358,6 +1722,14 @@ class TaskAgentOrchestrator:
         multiplier = max(0.25, min(4.0, self.config.speed_multiplier))
         if multiplier != 1.0:
             task.speed_multiplier = multiplier
+
+        # ── Explore / Deploy dual-mode (Idea 5) ─────────────────────────
+        # When a task has few (or zero) prior successes, boost retries and
+        # loosen convergence tolerances so the robot can safely gather data
+        # while still making progress.  After 3+ successes the accumulated
+        # per-task warm-start parameters are trusted — switch to tight
+        # "deploy" mode for speed.
+        _mode_state = self._apply_explore_deploy_mode(task)
 
         # ── Retry loop ──────────────────────────────────────────────
         # max_retries controls how many times a FAILED task is re-attempted.
@@ -1512,6 +1884,30 @@ class TaskAgentOrchestrator:
             last_result = result
             if result.status in (TaskStatus.COMPLETED, TaskStatus.SKIPPED, TaskStatus.FATAL_FAILURE):
                 break  # no retry needed
+
+            # ── Global Memory recovery (Idea 2) ──────────────────────
+            # Before the next blind retry, check whether this error pattern
+            # has occurred enough times to justify a recovery intervention
+            # (e.g. skipping further retries for persistent tag-loss).
+            if attempt < max_retries:
+                should_skip = self._maybe_recovery_before_retry(
+                    task, result.error_message,
+                )
+                if should_skip:
+                    # Replace the result with a FATAL_FAILURE so the outer
+                    # next_tasks["failed"] routing still picks it up cleanly.
+                    result = TaskResult(
+                        task_name=task.name,
+                        status=TaskStatus.FATAL_FAILURE,
+                        duration=result.duration,
+                        error_message=(
+                            f"Recovery: skipped retries — "
+                            f"{result.error_message}"
+                        ),
+                    )
+                    last_result = result
+                    break
+
             # result.status == TaskStatus.FAILED → continue to next attempt
             logger.warning(
                 f"Task {task.name} attempt {attempt}/{max_retries} failed: "
@@ -1555,6 +1951,16 @@ class TaskAgentOrchestrator:
         task.max_duration = original_max_duration
         if hasattr(task, 'speed_multiplier'):
             delattr(task, 'speed_multiplier')
+
+        # Restore visual_align config overridden by explore/deploy mode
+        if _mode_state is not None:
+            va = task.visual_align_config
+            if va is not None and _mode_state["va_position_tolerance"] is not None:
+                va.position_tolerance = _mode_state["va_position_tolerance"]
+            if va is not None and _mode_state["va_angle_tolerance"] is not None:
+                va.angle_tolerance = _mode_state["va_angle_tolerance"]
+            if va is not None and _mode_state["va_max_iterations"] is not None:
+                va.max_iterations = _mode_state["va_max_iterations"]
 
         self._add_monitor_event(
             "info" if last_result.status == TaskStatus.COMPLETED else "warn", task.name,
@@ -1750,12 +2156,38 @@ class TaskAgentOrchestrator:
                 pass
 
         # Execute alignment
-        success, message = execute_visual_align(
+        success, message, va_trace = execute_visual_align(
             robot=self.robot,
             agv_controller=self.agv_controller,
             config=va_config,
             logger=logger,
         )
+
+        # ── Normalize trace for task-memory consumers ──────────────────
+        # execute_visual_align returns a FLAT trace (phase1_iterations,
+        # gain_sequence, oscillation_detected at the top level), but both
+        # TaskMemoryStore._acc_va_success_stats and _memory_warmstart expect
+        # a `task_type` key plus a nested `phase1` dict.  Without this the
+        # align trace is never dispatched to the visual_align accumulator
+        # (its _stats stay empty) and never warm-starts.  Flat fields are
+        # kept for backward compatibility and the per-iteration Idea 3 log.
+        if va_trace is not None:
+            va_trace = {
+                "task_type": "visual_align",
+                "success": success,
+                **va_trace,
+                "phase1": {
+                    "iterations": va_trace.get("phase1_iterations", 0),
+                    "converged": va_trace.get("phase1_converged", False),
+                    "gain_sequence": va_trace.get("gain_sequence", []),
+                    "oscillation_detected": va_trace.get(
+                        "oscillation_detected", False
+                    ),
+                    "final_dtheta_deg": va_trace.get("final_dtheta_deg"),
+                    "final_forward_m": va_trace.get("final_forward_m"),
+                    "convergence_reason": va_trace.get("convergence_reason"),
+                },
+            }
 
         duration = time.time() - start_time
         status = TaskStatus.COMPLETED if success else TaskStatus.FAILED
@@ -1779,6 +2211,7 @@ class TaskAgentOrchestrator:
             duration=duration,
             error_message=None if success else message,
             next_task=next_task,
+            final_observation={"task_trace": va_trace} if va_trace else {},
         )
 
     def _execute_classify_task(self, task: TaskConfig) -> TaskResult:
@@ -1805,6 +2238,33 @@ class TaskAgentOrchestrator:
             return TaskResult(
                 task_name=task.name, status=TaskStatus.FAILED,
                 duration=0.0, error_message="classify_config is None",
+            )
+
+        # ── Warm-start cache skip ───────────────────────────────────────
+        _warm_label = getattr(task, '_warmstart_label', None)
+        if _warm_label is not None:
+            _warm_next = getattr(task, '_warmstart_next_task', "")
+            logger.info(
+                "Classify warm-start: cached label=%s → next_task=%s",
+                _warm_label, _warm_next,
+            )
+            return TaskResult(
+                task_name=task.name,
+                status=TaskStatus.COMPLETED,
+                duration=0.0,
+                success=True,
+                next_task=_warm_next,
+                final_observation={
+                    "task_trace": {
+                        "task_type": "classify",
+                        "method": cc.method,
+                        "label": _warm_label,
+                        "confidence": 1.0,
+                        "cached": True,
+                        "duration_s": 0.0,
+                        "next_task": _warm_next,
+                    }
+                },
             )
 
         self._switch_cameras_for_task(task)
@@ -1854,17 +2314,24 @@ class TaskAgentOrchestrator:
         def _run_auto_align(classifier, cc, bgr_img, speak_fn):
             """Micro-adjust AGV to align detection bbox with the nearest ROI.
 
-            Returns a valid long_XX label string on success, or None to
-            fall back to the normal retry loop + label_tts_commands.
+            Returns (label, trace) on success, or (None, None) to fall back
+            to the normal retry loop + label_tts_commands.
             """
+            _align_osc = False
             for attempt in range(cc.auto_align_max_attempts):
                 det = classifier.classify(bgr_img)
                 if det.label not in (cc.retry_labels or []) and det.label != (cc.default_label or "unknown"):
                     logger.info(f"Auto-align: valid match '{det.label}' on attempt {attempt+1}")
-                    return det.label  # ← return label, skip retry loop
+                    aa_trace = {
+                        "ran": True, "attempts": attempt + 1,
+                        "converged": True,
+                        "oscillation_detected": _align_osc,
+                        "final_label": det.label,
+                    }
+                    return det.label, aa_trace  # ← return label + trace, skip retry loop
 
                 if not hasattr(classifier, '_session') or classifier._session is None:
-                    return None
+                    return None, None
 
                 # Manually get bbox + best-two ROIs
                 h0, w0 = bgr_img.shape[:2]
@@ -1874,7 +2341,7 @@ class TaskAgentOrchestrator:
                 try:
                     outputs = classifier._session.run(None, {"images": img})
                 except Exception:
-                    return None
+                    return None, None
                 preds = outputs[0][0]
                 nc = len(classifier.classes)
                 boxes, scores = [], []
@@ -1891,10 +2358,10 @@ class TaskAgentOrchestrator:
                     boxes.append([x1, y1, x2 - x1, y2 - y1])
                     scores.append(mc)
                 if not boxes:
-                    return None
+                    return None, None
                 idxs = cv2.dnn.NMSBoxes(boxes, scores, classifier.conf_threshold, 0.45)
                 if len(idxs) == 0:
-                    return None
+                    return None, None
                 best = max(idxs.flatten(), key=lambda i: scores[i])
                 x1, y1, w, h = boxes[best]
                 det_px = (int(x1), int(y1), int(w), int(h))
@@ -1904,7 +2371,7 @@ class TaskAgentOrchestrator:
 
                 best_center = classifier.get_roi_center(best_label)
                 if best_center is None:
-                    return None
+                    return None, None
 
                 det_cx = det_px[0] + det_px[2] / 2.0
                 det_cy = det_px[1] + det_px[3] / 2.0
@@ -1926,7 +2393,13 @@ class TaskAgentOrchestrator:
                         f"converged — trusting best_label={best_label} "
                         f"(IoU={best_iou:.3f} >= thr={best_threshold:.3f})"
                     )
-                    return best_label
+                    aa_trace = {
+                        "ran": True, "attempts": attempt + 1,
+                        "converged": True,
+                        "oscillation_detected": _align_osc,
+                        "final_label": best_label,
+                    }
+                    return best_label, aa_trace
 
                 # ── Micro adjust AGV toward best ROI ──────────────────
                 step_m = cc.auto_align_step_m
@@ -1937,6 +2410,7 @@ class TaskAgentOrchestrator:
                 # halve step to avoid overshooting
                 _prev = getattr(_run_auto_align, '_prev_label', '')
                 if _prev and _prev != best_label:
+                    _align_osc = True
                     step_m, step_rad = step_m / 2.0, step_rad / 2.0
                     logger.info(
                         f"Auto-align [{attempt+1}/{cc.auto_align_max_attempts}]: "
@@ -1975,7 +2449,7 @@ class TaskAgentOrchestrator:
                     moved = True
 
                 if not moved:
-                    return None
+                    return None, None
 
                 time.sleep(2.0)
                 obs = self.robot.get_observation()
@@ -1983,7 +2457,7 @@ class TaskAgentOrchestrator:
                 if img is not None:
                     bgr_img = img if img.dtype == np.uint8 else img.astype(np.uint8)
 
-            return None  # exhausted all attempts
+            return None, None  # exhausted all attempts
 
         # Build classifier
         classifier_kwargs = {
@@ -2011,7 +2485,7 @@ class TaskAgentOrchestrator:
                     and hasattr(self, 'agv_controller')
                     and self.agv_controller is not None
                     and hasattr(classifier, 'get_best_two_rois')):
-                aligned_label = _run_auto_align(classifier, cc, bgr, _speak_tts)
+                aligned_label, aa_trace_dict = _run_auto_align(classifier, cc, bgr, _speak_tts)
                 if aligned_label is not None:
                     # Auto-align succeeded — route directly to pickup task
                     label_str = f"label={aligned_label}"
@@ -2027,6 +2501,17 @@ class TaskAgentOrchestrator:
                         duration=time.time() - start_time,
                         success=True,
                         next_task=next_task,
+                        final_observation={
+                            "task_trace": {
+                                "task_type": "classify",
+                                "method": cc.method,
+                                "label": aligned_label,
+                                "confidence": 1.0,
+                                "duration_s": time.time() - start_time,
+                                "next_task": next_task,
+                                "auto_align": aa_trace_dict,
+                            }
+                        },
                     )
 
             # Build set of labels that trigger a retry
@@ -2082,6 +2567,16 @@ class TaskAgentOrchestrator:
                     task_name=task.name, status=TaskStatus.FAILED,
                     duration=time.time() - start_time,
                     error_message="Classification failed after retries",
+                    final_observation={
+                        "task_trace": {
+                            "task_type": "classify",
+                            "method": cc.method,
+                            "duration_s": time.time() - start_time,
+                            "label": None,
+                            "confidence": 0.0,
+                            "error": "Classification failed after retries",
+                        }
+                    },
                 )
 
             # Retry label even after all retries: recovery or fail
@@ -2098,6 +2593,16 @@ class TaskAgentOrchestrator:
                         duration=time.time() - start_time,
                         success=True,
                         next_task=cc.recovery_task,
+                        final_observation={
+                            "task_trace": {
+                                "task_type": "classify",
+                                "method": cc.method,
+                                "duration_s": time.time() - start_time,
+                                "label": result.label if result else None,
+                                "confidence": 0.0,
+                                "recovery": cc.recovery_task,
+                            }
+                        },
                     )
                 logger.error(
                     f"Classify failed: no_detection after {max_retries} retries — stopping cycle"
@@ -2106,6 +2611,16 @@ class TaskAgentOrchestrator:
                     task_name=task.name, status=TaskStatus.FAILED,
                     duration=time.time() - start_time,
                     error_message=f"No workpiece detected after {max_retries} attempts",
+                    final_observation={
+                        "task_trace": {
+                            "task_type": "classify",
+                            "method": cc.method,
+                            "duration_s": time.time() - start_time,
+                            "label": None,
+                            "confidence": 0.0,
+                            "error": f"No workpiece detected after {max_retries} attempts",
+                        }
+                    },
                 )
 
             # Apply label counter for alternating placements
@@ -2119,6 +2634,16 @@ class TaskAgentOrchestrator:
                 task_name=task.name, status=TaskStatus.FAILED,
                 duration=time.time() - start_time,
                 error_message=f"Classification error: {e}",
+                final_observation={
+                    "task_trace": {
+                        "task_type": "classify",
+                        "method": cc.method,
+                        "duration_s": time.time() - start_time,
+                        "label": None,
+                        "confidence": 0.0,
+                        "error": f"Classification error: {e}",
+                    }
+                },
             )
 
         # Route to next task based on label
@@ -2136,6 +2661,16 @@ class TaskAgentOrchestrator:
             duration=time.time() - start_time,
             success=True,
             next_task=next_task,
+            final_observation={
+                "task_trace": {
+                    "task_type": "classify",
+                    "method": cc.method,
+                    "label": result.label,
+                    "confidence": result.confidence,
+                    "duration_s": time.time() - start_time,
+                    "next_task": next_task,
+                }
+            },
         )
 
     def _execute_parallel_task(self, task: TaskConfig) -> TaskResult:

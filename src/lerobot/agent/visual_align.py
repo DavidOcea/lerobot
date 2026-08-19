@@ -311,16 +311,14 @@ def search_marker(
     agv_controller,
     config: VisualAlignConfig,
     logger: logging.Logger,
-) -> dict | None:
+) -> tuple[dict | None, int, float]:
     """Search for the target AprilTag by rotating the AGV.
 
     Rotates AGV left (CCW) in small steps until the marker is found
-    in the head camera.  Returns the marker detection dict, or None
-    if not found after exhausting search_max_attempts.
+    in the head camera.
 
-    Note: search rotation is cumulative, but the subsequent visual_align
-    loop will re-align the AGV to the correct heading, so we don't need
-    to undo the search rotation.
+    Returns:
+        (marker, attempts_used, total_turned_deg) — marker is None if not found.
     """
     detector = _get_detector(config.marker_family)
     total_turned = 0.0
@@ -332,7 +330,7 @@ def search_marker(
         img = images.get("head_cam")
         if img is None:
             logger.warning(f"Search attempt {attempt}: no head_cam image available")
-            return None
+            return None, attempt, total_turned
 
         # Convert to BGR if needed (OpenCV detection needs BGR)
         if len(img.shape) == 3 and img.shape[2] == 3:
@@ -340,7 +338,7 @@ def search_marker(
             bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
         else:
             logger.warning(f"Search attempt {attempt}: unexpected image shape {img.shape}")
-            return None
+            return None, attempt, total_turned
 
         marker = detect_marker(bgr, config, detector)
         if marker is not None:
@@ -348,7 +346,7 @@ def search_marker(
                 f"Search: found marker ID={marker['id']} at attempt {attempt} "
                 f"(total search turn: {total_turned:.1f}°)"
             )
-            return marker
+            return marker, attempt, total_turned
 
         # Marker not found → rotate AGV one step
         step_deg = config.search_turn_step
@@ -358,7 +356,7 @@ def search_marker(
                 f"Search: exceeded max turn ({config.search_max_turn}°) "
                 f"without finding marker"
             )
-            return None
+            return None, attempt, total_turned
 
         logger.warning(f"Search: turning {step_deg}° (cumulative {total_turned:.1f}°)")
         agv_controller.turn(
@@ -370,7 +368,7 @@ def search_marker(
         time.sleep(0.3)  # Brief settle time after AGV stops
 
     logger.warning("Search: marker not found after all attempts")
-    return None
+    return None, config.search_max_attempts, total_turned
 
 
 def execute_visual_align(
@@ -378,7 +376,7 @@ def execute_visual_align(
     agv_controller,
     config: VisualAlignConfig,
     logger: logging.Logger,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, dict | None]:
     """Execute closed-loop visual alignment using AprilTag.
 
     Two modes:
@@ -392,7 +390,7 @@ def execute_visual_align(
          a. Detect marker → compute (turn_angle, forward_distance)
          b. Check convergence (within tolerance)
          c. Turn AGV, then drive forward/backward
-      4. Return (success, message)
+      4. Return (success, message, trace_dict)
 
     Args:
         robot: SupreRobotFollower instance (provides get_observation)
@@ -401,14 +399,43 @@ def execute_visual_align(
         logger: Logger instance
 
     Returns:
-        (success: bool, message: str)
+        (success, message, trace) — trace is a dict of execution metrics,
+        or None on early failure (marker not found, etc.).
     """
+    t_start = time.time()
+
+    # ── Trace accumulator ───────────────────────────────────────────
+    # Built incrementally during execution; returned as the 3rd element.
+    # Phase 1 fields:
+    #   raw_dtheta_initial (float) — first-iteration raw dtheta before gain.
+    #     Captures the station's typical initial angular deviation.  Used
+    #     by Idea 3 (per-station operating-range learning) to decide
+    #     whether a station needs a custom gain schedule or a retreat
+    #     before alignment.
+    #   per_iteration_log (list[dict]) — per-iteration record of raw
+    #     angles/distances before and after gain, so later analysis can
+    #     tell which gain step was too aggressive or too conservative.
+    #     Fields: iteration, raw_dtheta, gain, applied_dtheta,
+    #             raw_forward, applied_forward, capped (bool).
+    #   phase1_iterations, phase1_converged, convergence_reason,
+    #   final_dtheta_deg, final_forward_m, gain_sequence,
+    #   oscillation_detected, mode
+    # Phase 2 fields (reference mode only):
+    #   phase2_ran, heading_mode, phase2_iterations, phase2_converged,
+    #   final_dheading_deg, phase2_gain_sequence, phase2_oscillation,
+    #   lateral_err_m, lateral_correction_applied
+    # Search fields:
+    #   search_attempts, search_total_turned_deg
+    trace: dict[str, Any] = {}
+    _gain_seq: list[float] = []
+    _osc_detected = False
+    _iter_log: list[dict[str, Any]] = []   # per-iteration trace (Idea 3)
     detector = _get_detector(config.marker_family)
 
     # Step 0: Search for marker
-    marker = search_marker(robot, agv_controller, config, logger)
+    marker, search_attempts, search_total_turned = search_marker(robot, agv_controller, config, logger)
     if marker is None:
-        return False, f"Marker ID={config.marker_id} not found during search"
+        return False, f"Marker ID={config.marker_id} not found during search", None
 
     logger.warning(f"Marker found: ID={marker['id']}, proceeding to alignment loop")
 
@@ -429,7 +456,7 @@ def execute_visual_align(
                 f"  [diag] reference: ground_dist={ref_dist:.3f}m"
             )
         except Exception as e:
-            return False, f"Failed to load reference pose: {e}"
+            return False, f"Failed to load reference pose: {e}", None
 
     # Step 1: Closed-loop alignment
     aligned = False
@@ -439,13 +466,13 @@ def execute_visual_align(
         obs = robot.get_observation()
         img = obs.get("images", {}).get("head_cam")
         if img is None:
-            return False, f"Iteration {iteration}: head_cam image unavailable"
+            return False, f"Iteration {iteration}: head_cam image unavailable", None
         bgr = img if img.dtype == np.uint8 else img.astype(np.uint8)
 
         # Detect marker
         marker = detect_marker(bgr, config, detector)
         if marker is None:
-            return False, f"Iteration {iteration}: marker lost (no detection)"
+            return False, f"Iteration {iteration}: marker lost (no detection)", None
 
         # Compute required AGV movement
         if use_reference:
@@ -479,11 +506,20 @@ def execute_visual_align(
                 f"dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m"
             )
             aligned = True
+            trace["phase1_iterations"] = iteration + 1
+            trace["phase1_converged"] = True
+            trace["convergence_reason"] = why
+            trace["final_dtheta_deg"] = dtheta_deg
+            trace["final_forward_m"] = forward_dist
             break
 
         # ── Decaying gain + oscillation damping ─────────────────────
-        gains = [0.8, 0.6, 0.5, 0.4]
-        gain = gains[iteration] if iteration < len(gains) else 0.4
+        if config.warm_gain_sequence is not None:
+            gains = config.warm_gain_sequence
+        else:
+            gains = [0.8, 0.6, 0.5, 0.4]
+        gain = gains[iteration] if iteration < len(gains) else gains[-1]
+        _gain_seq.append(gain)  # record before clamping
 
         # Save raw values before gain for the stuck check below
         raw_dtheta = dtheta_deg
@@ -493,6 +529,7 @@ def execute_visual_align(
         # is above 3° (solvePnP noise floor), the AGV overshot.
         if iteration > 0 and raw_dtheta * last_raw < 0 and abs(raw_dtheta) > 3.0:
             gain = min(gain, 0.3)
+            _osc_detected = True
             logger.warning(
                 f"  oscillation detected (prev={last_raw:.1f}° cur={raw_dtheta:.1f}°) "
                 f"→ gain clamped to {gain}"
@@ -518,6 +555,22 @@ def execute_visual_align(
         forward_dist = raw_forward * gain
         last_raw = raw_dtheta  # store RAW for next oscillation comparison
 
+        # ── Per-iteration trace (Idea 3) ─────────────────────────────
+        # Capture raw & applied values so later analysis can determine
+        # which gain step was too aggressive / too conservative for this
+        # specific station.
+        if iteration == 0:
+            trace["raw_dtheta_initial"] = round(raw_dtheta, 2)
+        _iter_log.append({
+            "iteration": iteration,
+            "raw_dtheta": round(raw_dtheta, 2),
+            "gain": round(gain, 3),
+            "applied_dtheta": round(dtheta_deg, 2),
+            "raw_forward": round(raw_forward, 4),
+            "applied_forward": round(forward_dist, 4),
+            "capped": False,  # set True below if FOV cap engages
+        })
+
         # ── Stuck check: corrections below AGV execution thresholds ──
         # Only accept if raw values are within a loose envelope —
         # otherwise a ~1.2cm residual × 0.4 gain ≈ 5mm would falsely
@@ -531,6 +584,11 @@ def execute_visual_align(
                 f"(raw: {raw_dtheta:.1f}° {raw_forward:.3f}m)"
             )
             aligned = True
+            trace["phase1_iterations"] = iteration + 1
+            trace["phase1_converged"] = True
+            trace["convergence_reason"] = "exec_threshold"
+            trace["final_dtheta_deg"] = dtheta_deg
+            trace["final_forward_m"] = forward_dist
             break
 
         # ── Per-step safety cap (keep marker in camera FOV) ───────────
@@ -540,6 +598,7 @@ def execute_visual_align(
         # stays visible between iterations.
         max_turn = 15.0  # degrees
         max_fwd  = 0.30  # meters
+        did_cap = False
         if abs(dtheta_deg) > max_turn:
             # Scale forward proportionally (shorten turn → shorter path)
             ratio = max_turn / abs(dtheta_deg)
@@ -549,12 +608,16 @@ def execute_visual_align(
             )
             dtheta_deg = dtheta_deg * ratio
             forward_dist *= ratio
+            did_cap = True
         if abs(forward_dist) > max_fwd:
             logger.warning(
                 f"  capping forward {forward_dist:.3f}m → "
                 f"{math.copysign(max_fwd, forward_dist):.3f}m"
             )
             forward_dist = math.copysign(max_fwd, forward_dist)
+            did_cap = True
+        if did_cap and _iter_log:
+            _iter_log[-1]["capped"] = True
 
         # Step 1a: Turn AGV
         if abs(dtheta_deg) > 0.5:  # skip turns < 0.5° (below AGV precision)
@@ -592,6 +655,25 @@ def execute_visual_align(
                 agv_controller.wait_for_translate_complete(timeout=10.0)
                 time.sleep(0.3)
 
+    # ── Finalize Phase 1 trace ──────────────────────────────────────
+    # Populated at convergence break points above; here we fill in the
+    # remaining fields for the case where the loop exhausted.
+    if "phase1_iterations" not in trace:
+        # Loop exhausted without explicit convergence
+        trace["phase1_iterations"] = config.max_iterations
+        trace["phase1_converged"] = False
+        trace["convergence_reason"] = "loop_exhausted"
+        trace["final_dtheta_deg"] = dtheta_deg if "dtheta_deg" in dir() else 999.0
+        trace["final_forward_m"] = forward_dist if "forward_dist" in dir() else 999.0
+    trace["gain_sequence"] = _gain_seq
+    trace["oscillation_detected"] = _osc_detected
+    trace["mode"] = "reference" if use_reference else "approach"
+    trace["per_iteration_log"] = _iter_log
+    trace["search"] = {
+        "attempts": search_attempts + 1 if marker else search_attempts,
+        "total_turned_deg": search_total_turned,
+    }
+
     # ── Phase 2: heading alignment ───────────────────────────────────
     # Single-tag: heading correction from ref_y offset.
     # Dual-tag: absolute workstation heading from tag_0→tag_1 vector,
@@ -604,6 +686,10 @@ def execute_visual_align(
             # Each iteration: (1) correct heading from tag_0→tag_1 vector
             #                 (2) correct lateral offset via mini Phase 1
             #                 (3) re-check heading
+            _p2_gain_seq: list[float] = []
+            _p2_osc_detected = False
+            _p2_lateral_err_m = 0.0
+            _p2_lateral_applied = False
             dh_prev = None
             for dh_iter in range(config.max_iterations):
                 obs = robot.get_observation()
@@ -643,7 +729,19 @@ def execute_visual_align(
                 )
                 if abs(dheading_deg) <= 1.0:
                     logger.warning("Phase 2 dual-tag: heading converged")
-                    return True, "Aligned (dual-tag, heading OK)"
+                    trace["phase2"] = {
+                        "ran": True,
+                        "heading_mode": "dual_tag",
+                        "iterations": dh_iter + 1,
+                        "converged": True,
+                        "final_dheading_deg": dheading_deg,
+                        "gain_sequence": _p2_gain_seq,
+                        "oscillation_detected": _p2_osc_detected,
+                        "lateral_err_m": _p2_lateral_err_m,
+                        "lateral_correction_applied": _p2_lateral_applied,
+                    }
+                    trace["duration_s"] = time.time() - t_start
+                    return True, "Aligned (dual-tag, heading OK)", trace
 
                 # ── Heading gain + two-way overshoot detection ─────
                 raw_dheading = dheading_deg  # save for oscillation detection
@@ -660,6 +758,7 @@ def execute_visual_align(
                     if raw_dheading * dh_prev < 0:
                         # Direction flipped — classical oscillation
                         gain_p2 = min(gain_p2, 0.3)
+                        _p2_osc_detected = True
                         logger.warning(
                             f"  oscillation detected → gain clamped to {gain_p2}"
                         )
@@ -671,6 +770,7 @@ def execute_visual_align(
                         )
 
                 dheading_deg = raw_dheading * gain_p2
+                _p2_gain_seq.append(gain_p2)
                 if gain_p2 < 1.0:
                     logger.warning(
                         f"  gain={gain_p2:.1f} (raw={raw_dheading:.1f}° → cmd={dheading_deg:.1f}°)"
@@ -705,6 +805,8 @@ def execute_visual_align(
                         f"ref=({ref_x:.3f},{ref_y:.3f}) dy={dy*100:.1f}cm"
                     )
                     if lateral_err >= 0.01:
+                        _p2_lateral_err_m = float(lateral_err)
+                        _p2_lateral_applied = True
                         dtheta_lat, dforward_lat = compute_alignment_to_reference(
                             m0["tvec"], m0["rvec"], ref_tvec, ref_rvec, config,
                         )
@@ -737,7 +839,19 @@ def execute_visual_align(
             msg = (f"Aligned (dual-tag, heading leftover {dheading_deg:.1f}°)"
                    if abs(dheading_deg) <= 3.0
                    else f"Dual-tag heading not converged: {dheading_deg:.1f}°")
-            return abs(dheading_deg) <= 3.0, msg
+            trace["phase2"] = {
+                "ran": True,
+                "heading_mode": "dual_tag",
+                "iterations": config.max_iterations,
+                "converged": abs(dheading_deg) <= 3.0,
+                "final_dheading_deg": dheading_deg,
+                "gain_sequence": _p2_gain_seq,
+                "oscillation_detected": _p2_osc_detected,
+                "lateral_err_m": _p2_lateral_err_m,
+                "lateral_correction_applied": _p2_lateral_applied,
+            }
+            trace["duration_s"] = time.time() - t_start
+            return abs(dheading_deg) <= 3.0, msg, trace
 
         # ── Single-tag heading (original logic) ─────────────────────
         ref_x, ref_y = _marker_to_agv_xy(ref_tvec, config)
@@ -755,14 +869,44 @@ def execute_visual_align(
             )
             agv_controller.wait_for_turn_complete(timeout=10.0)
             time.sleep(0.3)
-            return True, f"Aligned (dist + heading, correction {heading_correction:.1f}°)"
+            return True, f"Aligned (dist + heading, correction {heading_correction:.1f}°)", {
+                **trace,
+                "phase2": {
+                    "ran": True,
+                    "heading_mode": "single_tag",
+                    "iterations": 1,
+                    "converged": True,
+                    "final_dheading_deg": heading_correction,
+                    "gain_sequence": [1.0],
+                    "oscillation_detected": False,
+                    "lateral_err_m": abs(ref_y),
+                    "lateral_correction_applied": True,
+                },
+                "duration_s": time.time() - t_start,
+            }
         else:
             logger.warning(
                 f"Phase 2: heading correction {heading_correction:.1f}° < 0.5° — skipped"
             )
-    # Did not converge within max_iterations
+            # Heading already fine — alignment succeeded
+            trace["phase2"] = {
+                "ran": True,
+                "heading_mode": "single_tag",
+                "iterations": 1,
+                "converged": True,
+                "final_dheading_deg": heading_correction,
+                "gain_sequence": [1.0],
+                "oscillation_detected": False,
+                "lateral_err_m": abs(ref_y),
+                "lateral_correction_applied": False,
+            }
+            trace["duration_s"] = time.time() - t_start
+            return True, "Aligned (dist only, heading already OK)", trace
+
+    # Did not converge within max_iterations (Phase 1 exhausted, no Phase 2)
     logger.warning(
         f"Alignment did not converge after {config.max_iterations} iterations "
         f"(last: dtheta={dtheta_deg:.2f}°, forward={forward_dist:.3f}m)"
     )
-    return False, f"Did not converge after {config.max_iterations} iterations"
+    trace["duration_s"] = time.time() - t_start
+    return False, f"Did not converge after {config.max_iterations} iterations", trace
