@@ -21,6 +21,7 @@ TODO(alexander-soare):
 """
 
 import math
+import os
 from collections import deque
 from typing import Callable
 
@@ -103,11 +104,15 @@ class DiffusionPolicy(PreTrainedPolicy):
     def predict_action_chunk(self, batch: dict[str, Tensor]) -> Tensor:
         """Predict a chunk of actions given environment observations."""
         # stack n latest observations from the queue
-        print("11111---")
         batch = {k: torch.stack(list(self._queues[k]), dim=1) for k in batch if k in self._queues}
-        print("22222---")
-        actions = self.diffusion.generate_actions(batch)
-        print("33333---")
+
+        # Optional fp16 inference — halves latency of the conv-heavy encoder + UNet while the
+        # diffusion noise sample stays fp32 (autocast only downcasts eligible conv/matmul ops,
+        # preserving DDIM numerical stability). Toggle at rollout time with DIFFUSION_FP16=1.
+        use_fp16 = os.getenv("DIFFUSION_FP16", "0") == "1"
+        on_cuda = next(self.diffusion.parameters()).is_cuda
+        with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_fp16 and on_cuda):
+            actions = self.diffusion.generate_actions(batch)
 
         # TODO(rcadene): make above methods return output dictionary?
         actions = self.unnormalize_outputs({ACTION: actions})[ACTION]

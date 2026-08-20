@@ -189,6 +189,8 @@ class SupreRobotFollower(Robot):
         # ==================== 力反馈缓存 ====================
         # 缓存最新的力数据，避免 get_force_feedback() 重复调用硬件读取
         self._cached_forces: Optional[List[float]] = None
+        # 缓存最新的位置数据，避免 _prepare_and_clamp_action 每步重复 CAN 读取（get_observation 已读）
+        self._cached_positions: Optional[List[float]] = None
 
         # ==================== MotorsBus 兼容层 ====================
         # RobotEnv 等组件使用 robot.bus 接口，这里提供兼容
@@ -298,10 +300,13 @@ class SupreRobotFollower(Robot):
 
         # 清除缓存的力数据
         self._cached_forces = None
+        # 清除缓存的位置数据
+        self._cached_positions = None
 
         # 刷新硬件状态（可选，确保状态同步）
         positions, forces = self._hardware_manager.read()
         self._cached_forces = forces
+        self._cached_positions = positions
 
         logging.debug("SupreRobotFollower reset completed.")
 
@@ -317,6 +322,8 @@ class SupreRobotFollower(Robot):
 
         # 缓存力数据供 get_force_feedback() 使用，避免重复硬件读取
         self._cached_forces = forces
+        # 缓存位置数据供 _prepare_and_clamp_action 的安全钳制使用，避免每步重复 CAN 读取
+        self._cached_positions = positions
 
         # 移除 logging.debug 以减少每帧开销
         # obs_dict = {f"{self.observation_joint_names[i]}.pos": positions[i] for i in range(len(self.observation_joint_names))}
@@ -341,7 +348,12 @@ class SupreRobotFollower(Robot):
         if not self.is_connected:
             raise RuntimeError("Robot is not connected.")
 
-        positions = self._hardware_manager.read()[0]
+        # 优先用 get_observation() 已缓存的本步位置，避免重复 CAN 读取；
+        # 缓存为空时（rollout 流程中理论上不会发生）兜底读一次硬件。
+        if self._cached_positions is not None:
+            positions = self._cached_positions
+        else:
+            positions = self._hardware_manager.read()[0]
 
         # 移除 logging.debug 以减少每帧开销
         return {self.observation_joint_names[i]: positions[i] for i in range(len(self.observation_joint_names))}
