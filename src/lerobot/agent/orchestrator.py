@@ -870,6 +870,71 @@ class TaskAgentOrchestrator:
         except Exception as e:
             logger.warning("TaskMemory: failed to record '%s': %s", task.name, e)
 
+    # ── Memory diagnostics (Phase 1: read-only monitor) ──────────────────
+    # Consume otherwise-dead _stats fields as MONITORS: log a warning when a
+    # running average crosses a threshold.  NEVER mutates task parameters —
+    # open-loop by design (no feedback-loop risk).  Runs at cycle boundary
+    # (after _execute_with_safety returns), not in the real-time control loop.
+    #
+    # field -> {"op": "gt"|"lt", "threshold": float, "msg": template ({v})}
+    _DIAGNOSTICS_RULES: dict[str, dict[str, Any]] = {
+        "search_attempts_avg": {
+            "op": "gt", "threshold": 1.0,
+            "msg": "tag 开始丢失(平均 {v} 次搜索,>1 表示需旋转搜索)→ 查观察距离/光照/tag 大小",
+        },
+        "phase1_iters_avg": {
+            "op": "gt", "threshold": 4.0,
+            "msg": "对齐收敛慢(平均 {v} 次迭代)",
+        },
+        "oscillation_rate": {
+            "op": "gt", "threshold": 0.5,
+            "msg": "该工位长期震荡(震荡率 {v})",
+        },
+        "confidence_avg": {
+            "op": "lt", "threshold": 0.8,
+            "msg": "classify 置信度偏低({v})→ ROI 边际风险,查定位/ROI 标定",
+        },
+    }
+
+    def _memory_diagnostics_report(self) -> None:
+        """Read-only health check over accumulated _stats (Phase 1 monitor).
+
+        Logs a warning per (task, field) that crosses a ``_DIAGNOSTICS_RULES``
+        threshold, and a debug summary otherwise.  Never mutates parameters —
+        open-loop by design, so it cannot introduce a feedback loop.  Best-effort:
+        any error is swallowed (matches TaskMemoryStore's non-crash guarantee).
+        """
+        if self.task_memory is None:
+            return
+        try:
+            for task_name, stats in self.task_memory.all_stats().items():
+                hit_any = False
+                for field, rule in self._DIAGNOSTICS_RULES.items():
+                    value = stats.get(field)
+                    if value is None:
+                        continue
+                    op = rule["op"]
+                    hit = (
+                        value > rule["threshold"]
+                        if op == "gt"
+                        else value < rule["threshold"]
+                    )
+                    if hit:
+                        hit_any = True
+                        logger.warning(
+                            "TaskMemory[diag] '%s' %s=%s: %s",
+                            task_name, field, value,
+                            rule["msg"].format(v=value),
+                        )
+                if not hit_any:
+                    logger.debug(
+                        "TaskMemory[diag] '%s' healthy: %s",
+                        task_name,
+                        {k: stats.get(k) for k in self._DIAGNOSTICS_RULES},
+                    )
+        except Exception:
+            logger.debug("TaskMemory diagnostics failed (non-fatal)", exc_info=True)
+
     # ── Global Memory failure recovery ─────────────────────────────────
     # Idea 2: uses _stats.failure_modes from task_memory to recognise
     # recurring failure signatures and insert a targeted recovery action
@@ -1351,6 +1416,9 @@ class TaskAgentOrchestrator:
                 # Execute one cycle
                 summary = self._execute_with_safety()
                 all_results.extend(summary.task_results)
+
+                # ── Memory diagnostics (read-only health check) ──────────
+                self._memory_diagnostics_report()
 
                 # Check for fatal failure - don't continue cycles
                 if summary.overall_success == False and any(

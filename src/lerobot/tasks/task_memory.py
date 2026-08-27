@@ -123,6 +123,19 @@ class TaskMemoryStore:
             return dict(entry.get(_RESERVED_STATS_KEY) or {})
         return {}
 
+    def all_stats(self) -> dict[str, dict[str, Any]]:
+        """Return ``{task_name: _stats dict}`` for every recorded task.
+
+        The orchestrator's read-only diagnostics loop uses this to inspect
+        every task's running averages without reaching into ``_data``.
+        Non-dict entries (stored verbatim) are skipped.
+        """
+        out: dict[str, dict[str, Any]] = {}
+        for name, entry in self._data.items():
+            if isinstance(entry, dict):
+                out[name] = dict(entry.get(_RESERVED_STATS_KEY) or {})
+        return out
+
     def record(self, task_name: str, trace: dict[str, Any]) -> None:
         """Store *trace* under *task_name* and persist to disk.
 
