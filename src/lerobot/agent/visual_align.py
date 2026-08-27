@@ -371,6 +371,25 @@ def search_marker(
     return None, config.search_max_attempts, total_turned
 
 
+def _confirm_stopped(agv_controller, timeout: float = 2.0, poll_interval: float = 0.1) -> bool:
+    """Poll AGV velocity until linear + angular speed ~0 (or timeout).
+
+    Used by the stop-test between turn and forward: after ``agv_controller.stop()``,
+    confirm the AGV actually reports near-zero velocity before the next motion, so
+    a residual turn can't corrupt the following translate.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            vx, vy, vth = agv_controller.get_velocity()
+            if abs(vx) < 0.005 and abs(vy) < 0.005 and abs(vth) < 0.01:
+                return True
+        except Exception:
+            pass
+        time.sleep(poll_interval)
+    return False
+
+
 def execute_visual_align(
     robot,
     agv_controller,
@@ -619,7 +638,38 @@ def execute_visual_align(
         if did_cap and _iter_log:
             _iter_log[-1]["capped"] = True
 
+        # ── Motion execution ─────────────────────────────────────────
+        # [freego] Single map-frame trajectory via the AGV navigation stack.
+        # The nav stack plans turn+translate internally with localization
+        # feedback, avoiding the bare turn()→translate() handoff whose
+        # ~5-10° forward yaw is the root cause of the alignment oscillation.
+        # Default OFF (alignment_mode="turn_forward"): this branch never runs,
+        # so the stable version below is byte-for-byte unchanged.
+        if config.alignment_mode == "freego":
+            pos = agv_controller.get_position()
+            dtheta_rad = dtheta_deg * DEG_TO_RAD
+            target_theta = pos.theta + dtheta_rad
+            target_x = pos.x + forward_dist * math.cos(target_theta)
+            target_y = pos.y + forward_dist * math.sin(target_theta)
+            logger.warning(
+                f"  [freego] target=({target_x:.3f}, {target_y:.3f}, "
+                f"{target_theta * RAD_TO_DEG:.1f}°) from "
+                f"({pos.x:.3f}, {pos.y:.3f}, {pos.theta * RAD_TO_DEG:.1f}°)"
+            )
+            ok = agv_controller.move_to_position(target_x, target_y, target_theta)
+            if not ok:
+                logger.error("  [freego] move_to_position command failed!")
+            else:
+                agv_controller.wait_for_freego_complete(
+                    target_x, target_y, target_theta,
+                    tolerance=max(config.position_tolerance, 0.02),
+                    timeout=20.0,
+                )
+                time.sleep(0.3)
+            continue  # skip the turn/forward primitive path below
+
         # Step 1a: Turn AGV
+        did_turn = False
         if abs(dtheta_deg) > 0.5:  # skip turns < 0.5° (below AGV precision)
             turn_deg = dtheta_deg
             vw = config.turn_speed * DEG_TO_RAD
@@ -629,10 +679,27 @@ def execute_visual_align(
             agv_controller.turn(
                 angle=abs(turn_deg) * DEG_TO_RAD,
                 vw=vw,
-                mode=0,
+                mode=config.turn_mode,
             )
             agv_controller.wait_for_turn_complete(timeout=10.0)
             time.sleep(0.3)
+            did_turn = True
+
+        # (stop-test) Explicit hard-stop between turn and forward, then confirm
+        # the AGV reports ~zero velocity before the translate starts.  Default
+        # OFF (stop_between_turn_and_forward=False): behavior is identical to
+        # the stable version.  Enable it in YAML to test whether the ~5°
+        # forward-yaw after a turn is a residual turn the stop() can flush out.
+        if (
+            did_turn
+            and abs(forward_dist) > 0.005
+            and config.stop_between_turn_and_forward
+        ):
+            logger.warning("  [stop-test] explicit stop between turn and forward")
+            agv_controller.stop()
+            if not _confirm_stopped(agv_controller, timeout=2.0):
+                logger.warning("  [stop-test] velocity did not reach zero within 2s")
+            time.sleep(0.2)
 
         # Step 1b: Drive forward/backward
         if abs(forward_dist) > 0.005:  # skip moves < 5mm
@@ -647,7 +714,7 @@ def execute_visual_align(
             ok = agv_controller.translate(
                 dist=dist,
                 vx=vx,
-                mode=0,
+                mode=config.translate_mode,
             )
             if not ok:
                 logger.error("  Translate command failed!")
