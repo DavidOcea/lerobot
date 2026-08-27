@@ -175,6 +175,15 @@ dmypy.json
 cython_debug/
 monitor/prometheus/grafana-data
 monitor/prometheus/prometheus-data/
+<<<<<<< HEAD
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
+=======
+
+#
+*.md 
+*.mdx
+# Serena MCP project cache
+.serena/
+>>>>>>> david/temp-agent

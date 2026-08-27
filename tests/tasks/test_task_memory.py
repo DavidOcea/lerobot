@@ -6,6 +6,7 @@ All tests use tmp_path for file isolation — no real filesystem side effects.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -1077,3 +1078,133 @@ def test_explore_deploy_non_visual_align_task(enabled_cfg: TaskMemoryConfig) -> 
     assert restore is not None
     assert restore["va_position_tolerance"] is None
     assert restore["va_angle_tolerance"] is None
+
+
+# ── Phase 1: Memory diagnostics (read-only monitor) tests ──────────────────
+# Validate TaskMemoryStore.all_stats() and the orchestrator's read-only
+# _memory_diagnostics_report() — which logs warnings on threshold breaches
+# but never mutates parameters.
+
+
+def test_all_stats_returns_all_tasks(enabled_cfg: TaskMemoryConfig) -> None:
+    """all_stats() returns {task_name: _stats} and excludes non-dict entries."""
+    store = TaskMemoryStore(enabled_cfg)
+    store.record("va", {"task_type": "visual_align", "phase1": {"iterations": 2}})
+    store.record("cls", {"task_type": "classify", "label": "long_00", "confidence": 0.9})
+    store.record("list_task", [1, 2, 3])
+
+    all_s = store.all_stats()
+
+    assert set(all_s.keys()) == {"va", "cls"}  # non-dict entry excluded
+    assert all_s["va"]["total_count"] == 1
+    assert all_s["cls"]["total_count"] == 1
+    assert "_stats" not in all_s["va"]  # values are the stats dict itself
+
+
+def test_diagnostics_warns_on_threshold(enabled_cfg: TaskMemoryConfig, caplog) -> None:
+    """search_attempts_avg above threshold → logger.warning emitted."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+
+    store = TaskMemoryStore(enabled_cfg)
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {"iterations": 2, "converged": True, "gain_sequence": [0.8, 0.6]},
+        "search": {"attempts": 2},
+    })
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = store
+
+    with caplog.at_level(logging.WARNING, logger="lerobot.agent.orchestrator"):
+        orch._memory_diagnostics_report()
+
+    assert "search_attempts_avg" in caplog.text
+    assert "va_station" in caplog.text
+
+
+def test_diagnostics_warns_low_confidence(enabled_cfg: TaskMemoryConfig, caplog) -> None:
+    """confidence_avg below threshold (lt rule) → logger.warning emitted."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+
+    store = TaskMemoryStore(enabled_cfg)
+    store.record("classify_wp", {
+        "task_type": "classify",
+        "label": "long_00", "confidence": 0.70, "duration_s": 1.0,
+    })
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = store
+
+    with caplog.at_level(logging.WARNING, logger="lerobot.agent.orchestrator"):
+        orch._memory_diagnostics_report()
+
+    assert "confidence_avg" in caplog.text
+
+
+def test_diagnostics_silent_when_healthy(enabled_cfg: TaskMemoryConfig, caplog) -> None:
+    """All fields healthy → no WARNING-level records."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+
+    store = TaskMemoryStore(enabled_cfg)
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {"iterations": 2, "converged": True, "gain_sequence": [0.8, 0.6]},
+        "search": {"attempts": 0},
+    })
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = store
+
+    with caplog.at_level(logging.WARNING, logger="lerobot.agent.orchestrator"):
+        orch._memory_diagnostics_report()
+
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def test_diagnostics_silent_when_search_attempts_one(enabled_cfg: TaskMemoryConfig, caplog) -> None:
+    """search_attempts=1 (first-try hit) is healthy — must NOT warn.
+
+    Regression guard: real logs showed search_attempts_avg=1.0 meaning
+    "found on attempt 0" (attempts = search_attempts + 1).  Threshold must
+    be > 1.0, so value 1.0 stays silent.
+    """
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+
+    store = TaskMemoryStore(enabled_cfg)
+    store.record("va_station", {
+        "task_type": "visual_align",
+        "phase1": {"iterations": 2, "converged": True, "gain_sequence": [0.8, 0.6]},
+        "search": {"attempts": 1},
+    })
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = store
+
+    with caplog.at_level(logging.WARNING, logger="lerobot.agent.orchestrator"):
+        orch._memory_diagnostics_report()
+
+    assert "search_attempts_avg" not in caplog.text
+
+
+def test_diagnostics_noop_when_memory_disabled() -> None:
+    """task_memory is None → _memory_diagnostics_report() returns silently."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = None
+
+    orch._memory_diagnostics_report()  # must not raise
+
+
+def test_diagnostics_swallows_error() -> None:
+    """all_stats() raising → diagnostics swallows it (non-fatal)."""
+    from lerobot.agent.orchestrator import TaskAgentOrchestrator
+
+    class _BoomStore:
+        def all_stats(self):
+            raise RuntimeError("boom")
+
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.task_memory = _BoomStore()
+
+    orch._memory_diagnostics_report()  # must not raise
