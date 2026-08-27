@@ -209,6 +209,14 @@ class VisualAlignConfig:
     turn_speed: float = 15.0  # 转动微调速度 (度/s)
     approach_distance: float = 0.50  # 目标接近距离 (米), 停在标记前方此距离处
 
+    # ===== AGV 运动模式 (Seer 3055/3056 API 的 mode 参数) =====
+    # 0=里程模式(默认, 不需定位, 但误差随距离增大; 平移不锁航向, 易横向漂移)
+    # 1=定位模式(需 AGV 已定位稳定; 激光/二维码闭环, 平移锁航向防漂移)
+    turn_mode: int = 0  # 转动模式
+    translate_mode: int = 0  # 平移模式
+    stop_between_turn_and_forward: bool = False  # 实验: 转动与前进之间显式急停+确认停稳 (默认关=稳定版)
+    alignment_mode: str = "turn_forward"  # "turn_forward"=裸原语转+前进(稳定版); "freego"=freeGo坐标导航(实验, 默认关)
+
     # ===== 参考照片对齐 (可选) =====
     # 设置后跳过 approach_distance, 用参考帧的位姿作为对齐目标
     reference_pose_path: str | None = None  # 参考位姿 JSON 文件路径

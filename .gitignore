@@ -179,3 +179,5 @@ monitor/prometheus/prometheus-data/
 #
 *.md 
 *.mdx
+# Serena MCP project cache
+.serena/

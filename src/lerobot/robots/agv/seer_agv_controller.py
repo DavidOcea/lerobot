@@ -851,6 +851,62 @@ class SeerAGVController:
             logger.error(f"Failed to start freeGo navigation: {e}")
             return False
 
+    def wait_for_freego_complete(
+        self,
+        target_x: float,
+        target_y: float,
+        target_theta: float,
+        tolerance: float = 0.02,
+        theta_tolerance_deg: float = 2.0,
+        timeout: float = 20.0,
+        poll_interval: float = 0.2,
+    ) -> bool:
+        """等待 freeGo 坐标导航到位.
+
+        到位判定需同时满足:
+          1. 位置误差 <= tolerance (米)
+          2. 航向误差 <= theta_tolerance_deg (度, 已 wrap 到 [-π, π])
+          3. AGV 空闲 (status_code==IDLE 且 not is_moving)
+
+        Args:
+            target_x/y/theta: freeGo 目标位姿 (世界坐标, theta 弧度)
+            tolerance: 位置容差 (米)
+            theta_tolerance_deg: 航向容差 (度)
+            timeout: 最大等待时间 (秒)
+            poll_interval: 轮询间隔 (秒)
+
+        Returns:
+            True if arrived, False if timeout.
+        """
+        start_time = time.time()
+        theta_tol = theta_tolerance_deg * math.pi / 180.0
+        dist_err = float("inf")
+        theta_err = float("inf")
+        while time.time() - start_time < timeout:
+            pos = self.get_position()
+            dist_err = math.hypot(pos.x - target_x, pos.y - target_y)
+            theta_err = pos.theta - target_theta
+            theta_err = (theta_err + math.pi) % (2 * math.pi) - math.pi
+            status = self.get_status(use_cache=False)
+            if (
+                dist_err <= tolerance
+                and abs(theta_err) <= theta_tol
+                and status.status_code == self.STATUS_IDLE
+                and not status.is_moving
+            ):
+                logger.info(
+                    f"freeGo arrived: pos_err={dist_err:.3f}m, "
+                    f"theta_err={theta_err * RAD_TO_DEG:.1f}°, "
+                    f"elapsed={time.time() - start_time:.1f}s"
+                )
+                return True
+            time.sleep(poll_interval)
+        logger.warning(
+            f"freeGo wait timeout: pos_err={dist_err:.3f}m, "
+            f"theta_err={theta_err * RAD_TO_DEG:.1f}°"
+        )
+        return False
+
     def cancel_navigation(self) -> bool:
         """取消当前导航任务.
 
