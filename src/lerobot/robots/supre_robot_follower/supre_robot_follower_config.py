@@ -18,6 +18,9 @@ _DEFAULT_JOINT_CONFIG_PATH = "config_supre_robot_joint.yaml"
 class SupreRobotFollowerConfig(RobotConfig):
     """Configuration for the SupreRobot."""
     joint_config_file: str = _DEFAULT_JOINT_CONFIG_PATH
+    # 单文件 profile 路径；设置后 joint_order/direction/calibration/hardware_interfaces 全部由它派生。
+    # 缺省（None）时回退到 joint_config_file + dataclass 默认值。
+    robot_profile: str | None = None
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
     joint_direction: list= field(default_factory=lambda: [-1, -1, 1, 1, 1, -1, 1, -1, -1, 1, 1, 1, -1, 1, 1, 1])
     # Override joint direction signs for cross-robot model deployment.

@@ -67,3 +67,20 @@ def test_load_profile_rejects_gripper(tmp_path):
     )
     with pytest.raises(NotImplementedError, match="gripper"):
         load_profile(str(bad))
+
+
+def test_follower_init_with_profile():
+    # 依赖原生电机驱动 eu_motor_py，仅在有硬件的机器人环境运行；此处自动跳过。
+    pytest.importorskip("eu_motor_py", reason="requires native motor driver (robot-only)")
+    from lerobot.robots.supre_robot_follower.supre_robot_follower import SupreRobotFollower
+    from lerobot.robots.supre_robot_follower.supre_robot_follower_config import SupreRobotFollowerConfig
+
+    cfg = SupreRobotFollowerConfig(robot_profile=str(PROFILE), prometheus_port=None)
+    robot = SupreRobotFollower(cfg)
+    assert robot.num_joints == 14
+    assert robot._joint_order[0] == "left_arm_joint_1"
+    assert robot._joint_order[-1] == "trunk_joint_2"
+    assert robot._joint_direction_map["trunk_joint_2"] == 1
+    assert "trunk_joint_1" in robot.calibration_limits
+    assert robot._profile is not None
+
