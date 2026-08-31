@@ -97,3 +97,22 @@ def test_hardware_manager_accepts_config_dict():
     assert mgr._config is cfg
 
 
+def test_follower_init_without_profile_uses_legacy():
+    pytest.importorskip("eu_motor_py", reason="requires native motor driver (robot-only)")
+    from lerobot.robots.supre_robot_follower.supre_robot_follower import SupreRobotFollower
+    from lerobot.robots.supre_robot_follower.supre_robot_follower_config import SupreRobotFollowerConfig
+
+    # 不设 robot_profile → 走 joint_config_file 旧路径
+    cfg = SupreRobotFollowerConfig(
+        joint_config_file="trunk_config_supre_robot_joint.yaml",
+        prometheus_port=None,
+    )
+    robot = SupreRobotFollower(cfg)
+    assert robot.num_joints == 14
+    assert robot._joint_order[-1] == "trunk_joint_2"
+    assert robot._profile is None
+    # 旧路径 direction 来自 model_joint_direction_override（默认 None → 全 +1）
+    assert robot._joint_direction_map["left_arm_joint_1"] == 1
+
+
+
