@@ -23,14 +23,20 @@ class SupreRobotHardwareManager:
         "JodellGripperHardware": JodellGripperHardware,
     }
 
-    def __init__(self, config_path: str,control_frequency:float = 30,use_interpolation:bool = False):
+    def __init__(self, config_path: str | None = None, config: dict | None = None, control_frequency: float = 30, use_interpolation: bool = False):
         """
         构造函数。
-        :param config_path: 指向 robot_config.yaml 文件的路径。
+        :param config_path: 指向 robot_config.yaml 文件的路径（旧路径）。
+        :param config: 已解析的 config dict（新路径，来自 profile_loader）。二者必填其一。
         """
         print("Initializing SupreRobotHardwareManager...")
-        with open(config_path, 'r') as f:
-            self._config = yaml.safe_load(f)
+        if config is not None:
+            self._config = config
+        elif config_path is not None:
+            with open(config_path, 'r') as f:
+                self._config = yaml.safe_load(f)
+        else:
+            raise ValueError("SupreRobotHardwareManager requires either 'config' or 'config_path'.")
 
         self.joint_order: List[str] = self._config["joint_order"]
         self.num_joints = len(self.joint_order)

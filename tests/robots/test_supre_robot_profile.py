@@ -84,3 +84,16 @@ def test_follower_init_with_profile():
     assert "trunk_joint_1" in robot.calibration_limits
     assert robot._profile is not None
 
+
+def test_hardware_manager_accepts_config_dict():
+    pytest.importorskip("eu_motor_py", reason="requires native motor driver (robot-only)")
+    from lerobot.robots.supre_robot.supre_robot_hardware_manager import SupreRobotHardwareManager
+
+    p = load_profile(str(PROFILE))
+    cfg = {"joint_order": p.joint_order, "hardware_interfaces": p.hardware_interfaces}
+    mgr = SupreRobotHardwareManager(config=cfg, control_frequency=30, use_interpolation=False)
+    assert mgr.num_joints == 14
+    assert mgr.joint_order == p.joint_order
+    assert mgr._config is cfg
+
+

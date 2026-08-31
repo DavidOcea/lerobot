@@ -125,8 +125,21 @@ class SupreRobotFollower(Robot):
             print("Robot is already connected.")
             return
 
-        print(f"Connecting to {self.name} using config '{self.config.joint_config_path}'...")
-        self._hardware_manager = SupreRobotHardwareManager(config_path=self.config.joint_config_path,control_frequency=self.config.control_frequency,use_interpolation=self._use_interpolation)
+        if self._profile is not None:
+            hw_config = {"joint_order": self._profile.joint_order, "hardware_interfaces": self._profile.hardware_interfaces}
+            print(f"Connecting to {self.name} using profile '{self.config.robot_profile}'...")
+            self._hardware_manager = SupreRobotHardwareManager(
+                config=hw_config,
+                control_frequency=self.config.control_frequency,
+                use_interpolation=self._use_interpolation,
+            )
+        else:
+            print(f"Connecting to {self.name} using config '{self.config.joint_config_path}'...")
+            self._hardware_manager = SupreRobotHardwareManager(
+                config_path=self.config.joint_config_path,
+                control_frequency=self.config.control_frequency,
+                use_interpolation=self._use_interpolation,
+            )
         
         try:
             if not self._hardware_manager.init():
