@@ -21,7 +21,7 @@ class SupreRobotHardwareManager:
         "JodellGripperHardware": JodellGripperHardware,
     }
 
-    def __init__(self, config_path: str | None = None, config: dict | None = None, control_frequency: float = 30, use_interpolation: bool = False, enable_velocity_read: bool = False):
+    def __init__(self, config_path: str | None = None, config: dict | None = None, control_frequency: float = 30, use_interpolation: bool = False, enable_velocity_read: bool = False, direction: list[int] | None = None):
         """
         构造函数。
         :param config_path: 指向 robot_config.yaml 文件的路径（旧路径）。
@@ -29,6 +29,7 @@ class SupreRobotHardwareManager:
         :param control_frequency: 控制频率 (Hz)
         :param use_interpolation: 是否启用插值模式
         :param enable_velocity_read: 是否读取速度数据（默认关闭以优化性能）
+        :param direction: 每个关节的方向符号（+1/-1），与 joint_order 平行；None = 全 +1（identity，等价于不归一化）。
         """
         print("Initializing SupreRobotHardwareManager...")
         if config is not None:
@@ -43,6 +44,14 @@ class SupreRobotHardwareManager:
         self.num_joints = len(self.joint_order)
         print(f"Total number of joints configured: {self.num_joints}")
         print(f"Joint order: {self.joint_order}")
+
+        # 方向归一化：±1 自逆，read()/write() 对称乘。None = 全 +1（identity，行为与不归一化完全一致）。
+        if direction is None:
+            self._direction = [1] * self.num_joints
+        else:
+            if len(direction) != self.num_joints:
+                raise ValueError(f"direction length ({len(direction)}) != num_joints ({self.num_joints})")
+            self._direction = list(direction)
 
         # 存储硬件实例
         self._hardware_instances: List[Any] = []
@@ -193,6 +202,11 @@ class SupreRobotHardwareManager:
                 self.positions[global_index] = pos if pos is not None else self.positions[global_index] # 保持旧值如果读取失败
                 self.forces[global_index] = force if force is not None else self.forces[global_index]
 
+        # 方向归一化：观测返回规范值（canonical = raw × direction），±1 自逆。
+        self.positions = [p * d for p, d in zip(self.positions, self._direction)]
+        self.forces = [f * d for f, d in zip(self.forces, self._direction)]
+        self.velocities = [v * d for v, d in zip(self.velocities, self._direction)]
+
         return (list(self.positions),list(self.forces))
 
     def read_velocities(self) -> List[float]:
@@ -211,6 +225,9 @@ class SupreRobotHardwareManager:
             raise ValueError(f"Command vector length ({len(command_positions)}) does not match number of joints ({self.num_joints}).")
 
         self.commands = command_positions
+
+        # 方向归一化：把规范值转回物理值（raw = canonical × direction），±1 自逆。
+        raw_commands = [c * d for c, d in zip(command_positions, self._direction)]
         
         # 1. 准备分发给每个硬件的指令字典
         #    key: 硬件实例
@@ -223,7 +240,7 @@ class SupreRobotHardwareManager:
             hw_commands[instance] = [None] * num_hw_joints
 
         # 2. 遍历全局指令，使用映射表分发
-        for global_index, command_value in enumerate(self.commands):
+        for global_index, command_value in enumerate(raw_commands):
             mapping = self._joint_map[global_index]
             instance = mapping['instance']
             hw_index = mapping['hw_index']

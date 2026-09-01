@@ -161,6 +161,7 @@ class SupreRobotFollower(Robot):
             self.num_joints = self._profile.num_joints
             self.observation_joint_names = self._joint_order
             self.calibration_limits = {cal.joint_name: cal for cal in self._profile.calibration}
+            self._joint_direction = self._profile.joint_direction
         else:
             # 旧路径：与改造前完全一致
             config.joint_config_path = str(Path(__file__).resolve().parent/config.joint_config_file)
@@ -180,6 +181,8 @@ class SupreRobotFollower(Robot):
             for joint_name in self.observation_joint_names:
                 if joint_name not in self.calibration_limits:
                     raise ValueError(f"Missing calibration data for joint '{joint_name}' in config.")
+
+            self._joint_direction = None  # 旧路径无方向信息，硬件管理器用 identity（全 +1）
 
         self.prometheus_port = getattr(config, 'prometheus_port', None)
         self.joint_position_gauge = None
@@ -243,7 +246,8 @@ class SupreRobotFollower(Robot):
                 config=hw_config,
                 control_frequency=self.config.control_frequency,
                 use_interpolation=self._use_interpolation,
-                enable_velocity_read=self.config.enable_velocity_read
+                enable_velocity_read=self.config.enable_velocity_read,
+                direction=self._joint_direction
             )
         else:
             logging.info(f"Connecting to {self.name} using config '{self.config.joint_config_path}'...")
@@ -251,7 +255,8 @@ class SupreRobotFollower(Robot):
                 config_path=self.config.joint_config_path,
                 control_frequency=self.config.control_frequency,
                 use_interpolation=self._use_interpolation,
-                enable_velocity_read=self.config.enable_velocity_read
+                enable_velocity_read=self.config.enable_velocity_read,
+                direction=self._joint_direction
             )
 
         try:
