@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Tuple
 # 导入你提供的两个硬件类
 # 假设它们在名为 eyou_hardware.py 和 gripper_hardware.py 的文件中
 from lerobot.motors.eyou import EyouMotorHardware,AsyncInterpolator
-from lerobot.motors.gripper import JodellGripperHardware,MisumiGripperHardware
+from lerobot.motors.gripper import JodellGripperHardware
 from lerobot.utils.monitor_utils import monitor_performance
 
 logger = logging.getLogger(__name__)
@@ -21,17 +21,22 @@ class SupreRobotHardwareManager:
     HARDWARE_TYPE_MAP = {
         "EyouMotorHardware": EyouMotorHardware,
         "JodellGripperHardware": JodellGripperHardware,
-        "MisumiGripperHardware": MisumiGripperHardware,
     }
 
-    def __init__(self, config_path: str,control_frequency:float = 30,use_interpolation:bool = False):
+    def __init__(self, config_path: str | None = None, config: dict | None = None, control_frequency: float = 30, use_interpolation: bool = False):
         """
         构造函数。
-        :param config_path: 指向 robot_config.yaml 文件的路径。
+        :param config_path: 指向 robot_config.yaml 文件的路径（旧路径）。
+        :param config: 已解析的 config dict（新路径，来自 profile_loader）。二者必填其一。
         """
         print("Initializing SupreRobotHardwareManager...")
-        with open(config_path, 'r') as f:
-            self._config = yaml.safe_load(f)
+        if config is not None:
+            self._config = config
+        elif config_path is not None:
+            with open(config_path, 'r') as f:
+                self._config = yaml.safe_load(f)
+        else:
+            raise ValueError("SupreRobotHardwareManager requires either 'config' or 'config_path'.")
 
         self.joint_order: List[str] = self._config["joint_order"]
         self.num_joints = len(self.joint_order)
@@ -180,7 +185,7 @@ class SupreRobotHardwareManager:
                 self.velocities[global_index] = 0.0
                 self.forces[global_index] = result[hw_index][1]
 
-            elif isinstance(instance, JodellGripperHardware) or isinstance(instance, MisumiGripperHardware):
+            elif isinstance(instance, JodellGripperHardware):
                 # JodellGripperHardware.read() -> list[float | None]
                 pos = result[hw_index][0]
                 force = result[hw_index][1]
