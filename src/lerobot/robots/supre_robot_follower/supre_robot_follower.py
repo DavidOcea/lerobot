@@ -14,6 +14,7 @@ import numpy as np
 import dataclasses
 # 导入我们之前设计的硬件管理器
 from lerobot.robots.supre_robot import SupreRobotHardwareManager
+from lerobot.robots.supre_robot_profile import load_profile
 # from eyou_hardware import EyouMotorHardware  # Manager will import these
 # from gripper_hardware import JodellGripperHardware # Manager will import these
 from ..robot import Robot
@@ -150,27 +151,35 @@ class SupreRobotFollower(Robot):
         
         # 为了让 observation_features 和 action_features 可以在 connect() 之前被调用，
         # 我们需要提前加载关节顺序。
-        config.joint_config_path = str(Path(__file__).resolve().parent/config.joint_config_file)
-
-        try:
-            with open(config.joint_config_path, 'r') as f:
-                robot_yaml_config = yaml.safe_load(f)
-            self._joint_order = robot_yaml_config["joint_order"]
-            self.num_joints = len(self._joint_order)
-            self.observation_joint_names = self._joint_order
-            
-        except (FileNotFoundError, KeyError) as e:
-            raise ValueError(f"Failed to load joint_order from '{config.joint_config_path}': {e}")
-
         self.cameras = make_cameras_from_configs(config.cameras)
-      
-        # 将 calibration 列表转换为一个字典以便快速查找
-        # key: joint_name, value: MotorCalibration object
-        self.calibration_limits = {cal.joint_name: cal for cal in self.config.calibration}
-        # 增加一个检查，确保所有在 joint_names 中的关节都有对应的 calibration 设置
-        for joint_name in self.observation_joint_names:
-            if joint_name not in self.calibration_limits:
-                raise ValueError(f"Missing calibration data for joint '{joint_name}' in config.")
+        self._profile = None
+
+        if self.config.robot_profile:
+            # 新路径：一切机器人本体信息来自单文件 profile
+            self._profile = load_profile(self.config.robot_profile)
+            self._joint_order = self._profile.joint_order
+            self.num_joints = self._profile.num_joints
+            self.observation_joint_names = self._joint_order
+            self.calibration_limits = {cal.joint_name: cal for cal in self._profile.calibration}
+        else:
+            # 旧路径：与改造前完全一致
+            config.joint_config_path = str(Path(__file__).resolve().parent/config.joint_config_file)
+            try:
+                with open(config.joint_config_path, 'r') as f:
+                    robot_yaml_config = yaml.safe_load(f)
+                self._joint_order = robot_yaml_config["joint_order"]
+                self.num_joints = len(self._joint_order)
+                self.observation_joint_names = self._joint_order
+            except (FileNotFoundError, KeyError) as e:
+                raise ValueError(f"Failed to load joint_order from '{config.joint_config_path}': {e}")
+
+            # 将 calibration 列表转换为一个字典以便快速查找
+            # key: joint_name, value: MotorCalibration object
+            self.calibration_limits = {cal.joint_name: cal for cal in self.config.calibration}
+            # 增加一个检查，确保所有在 joint_names 中的关节都有对应的 calibration 设置
+            for joint_name in self.observation_joint_names:
+                if joint_name not in self.calibration_limits:
+                    raise ValueError(f"Missing calibration data for joint '{joint_name}' in config.")
 
         self.prometheus_port = getattr(config, 'prometheus_port', None)
         self.joint_position_gauge = None
@@ -227,13 +236,23 @@ class SupreRobotFollower(Robot):
             logging.info("Robot is already connected.")
             return
 
-        logging.info(f"Connecting to {self.name} using config '{self.config.joint_config_path}'...")
-        self._hardware_manager = SupreRobotHardwareManager(
-            config_path=self.config.joint_config_path,
-            control_frequency=self.config.control_frequency,
-            use_interpolation=self._use_interpolation,
-            enable_velocity_read=self.config.enable_velocity_read
-        )
+        if self._profile is not None:
+            hw_config = {"joint_order": self._profile.joint_order, "hardware_interfaces": self._profile.hardware_interfaces}
+            logging.info(f"Connecting to {self.name} using profile '{self.config.robot_profile}'...")
+            self._hardware_manager = SupreRobotHardwareManager(
+                config=hw_config,
+                control_frequency=self.config.control_frequency,
+                use_interpolation=self._use_interpolation,
+                enable_velocity_read=self.config.enable_velocity_read
+            )
+        else:
+            logging.info(f"Connecting to {self.name} using config '{self.config.joint_config_path}'...")
+            self._hardware_manager = SupreRobotHardwareManager(
+                config_path=self.config.joint_config_path,
+                control_frequency=self.config.control_frequency,
+                use_interpolation=self._use_interpolation,
+                enable_velocity_read=self.config.enable_velocity_read
+            )
 
         try:
             if not self._hardware_manager.init():
