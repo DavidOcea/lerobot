@@ -13,6 +13,10 @@ import yaml
 # CAN 总线参数是 supre_robot 控制器的固定属性，所有机器人一致（后续若有差异再进 profile）。
 CAN_DEVICE_INDEX = 1
 CAN_BAUD_RATE = "1M"
+# 串口夹爪（JodellGripperHardware）的默认接线参数，与历史 config 保持一致。
+GRIPPER_BAUD_RATE = 115200
+GRIPPER_SPEED_PERCENT = 100
+GRIPPER_TORQUE_PERCENT = 100
 
 
 @dataclass
@@ -42,6 +46,8 @@ def load_profile(profile_path: str) -> RobotProfile:
     joint_direction: List[int] = []
     calibration: List[JointCalibration] = []
     motor_joints: List[Dict[str, Any]] = []
+    # device -> list of gripper joints（同一串口设备上的夹爪归到一个 interface）
+    gripper_by_device: Dict[str, List[Dict[str, Any]]] = {}
 
     for j in joints:
         name = j["name"]
@@ -57,16 +63,25 @@ def load_profile(profile_path: str) -> RobotProfile:
             raise ValueError(
                 f"Joint '{name}': must be motor (node_id) OR gripper (device+slave_id), not both"
             )
-        if has_device:
-            # 夹爪：参考机器人无夹爪，本次不支持
-            raise NotImplementedError(f"Joint '{name}': gripper joints are not supported in this first cut")
 
         joint_order.append(name)
         joint_direction.append(direction)
         calibration.append(
             JointCalibration(joint_name=name, min_position=j["min"], max_position=j["max"])
         )
-        motor_joints.append({"name": name, "parameters": {"node_id": j["node_id"]}})
+
+        if has_node_id:
+            motor_joints.append({"name": name, "parameters": {"node_id": j["node_id"]}})
+        elif has_device:
+            device = j.get("device")
+            slave_id = j.get("slave_id")
+            if not device or slave_id is None:
+                raise ValueError(f"Joint '{name}': gripper joint requires both 'device' and 'slave_id'")
+            gripper_by_device.setdefault(device, []).append(
+                {"name": name, "parameters": {"slave_id": slave_id}}
+            )
+        else:
+            raise ValueError(f"Joint '{name}': must have node_id (motor) or device+slave_id (gripper)")
 
     if len(set(joint_order)) != len(joint_order):
         raise ValueError(f"Duplicate joint name in profile: {joint_order}")
@@ -81,6 +96,20 @@ def load_profile(profile_path: str) -> RobotProfile:
                 "can_device_index": CAN_DEVICE_INDEX,
                 "can_baud_rate": CAN_BAUD_RATE,
                 "joints": motor_joints,
+            },
+        })
+    for device, g_joints in gripper_by_device.items():
+        side = g_joints[0]["name"].split("_")[0]  # "left_arm_joint_7" -> "left"
+        hardware_interfaces.append({
+            "name": f"{side}_gripper",
+            "type": "JodellGripperHardware",
+            "interpolation": {"interpolation_n": 1},
+            "config": {
+                "device": device,
+                "baud_rate": GRIPPER_BAUD_RATE,
+                "default_speed_percent": GRIPPER_SPEED_PERCENT,
+                "default_torque_percent": GRIPPER_TORQUE_PERCENT,
+                "joints": g_joints,
             },
         })
 
