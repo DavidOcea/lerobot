@@ -7,6 +7,12 @@ import eu_motor_py
 from .hardware_interface import HardwareInterface
 from lerobot.utils.monitor_utils import monitor_performance
 
+# 第二批 PHU/RHU 谐波电机（joint_6/7, node 16/17/26/27）的减速比：脉冲/输出圈。
+# 0x6064 返回输出轴编码器计数，完整一圈 = 52953088 = 101 × 2^19（0x6092 feed constant = 524288）。
+# 该批电机 TPDO 被动反馈失效，read() 回退到裸 SDO 读 0x6064 时用它换算角度。
+# 诊断实测（0420_1.log）：+5° → Δraw=735384 → 735384/5×360=52947648，与厂商标注 52953088 一致。
+_PULSES_PER_REV_SECOND_BATCH = 52953088
+
 class EyouMotorHardware(HardwareInterface):
     """
     一个模仿 supre_robot_control::EyouSystemInterface 的 Python 类。
@@ -177,12 +183,23 @@ class EyouMotorHardware(HardwareInterface):
         """
         for i, motor in enumerate(self.motor_nodes_):
             feedback = motor.get_latest_feedback()
-            
+
             if feedback.last_update_time > datetime.timedelta(0):
                 self.hw_states_positions_[i] = feedback.position_deg
                 self.hw_states_velocities_[i] = feedback.velocity_dps
                 self.hw_states_torques_[i] = float(feedback.torque_milli)/1000.0
-        
+            else:
+                # TPDO 被动反馈失效（第二批 PHU/RHU 谐波电机 joint_6/7 不上报），
+                # 回退到裸 SDO 读 0x6064（harmonic_readDirectory 通用路径）。
+                # 不用 get_position()：它内部先吃 TPDO 缓存、超时才走厂商 harmonic_getActualPos，
+                # 后者对第二批电机返回过冻结旧值；read_s32(0x6064) 是实测确认新鲜的通路。
+                # velocity 不读：下游 supre_robot_hardware_manager.read() 把 velocities 写死为 0。
+                raw = motor.read_s32(0x6064, 0)
+                self.hw_states_positions_[i] = raw / _PULSES_PER_REV_SECOND_BATCH * 360.0
+                # get_torque() 返回 per-mille（0.1% 额定扭矩），须 /1000 对齐 if 分支的
+                # torque_milli/1000.0；漏除会把 4~31 毫放大成 4~31 Nm，触发碰撞检测误报。
+                self.hw_states_torques_[i] = float(motor.get_torque()) / 1000.0
+
         # 返回内部状态的拷贝，防止外部代码意外修改
         return list(zip(self.hw_states_positions_, self.hw_states_torques_))
     def busy_wait(self, wait_time_s):
