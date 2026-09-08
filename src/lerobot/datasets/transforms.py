@@ -214,6 +214,22 @@ def make_transform_from_config(cfg: ImageTransformConfig):
         return v2.ColorJitter(**cfg.kwargs)
     elif cfg.type == "SharpnessJitter":
         return SharpnessJitter(**cfg.kwargs)
+    elif cfg.type == "RandomHorizontalFlip":
+        return v2.RandomHorizontalFlip(**cfg.kwargs)
+    elif cfg.type == "RandomVerticalFlip":
+        return v2.RandomVerticalFlip(**cfg.kwargs)
+    elif cfg.type == "RandomRotation":
+        return v2.RandomRotation(**cfg.kwargs)
+    elif cfg.type == "RandomAffine":
+        return v2.RandomAffine(**cfg.kwargs)
+    elif cfg.type == "RandomResizedCrop":
+        return v2.RandomResizedCrop(**cfg.kwargs)
+    elif cfg.type == "RandomErasing":
+        return v2.RandomErasing(**cfg.kwargs)
+    elif cfg.type == "RandomPerspective":
+        return v2.RandomPerspective(**cfg.kwargs)
+    elif cfg.type == "GaussianBlur":
+        return v2.GaussianBlur(**cfg.kwargs)
     else:
         raise ValueError(f"Transform '{cfg.type}' is not valid.")
 
