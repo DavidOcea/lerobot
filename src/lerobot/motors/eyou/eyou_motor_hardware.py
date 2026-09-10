@@ -22,6 +22,12 @@ class EyouMotorHardware(HardwareInterface):
     2. read() 和 write() 方法同时提供清晰的参数和返回值，以方便控制循环。
     """
 
+    _POSITION_FEEDBACK_SYNC_TYPE = 1
+    # With the default 20 ms SYNC schedule, type 3 reports status/error every 60 ms.
+    _ERROR_FEEDBACK_SYNC_TYPE = 3
+    _SYNC_FEEDBACK_EVENT_TIMER_MS = 0
+
+
     def __init__(self):
         """构造函数。初始化内部状态存储。"""
         self.can_manager_: Optional[eu_motor_py.CanNetworkManager] = None
@@ -38,13 +44,17 @@ class EyouMotorHardware(HardwareInterface):
         self.hw_start_enabled_: List[bool] = []
         
         self._config: Dict[str, Any] = {}
+        self._can_device_index: Optional[int] = None
+        self._sync_period_ms: int = 20
         self._last_log_time = time.monotonic()
         self._max_write_duration_us = 0.0
 
     def init(self, config: Dict[str, Any]) -> bool:
         """
         初始化硬件接口。
-        【已更新以从 'parameters' 中读取 start_enabled】
+        ``sync_period_ms`` controls the SDK-managed CANopen SYNC period and
+        defaults to 20 ms. SYNC starts only after PDO configuration succeeds
+        during :meth:`activate`.
         """
         print("Initializing EyouMotorHardware...")
         self._config = config
@@ -53,6 +63,11 @@ class EyouMotorHardware(HardwareInterface):
             # 读取顶层参数
             can_device_index = int(self._config["can_device_index"])
             baud_rate_str = self._config["can_baud_rate"]
+            sync_period_ms = int(self._config.get("sync_period_ms", 20))
+            if sync_period_ms <= 0:
+                raise ValueError("sync_period_ms must be greater than zero")
+            self._can_device_index = can_device_index
+            self._sync_period_ms = sync_period_ms
             
             baud_rate_map = {
                 "1M": eu_motor_py.Baudrate.BPS_1M,
@@ -151,23 +166,48 @@ class EyouMotorHardware(HardwareInterface):
                 joint_name = self.joint_names_[i]
                 if self.hw_start_enabled_[i]:
                     print(f"Enabling motor for joint {joint_name}...")
-                    if not all([motor.clear_fault(),
-                                motor.configure_csp_mode(0, False),
-                                motor.start_auto_feedback(0, 255, 20),
-                                motor.start_error_feedback_tpdo(1, 255, 60)]):
-                        print(f"Error: Failed to configure enabled joint {joint_name}")
+                    if not motor.clear_fault():
+                        print(f"Error: Failed to clear fault for {joint_name}")
+                        return False
+                    if not motor.configure_csp_mode(0, True):
+                        print(f"Error: Failed to configure CSP mode for {joint_name}")
+                        return False
+                    if not motor.start_auto_feedback(
+                        0, self._POSITION_FEEDBACK_SYNC_TYPE, self._SYNC_FEEDBACK_EVENT_TIMER_MS
+                    ):
+                        print(f"Error: Failed to configure position feedback for {joint_name}")
+                        return False
+                    if not motor.start_error_feedback_tpdo(
+                        1, self._ERROR_FEEDBACK_SYNC_TYPE, self._SYNC_FEEDBACK_EVENT_TIMER_MS
+                    ):
+                        print(f"Error: Failed to configure error feedback for {joint_name}")
                         return False
                 else:
                     print(f"Skipping activation for joint {joint_name} as it is disabled.")
                     motor.disable()
-                    if not all([motor.clear_fault(),
-                                motor.start_auto_feedback(0, 255, 20),
-                                motor.start_error_feedback_tpdo(1, 255, 60)]):
-                         print(f"Warning: Failed to configure disabled joint {joint_name}")
+                    if not motor.clear_fault():
+                        print(f"Error: Failed to clear fault for disabled joint {joint_name}")
+                        return False
+                    if not motor.start_auto_feedback(
+                        0, self._POSITION_FEEDBACK_SYNC_TYPE, self._SYNC_FEEDBACK_EVENT_TIMER_MS
+                    ):
+                        print(f"Error: Failed to configure position feedback for disabled joint {joint_name}")
+                        return False
+                    if not motor.start_error_feedback_tpdo(
+                        1, self._ERROR_FEEDBACK_SYNC_TYPE, self._SYNC_FEEDBACK_EVENT_TIMER_MS
+                    ):
+                        print(f"Error: Failed to configure error feedback for disabled joint {joint_name}")
+                        return False
+
             
             self.feedback_manager_ = eu_motor_py.MotorFeedbackManager.get_instance()
             self.feedback_manager_.register_callback()
             print("Global feedback callback registered.")
+            if not self.can_manager_.start_sync(self._can_device_index, self._sync_period_ms):
+                print("Error: Failed to start CANopen SYNC scheduler.")
+                return False
+            print(f"CANopen SYNC scheduler started ({self._sync_period_ms} ms).")
+
 
         except RuntimeError as e:
             print(f"Error during activation: {e}")
@@ -251,6 +291,8 @@ class EyouMotorHardware(HardwareInterface):
         """停用硬件。"""
         print("Deactivating EyouMotorHardware...")
         try:
+            if self.can_manager_ is not None and self._can_device_index is not None:
+                self.can_manager_.stop_sync(self._can_device_index)
             for motor in self.motor_nodes_:
                 motor.disable()
         except RuntimeError as e:
