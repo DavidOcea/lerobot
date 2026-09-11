@@ -95,6 +95,7 @@ def load_profile(profile_path: str) -> RobotProfile:
             "config": {
                 "can_device_index": CAN_DEVICE_INDEX,
                 "can_baud_rate": CAN_BAUD_RATE,
+                "sync_period_ms": 20,
                 "joints": motor_joints,
             },
         })
