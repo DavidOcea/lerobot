@@ -230,6 +230,11 @@ class DiffusionModel(nn.Module):
         else:
             self.num_inference_steps = config.num_inference_steps
 
+        if config.mdn_num_components > 1 and config.mdn_mode == "nll":
+            # Shared learnable variance for the gaussian-mixture NLL (parameterized in log space
+            # to stay positive and numerically stable).
+            self.log_var = nn.Parameter(torch.zeros(1))
+
     # ========= inference  ============
     def conditional_sample(
         self, batch_size: int, global_cond: Tensor | None = None, generator: torch.Generator | None = None
@@ -247,6 +252,11 @@ class DiffusionModel(nn.Module):
 
         self.noise_scheduler.set_timesteps(self.num_inference_steps)
 
+        # For the MDN head, pick the mode (expert) once at the noisiest step, then commit to it for
+        # the rest of the trajectory. Choosing per-step would switch experts mid-rollout and inject
+        # jitter; committing once makes the sampler a deterministic "mode-committed" DDIM.
+        chosen_k = None  # (B,) expert index, fixed after the first step
+
         for t in self.noise_scheduler.timesteps:
             # Predict model output.
             model_output = self.unet(
@@ -254,6 +264,16 @@ class DiffusionModel(nn.Module):
                 torch.full(sample.shape[:1], t, dtype=torch.long, device=sample.device),
                 global_cond=global_cond,
             )
+
+            if self.config.mdn_num_components > 1:
+                components, logits = model_output  # (B, T, K, D), (B, T, K)
+                if chosen_k is None:
+                    # Routing logits averaged over the horizon -> pick the expert with the largest
+                    # mass. At t_max the sample is pure noise, so this is a "mode classifier" driven
+                    # by the observation conditioning alone.
+                    chosen_k = logits.mean(dim=1).argmax(dim=-1)  # (B,)
+                model_output = components[torch.arange(batch_size, device=device), :, chosen_k, :]
+
             # Compute previous image: x_t -> x_t-1
             sample = self.noise_scheduler.step(model_output, t, sample, generator=generator).prev_sample
 
@@ -374,6 +394,47 @@ class DiffusionModel(nn.Module):
             target = batch["action"]
         else:
             raise ValueError(f"Unsupported prediction type {self.config.prediction_type}")
+
+        if self.config.mdn_num_components > 1:
+            if self.config.do_mask_loss_for_padding:
+                raise NotImplementedError(
+                    "The MDN output head does not yet support `do_mask_loss_for_padding`. "
+                    "Train with the default `do_mask_loss_for_padding=False`."
+                )
+            # Mixture-of-experts denoiser: K epsilon predictions + routing logits.
+            components, logits = pred  # (B, T, K, D), (B, T, K)
+            target = target.unsqueeze(2)  # (B, T, 1, D)
+            sq_err = ((components - target) ** 2).mean(dim=-1)  # (B, T, K)
+
+            if self.config.mdn_mode == "wta":
+                # Winner-take-all: only the closest expert receives gradient, forcing the K experts
+                # to partition the action space into disjoint modes (online K-means on the action).
+                winner = sq_err.argmin(dim=-1)  # (B, T)
+                loss_components = sq_err.min(dim=-1).values.mean()
+                # Routing head predicts which expert owns this sample -> acts as a mode classifier.
+                logits_flat = logits.reshape(-1, self.config.mdn_num_components)
+                winner_flat = winner.reshape(-1)
+                if self.config.mdn_focal_gamma > 0.0:
+                    # Focal loss: down-weight easy (high-confidence) routing predictions so the head
+                    # can't cheat by predicting the frequency prior (collapse to the majority mode).
+                    gamma = self.config.mdn_focal_gamma
+                    logp = F.log_softmax(logits_flat, dim=-1)
+                    p_t = logp.exp().gather(1, winner_flat.unsqueeze(1)).squeeze(1)  # (N,)
+                    ce = F.cross_entropy(logits_flat, winner_flat, reduction="none")  # (N,)
+                    loss_routing = ((1.0 - p_t) ** gamma * ce).mean()
+                else:
+                    loss_routing = F.cross_entropy(logits_flat, winner_flat)
+                loss = loss_components + loss_routing
+            elif self.config.mdn_mode == "nll":
+                # Gaussian mixture NLL (soft assignment, EM-like). Shared learnable variance.
+                var = self.log_var.exp() + 1e-6
+                log_pi = F.log_softmax(logits, dim=-1)  # (B, T, K)
+                nll_k = 0.5 * (sq_err / var + math.log(2 * math.pi * var))  # (B, T, K)
+                loss = -torch.logsumexp(log_pi - nll_k, dim=-1).mean()
+            else:
+                raise ValueError(f"Unsupported mdn_mode {self.config.mdn_mode}")
+
+            return loss
 
         loss = F.mse_loss(pred, target, reduction="none")
 
@@ -688,10 +749,24 @@ class DiffusionConditionalUnet1d(nn.Module):
                 )
             )
 
-        self.final_conv = nn.Sequential(
-            DiffusionConv1dBlock(config.down_dims[0], config.down_dims[0], kernel_size=config.kernel_size),
-            nn.Conv1d(config.down_dims[0], config.action_feature.shape[0], 1),
-        )
+        # Output head. When `mdn_num_components > 1`, a shared trunk refines features and two heads
+        # branch off it: K epsilon-expert heads plus a routing head (K logits -> softmax). With a
+        # single component we keep the EXACT original `final_conv` (trunk conv + 1x1 conv to
+        # action_dim, same state_dict keys), so K=1 is bit-identical to the pre-MDN model and old
+        # checkpoints still load.
+        if config.mdn_num_components > 1:
+            self.final_conv = nn.Sequential(
+                DiffusionConv1dBlock(config.down_dims[0], config.down_dims[0], kernel_size=config.kernel_size),
+            )
+            self.component_head = nn.Conv1d(
+                config.down_dims[0], config.action_feature.shape[0] * config.mdn_num_components, 1
+            )
+            self.weight_head = nn.Conv1d(config.down_dims[0], config.mdn_num_components, 1)
+        else:
+            self.final_conv = nn.Sequential(
+                DiffusionConv1dBlock(config.down_dims[0], config.down_dims[0], kernel_size=config.kernel_size),
+                nn.Conv1d(config.down_dims[0], config.action_feature.shape[0], 1),
+            )
 
     def forward(self, x: Tensor, timestep: Tensor | int, global_cond=None) -> Tensor:
         """
@@ -732,8 +807,19 @@ class DiffusionConditionalUnet1d(nn.Module):
             x = resnet2(x, global_feature)
             x = upsample(x)
 
-        x = self.final_conv(x)
+        if self.config.mdn_num_components > 1:
+            x = self.final_conv(x)  # trunk only
+            # K epsilon experts: (B, D*K, T) -> (B, T, K, D)
+            components = self.component_head(x)
+            components = einops.rearrange(
+                components, "b (d k) t -> b t k d", k=self.config.mdn_num_components
+            )
+            # Routing head: (B, K, T) -> (B, T, K) logits (softmax applied by the caller).
+            logits = self.weight_head(x)
+            logits = einops.rearrange(logits, "b k t -> b t k")
+            return components, logits
 
+        x = self.final_conv(x)  # trunk + 1x1 conv to action_dim (exact original)
         x = einops.rearrange(x, "b d t -> b t d")
         return x
 

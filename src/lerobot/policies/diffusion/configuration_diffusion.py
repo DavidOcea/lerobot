@@ -145,6 +145,15 @@ class DiffusionConfig(PreTrainedConfig):
     clip_sample: bool = True
     clip_sample_range: float = 1.0
 
+    # MDN (mixture density) output head. `mdn_num_components=1` is exactly equivalent to the
+    # original single-point diffusion denoiser. Set >1 to split the denoiser into K experts
+    # (each predicting its own epsilon) plus a routing head that picks one mode at inference.
+    mdn_num_components: int = 1
+    mdn_mode: str = "wta"  # "wta" = winner-take-all (hard) | "nll" = gaussian mixture NLL (soft)
+    # Focal loss gamma for the routing head (WTA mode only). 0 = plain cross-entropy; >0 down-weights
+    # easy (high-confidence) routing predictions, countering collapse-to-frequency-prior.
+    mdn_focal_gamma: float = 0.0
+
     # Inference
     num_inference_steps: int | None = None
 
@@ -179,6 +188,16 @@ class DiffusionConfig(PreTrainedConfig):
                 f"`noise_scheduler_type` must be one of {supported_noise_schedulers}. "
                 f"Got {self.noise_scheduler_type}."
             )
+
+        if self.mdn_num_components < 1:
+            raise ValueError(f"`mdn_num_components` must be >= 1. Got {self.mdn_num_components}.")
+        supported_mdn_modes = ["wta", "nll"]
+        if self.mdn_mode not in supported_mdn_modes:
+            raise ValueError(
+                f"`mdn_mode` must be one of {supported_mdn_modes}. Got {self.mdn_mode}."
+            )
+        if self.mdn_focal_gamma < 0.0:
+            raise ValueError(f"`mdn_focal_gamma` must be >= 0.0. Got {self.mdn_focal_gamma}.")
 
         # Check that the horizon size and U-Net downsampling is compatible.
         # U-Net downsamples by 2 with each stage.
