@@ -33,6 +33,8 @@ class RobotProfile:
     calibration: List[JointCalibration]
     hardware_interfaces: List[Dict[str, Any]]
     num_joints: int
+    # 夹爪关节名：串口夹爪(device+slave_id) + 电机驱动夹爪(is_gripper: true)
+    gripper_joint_names: List[str]
 
 
 def load_profile(profile_path: str) -> RobotProfile:
@@ -48,6 +50,7 @@ def load_profile(profile_path: str) -> RobotProfile:
     motor_joints: List[Dict[str, Any]] = []
     # device -> list of gripper joints（同一串口设备上的夹爪归到一个 interface）
     gripper_by_device: Dict[str, List[Dict[str, Any]]] = {}
+    gripper_joint_names: List[str] = []
 
     for j in joints:
         name = j["name"]
@@ -72,6 +75,9 @@ def load_profile(profile_path: str) -> RobotProfile:
 
         if has_node_id:
             motor_joints.append({"name": name, "parameters": {"node_id": j["node_id"]}})
+            if j.get("is_gripper", False):
+                # 电机驱动的夹爪：硬件上仍是 Eyou 电机，但语义上是夹爪。
+                gripper_joint_names.append(name)
         elif has_device:
             device = j.get("device")
             slave_id = j.get("slave_id")
@@ -80,6 +86,7 @@ def load_profile(profile_path: str) -> RobotProfile:
             gripper_by_device.setdefault(device, []).append(
                 {"name": name, "parameters": {"slave_id": slave_id}}
             )
+            gripper_joint_names.append(name)
         else:
             raise ValueError(f"Joint '{name}': must have node_id (motor) or device+slave_id (gripper)")
 
@@ -120,4 +127,5 @@ def load_profile(profile_path: str) -> RobotProfile:
         calibration=calibration,
         hardware_interfaces=hardware_interfaces,
         num_joints=len(joint_order),
+        gripper_joint_names=gripper_joint_names,
     )

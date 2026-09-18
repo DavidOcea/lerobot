@@ -236,7 +236,12 @@ class TaskAgentOrchestrator:
 
         # 6. Initialize completion detectors
         print(f"[Orchestrator] Initializing completion detectors for {len(self.config.tasks)} tasks...")
+        # Backfill gripper joints from the robot profile so completion checks know which
+        # joints are grippers (serial or motor-driven) without needing per-task YAML.
+        robot_gripper_joints = list(getattr(self.robot, "gripper_joint_names", None) or [])
         for task in self.config.tasks:
+            if not task.completion_criteria.gripper_joints and robot_gripper_joints:
+                task.completion_criteria.gripper_joints = list(robot_gripper_joints)
             print(f"[Orchestrator] Task: {task.name}, criteria type: {task.completion_criteria.type}")
             if task.completion_criteria.type != "position" and task.task_type != "position_sequence":
                 self.completion_detectors[task.name] = TaskCompletionDetector(
@@ -3014,8 +3019,15 @@ class TaskAgentOrchestrator:
         # Check if reached target positions
         final_positions_dict = self.robot.get_current_position()
 
+        # Gripper joints are judged separately (e.g. by grip force) — a clamping
+        # gripper stalls on contact and never reaches its commanded angle, so skip
+        # the position-reached test for them. They are still commanded above.
+        gripper_joints = getattr(task.completion_criteria, "gripper_joints", []) or getattr(self.robot, "gripper_joint_names", [])
+
         all_reached = True
         for joint_name, target in target_positions.items():
+            if joint_name in gripper_joints:
+                continue
             if joint_name in final_positions_dict:
                 final = final_positions_dict[joint_name]
                 if abs(final - target) > tolerance:

@@ -116,24 +116,15 @@ class AdaptiveTaskScheduler:
             self.action_post_processor = create_post_processor_for_robot(
                 self.scheduler.robot.config,
                 smoothing_level=self.smoothing_level,
+                joint_names=getattr(self.scheduler.robot, "observation_joint_names", None),
+                gripper_joint_names=getattr(self.scheduler.robot, "gripper_joint_names", None),
             )
             logger.info(f"Action post-processor initialized with '{self.smoothing_level}' smoothing")
         except Exception as e:
             logger.warning(f"Failed to create action post-processor from config: {e}")
-            # Create with default config
-            joint_names = getattr(
-                self.scheduler.robot,
-                "observation_joint_names",
-                [
-                    "left_arm_joint_1", "left_arm_joint_2", "left_arm_joint_3",
-                    "left_arm_joint_4", "left_arm_joint_5", "left_arm_joint_6",
-                    "left_arm_joint_7",
-                    "right_arm_joint_1", "right_arm_joint_2", "right_arm_joint_3",
-                    "right_arm_joint_4", "right_arm_joint_5", "right_arm_joint_6",
-                    "right_arm_joint_7",
-                    "trunk_joint_1", "trunk_joint_2",
-                ]
-            )
+            # Create with default config. Joint names come from the robot (always
+            # populated by the follower), so no hardcoded fallback list is needed.
+            joint_names = self.scheduler.robot.observation_joint_names
             config = PostProcessorConfig()
             if self.smoothing_level == "low":
                 config.filter_alpha = 0.9
@@ -145,7 +136,10 @@ class AdaptiveTaskScheduler:
                 config.filter_alpha = 0.7
                 config.max_velocity = 3.0
 
-            self.action_post_processor = ActionPostProcessor(config, joint_names)
+            self.action_post_processor = ActionPostProcessor(
+                config, joint_names,
+                gripper_joint_names=getattr(self.scheduler.robot, "gripper_joint_names", None),
+            )
             logger.info(f"Action post-processor created with default '{self.smoothing_level}' config")
 
     def create_collision_detector(self, collision_threshold: float = 0.8):
@@ -552,30 +546,28 @@ class AdaptiveTaskScheduler:
 
         Note: Gripper force is normalized 0-1, needs to be scaled for comparison
         """
-        # Extract gripper forces (both left and right)
+        # Extract gripper forces for all gripper joints. The gripper joint list comes
+        # from the robot profile (serial + motor-driven grippers, any joint number),
+        # not a hardcoded joint number.
         # Note: Gripper force is in 0-1 range, scale to Nm equivalent
         gripper_force_scale = self.gripper_config.get("gripper_force_scale", 5.0)
 
-        # Get force values from observation (using .force suffix)
-        left_gripper_force_raw = observation.get("left_arm_joint_7.force", 0.0)
-        right_gripper_force_raw = observation.get("right_arm_joint_7.force", 0.0)
+        gripper_joints = getattr(self.scheduler.robot, "gripper_joint_names", None) or []
+        gripper_forces_raw = [
+            observation.get(f"{joint}.force", 0.0) for joint in gripper_joints
+        ]
 
         # Debug: Check if force data exists
-        if left_gripper_force_raw == 0.0 and right_gripper_force_raw == 0.0:
+        if not gripper_forces_raw or all(f == 0.0 for f in gripper_forces_raw):
             # Force data might be missing, check observation keys
             force_keys = [k for k in observation.keys() if ".force" in k]
             if not force_keys:
                 logger.debug("No force data found in observation")
 
-        # Scale to Nm equivalent for threshold comparison
-        left_gripper_force = left_gripper_force_raw * gripper_force_scale
-        right_gripper_force = right_gripper_force_raw * gripper_force_scale
-
         # Track the higher force (assuming one gripper is active)
-        self.current_gripper_force = max(left_gripper_force, right_gripper_force)
-
-        # Also track raw force for rate detection
-        self.current_gripper_force_raw = max(left_gripper_force_raw, right_gripper_force_raw)
+        max_raw = max(gripper_forces_raw) if gripper_forces_raw else 0.0
+        self.current_gripper_force = max_raw * gripper_force_scale
+        self.current_gripper_force_raw = max_raw
 
         # Check grasp stability
         grasp_threshold = self.gripper_config.get("grasp_force_threshold", 1.0)

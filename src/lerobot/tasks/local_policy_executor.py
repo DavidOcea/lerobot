@@ -315,17 +315,13 @@ class LocalPolicyExecutor:
             # Use joint names from robot config (matches training data order)
             joint_names = self._joint_names_from_robot
         else:
-            # Fallback: use hardcoded joint order
-            # This matches trunk_config_supre_robot_joint.yaml order
-            joint_names = [
-                "left_arm_joint_1", "left_arm_joint_2", "left_arm_joint_3",
-                "left_arm_joint_4", "left_arm_joint_5", "left_arm_joint_6",
-                "left_arm_joint_7",
-                "right_arm_joint_1", "right_arm_joint_2", "right_arm_joint_3",
-                "right_arm_joint_4", "right_arm_joint_5", "right_arm_joint_6",
-                "right_arm_joint_7",
-                "trunk_joint_1", "trunk_joint_2",
-            ]
+            # Joint names must be set via set_joint_names() before inference. The
+            # scheduler always calls it from robot.observation_joint_names, so this
+            # should never be hit; fail loudly rather than silently use a stale list.
+            raise ValueError(
+                "Joint names not set: call set_joint_names() before _action_tensor_to_dict(). "
+                "The scheduler sets this from robot.observation_joint_names at construction."
+            )
 
         # Trim to action_dim
         for key in action_features.keys():

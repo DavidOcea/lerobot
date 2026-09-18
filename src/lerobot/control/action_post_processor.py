@@ -86,19 +86,31 @@ class ActionPostProcessor:
         processed_action = processor.process_action(raw_action, observation)
     """
 
-    def __init__(self, config: PostProcessorConfig, joint_names: list[str]):
+    def __init__(
+        self,
+        config: PostProcessorConfig,
+        joint_names: list[str],
+        gripper_joint_names: list[str] | None = None,
+    ):
         """Initialize the post-processor.
 
         Args:
             config: Configuration for post-processing.
             joint_names: List of joint names in order.
+            gripper_joint_names: Canonical gripper joint names (from robot profile).
+                Falls back to matching names containing "gripper" when omitted.
         """
         self.config = config
         self.joint_names = joint_names
         self.num_joints = len(joint_names)
 
-        # Identify gripper joints (usually named with "_joint_7" suffix)
-        self._gripper_joints = [name for name in joint_names if name.endswith("_joint_7")]
+        # Identify gripper joints. Prefer the canonical list from the robot profile
+        # (serial + motor-driven grippers, any joint number); otherwise match by name.
+        if gripper_joint_names is not None:
+            gripper_set = set(gripper_joint_names)
+            self._gripper_joints = [name for name in joint_names if name in gripper_set]
+        else:
+            self._gripper_joints = [name for name in joint_names if "gripper" in name.lower()]
 
         # Set higher velocity limits for gripper joints (no velocity limiting)
         gripper_velocity_limits = {}
@@ -633,6 +645,8 @@ class ActionPostProcessor:
 def create_post_processor_for_robot(
     robot_config: Any,
     smoothing_level: str = "medium",
+    joint_names: list[str] | None = None,
+    gripper_joint_names: list[str] | None = None,
 ) -> ActionPostProcessor:
     """Create an action post-processor with sensible defaults for a robot.
 
@@ -645,26 +659,29 @@ def create_post_processor_for_robot(
             "moderate" (alpha=0.85): Light-medium, good balance for policy
             "medium"   (alpha=0.7): Default, good for position_sequence tasks
             "heavy"    (alpha=0.5): Strong smoothing, very damped motion
+        joint_names: Canonical joint names in policy/action order. Pass
+            ``robot.observation_joint_names`` when available; draccus robot configs
+            (e.g. ``SupreRobotFollowerConfig``) do NOT carry this field.
+        gripper_joint_names: Canonical gripper joints (from robot profile); passed
+            through to the post-processor so grippers aren't velocity-limited.
 
     Returns:
         Configured ActionPostProcessor instance.
     """
-    # Get joint names from robot config
-    if hasattr(robot_config, "joint_order"):
-        joint_names = robot_config.joint_order
-    elif hasattr(robot_config, "observation_joint_names"):
-        joint_names = robot_config.observation_joint_names
-    else:
-        # Default joint names
-        joint_names = [
-            "left_arm_joint_1", "left_arm_joint_2", "left_arm_joint_3",
-            "left_arm_joint_4", "left_arm_joint_5", "left_arm_joint_6",
-            "left_arm_joint_7",
-            "right_arm_joint_1", "right_arm_joint_2", "right_arm_joint_3",
-            "right_arm_joint_4", "right_arm_joint_5", "right_arm_joint_6",
-            "right_arm_joint_7",
-            "trunk_joint_1", "trunk_joint_2",
-        ]
+    # Get joint names. Prefer an explicit list (robot.observation_joint_names);
+    # otherwise fall back to the config. Robot draccus configs (SupreRobotFollowerConfig)
+    # do NOT carry joint_order/observation_joint_names, so callers should pass joint_names.
+    if joint_names is None:
+        if hasattr(robot_config, "joint_order") and robot_config.joint_order:
+            joint_names = robot_config.joint_order
+        elif hasattr(robot_config, "observation_joint_names") and robot_config.observation_joint_names:
+            joint_names = robot_config.observation_joint_names
+        else:
+            raise ValueError(
+                "Cannot determine joint names for the action post-processor: "
+                "neither an explicit 'joint_names' argument nor robot_config "
+                "joint_order/observation_joint_names was available."
+            )
 
     # Configure based on smoothing level
     # alpha: 1.0=no smoothing (pass-through), 0.5=heavy smoothing
@@ -716,4 +733,4 @@ def create_post_processor_for_robot(
 
     config = smoothing_presets.get(smoothing_level, smoothing_presets["medium"])
 
-    return ActionPostProcessor(config, joint_names)
+    return ActionPostProcessor(config, joint_names, gripper_joint_names=gripper_joint_names)
