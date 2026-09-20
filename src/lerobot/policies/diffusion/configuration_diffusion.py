@@ -73,6 +73,11 @@ class DiffusionConfig(PreTrainedConfig):
         use_group_norm: Whether to replace batch normalization with group normalization in the backbone.
             The group sizes are set to be about 16 (to be precise, feature_dim // 16).
         spatial_softmax_num_keypoints: Number of keypoints for SpatialSoftmax.
+        vision_backbone_output_stride: Output stride of the vision backbone's spatial feature map.
+            32 keeps the original ResNet downsampling (unchanged behavior); 16 or 8 progressively
+            disable the last downsampling stage(s) to retain finer spatial detail (useful for precise
+            localization of small objects). Only applies to ResNet backbones; must stay 32 when
+            `pretrained_backbone_weights` is set.
         use_separate_rgb_encoders_per_camera: Whether to use a separate RGB encoder for each camera view.
         down_dims: Feature dimension for each stage of temporal downsampling in the diffusion modeling Unet.
             You may provide a variable number of dimensions, therefore also controlling the degree of
@@ -128,6 +133,9 @@ class DiffusionConfig(PreTrainedConfig):
     pretrained_backbone_weights: str | None = None
     use_group_norm: bool = True
     spatial_softmax_num_keypoints: int = 32
+    # Output stride of the vision backbone's spatial feature map. 32 = original ResNet (unchanged);
+    # 16 / 8 progressively disable layer4 (and layer3) stride-2 downsampling for finer spatial detail.
+    vision_backbone_output_stride: int = 32
     use_separate_rgb_encoder_per_camera: bool = False
     # Unet.
     down_dims: tuple[int, ...] = (512, 1024, 2048)
@@ -175,6 +183,19 @@ class DiffusionConfig(PreTrainedConfig):
         if not self.vision_backbone.startswith("resnet"):
             raise ValueError(
                 f"`vision_backbone` must be one of the ResNet variants. Got {self.vision_backbone}."
+            )
+
+        supported_strides = [8, 16, 32]
+        if self.vision_backbone_output_stride not in supported_strides:
+            raise ValueError(
+                f"`vision_backbone_output_stride` must be one of {supported_strides}. "
+                f"Got {self.vision_backbone_output_stride}."
+            )
+        if self.vision_backbone_output_stride != 32 and self.pretrained_backbone_weights:
+            raise ValueError(
+                "`vision_backbone_output_stride` != 32 is incompatible with `pretrained_backbone_weights`: "
+                "pretrained ResNet weights assume stride-32 downsampling. Train from scratch instead "
+                "(`pretrained_backbone_weights=None`)."
             )
 
         supported_prediction_types = ["epsilon", "sample"]

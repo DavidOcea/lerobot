@@ -522,6 +522,29 @@ class SpatialSoftmax(nn.Module):
         return feature_keypoints
 
 
+def _reduce_resnet_stride(model: nn.Module, target_stride: int) -> nn.Module:
+    """Disable the last ResNet downsampling stage(s) to keep a finer spatial feature map.
+
+    ResNet-18/34 use BasicBlock, which does not support dilated convolutions, so instead of
+    torchvision's `replace_stride_with_dilation` (Bottleneck-only) we simply set the stride-2
+    downsampling convs in layer4 (`target_stride=16`) and layer3 (`target_stride=8`) to stride 1.
+    This shrinks the receptive field but preserves fine spatial detail — exactly what precise
+    localization of a small workpiece needs. `target_stride=32` returns the model unchanged.
+    """
+    if target_stride == 32:
+        return model
+    layers = {16: ["layer4"], 8: ["layer3", "layer4"]}[target_stride]
+    for name in layers:
+        layer = getattr(model, name)
+        first_block = layer[0]
+        # The first block of a ResNet stage does the stride-2 downsampling in conv1 plus a
+        # 1x1 stride-2 projection in `downsample`. Flip both to stride 1.
+        first_block.conv1.stride = (1, 1)
+        if first_block.downsample is not None:
+            first_block.downsample[0].stride = (1, 1)
+    return model
+
+
 class DiffusionRgbEncoder(nn.Module):
     """Encodes an RGB image into a 1D feature vector.
 
@@ -554,6 +577,7 @@ class DiffusionRgbEncoder(nn.Module):
         backbone_model = getattr(torchvision.models, config.vision_backbone)(
             weights=config.pretrained_backbone_weights
         )
+        _reduce_resnet_stride(backbone_model, config.vision_backbone_output_stride)
         # Note: This assumes that the layer4 feature map is children()[-3]
         # TODO(alexander-soare): Use a safer alternative.
         self.backbone = nn.Sequential(*(list(backbone_model.children())[:-2]))
