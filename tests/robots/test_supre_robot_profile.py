@@ -89,6 +89,17 @@ def test_load_profile_rejects_gripper_missing_device(tmp_path):
         load_profile(str(bad))
 
 
+def test_load_profile_direction_negative(tmp_path):
+    prof = tmp_path / "dir.yaml"
+    prof.write_text(
+        "joints:\n"
+        "  - {name: j1, direction: -1, min: -90, max: 90, node_id: 1}\n"
+        "  - {name: j2, direction: 1, min: -90, max: 90, node_id: 2}\n"
+    )
+    p = load_profile(str(prof))
+    assert p.joint_direction == [-1, 1]
+
+
 def test_follower_init_with_profile():
     pytest.importorskip("eu_motor_py", reason="requires native motor driver (robot-only)")
     from lerobot.robots.supre_robot_follower.supre_robot_follower import SupreRobotFollower
@@ -99,7 +110,7 @@ def test_follower_init_with_profile():
     assert robot.num_joints == 15
     assert robot._joint_order[0] == "left_arm_joint_1"
     assert robot._joint_order[-1] == "trunk_joint_2"
-    assert robot._joint_direction_map["trunk_joint_2"] == 1
+    assert robot._joint_direction == [1] * 15
     assert "trunk_joint_1" in robot.calibration_limits
     assert robot._profile is not None
 
@@ -114,6 +125,28 @@ def test_hardware_manager_accepts_config_dict():
     assert mgr.num_joints == 15
     assert mgr.joint_order == p.joint_order
     assert mgr._config is cfg
+    assert mgr._direction == [1] * 15  # direction 缺省 = identity
+
+
+def test_hardware_manager_direction_explicit():
+    pytest.importorskip("eu_motor_py", reason="requires native motor driver (robot-only)")
+    from lerobot.robots.supre_robot.supre_robot_hardware_manager import SupreRobotHardwareManager
+
+    p = load_profile(str(PROFILE))
+    cfg = {"joint_order": p.joint_order, "hardware_interfaces": p.hardware_interfaces}
+    direction = [1] * 14 + [-1]  # 仅最后一个关节 trunk_joint_2 翻转
+    mgr = SupreRobotHardwareManager(config=cfg, control_frequency=30, use_interpolation=False, direction=direction)
+    assert mgr._direction == direction
+
+
+def test_hardware_manager_direction_length_mismatch():
+    pytest.importorskip("eu_motor_py", reason="requires native motor driver (robot-only)")
+    from lerobot.robots.supre_robot.supre_robot_hardware_manager import SupreRobotHardwareManager
+
+    p = load_profile(str(PROFILE))
+    cfg = {"joint_order": p.joint_order, "hardware_interfaces": p.hardware_interfaces}
+    with pytest.raises(ValueError, match="direction length"):
+        SupreRobotHardwareManager(config=cfg, control_frequency=30, use_interpolation=False, direction=[1, -1])
 
 
 def test_follower_init_without_profile_uses_legacy():
@@ -128,4 +161,4 @@ def test_follower_init_without_profile_uses_legacy():
     robot = SupreRobotFollower(cfg)
     assert robot._profile is None
     assert robot._joint_order[-1] == "trunk_joint_2"
-    assert robot._joint_direction_map["left_arm_joint_1"] == 1
+    assert robot._joint_direction is None
