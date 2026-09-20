@@ -15,7 +15,7 @@ from lerobot.datasets.factory import make_dataset
 from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
 from lerobot.constants import ACTION, OBS_IMAGES
 
-CKPT = "outputs/train/dp_0917_mdn12_wta_pickup_long_noaug/checkpoints/120000/pretrained_model"
+CKPT = "outputs/train/dp_0918_mdn12_wta_focal_pickup_long_noaug/checkpoints/050000/pretrained_model"
 N_BATCH = 200  # 200 batch × 64 × horizon=8 ≈ 10 万个 (B,T) winner 样本
 
 # 复刻 launch 脚本参数（和 run_dp_0917_mdn_wta_exps.sh 完全一致）
@@ -36,6 +36,7 @@ argv = [
     "--policy.crop_shape=[84,84]",
     "--policy.mdn_num_components=12",
     "--policy.mdn_mode=wta",
+    "--policy.mdn_focal_gamma=2.0",
     "--dataset.time_warp=true",
     "--dataset.customer_transforms=false",
     "--dataset.only_head_transforms=false",
