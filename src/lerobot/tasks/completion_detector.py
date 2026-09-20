@@ -146,6 +146,9 @@ class TaskCompletionDetector:
         unsatisfied = []
 
         for joint_name, target_pos in self.criteria.target_joint_positions.items():
+            # Gripper joints are judged separately (e.g. by grip force) — skip the position test.
+            if joint_name in self.criteria.gripper_joints:
+                continue
             # Get current position
             current_pos = observation.get(f"{joint_name}.pos")
             if current_pos is None:
@@ -176,6 +179,27 @@ class TaskCompletionDetector:
 
         return result
 
+    def _resolve_gripper_joint(
+        self, observation: dict[str, Any], explicit: list[str] | None = None
+    ) -> str | None:
+        """Resolve which joint is the gripper, generically (no joint-number hardcode).
+
+        Order of preference:
+        1. ``explicit`` (per-condition ``gripper_joints``) or the criteria-level
+           ``gripper_joints`` — works for serial grippers and motor-driven grippers
+           on any joint number.
+        2. Fallback: any observation key whose joint name contains "gripper".
+        """
+        candidates = explicit if explicit is not None else self.criteria.gripper_joints
+        if candidates:
+            return candidates[0]
+
+        for key in observation.keys():
+            joint = key.replace(".force", "").replace(".pos", "")
+            if "gripper" in joint.lower():
+                return joint
+        return None
+
     def _check_force_criteria(self, observation: dict[str, Any]) -> DetectionResult:
         """Check if force exceeds threshold (for grip confirmation).
 
@@ -190,11 +214,7 @@ class TaskCompletionDetector:
         # Determine which joint to monitor
         joint_name = self.criteria.joint_name
         if joint_name is None:
-            # Try to find a gripper joint
-            for key in observation.keys():
-                if "gripper" in key.lower() or "joint_7" in key:
-                    joint_name = key.replace(".force", "").replace(".pos", "")
-                    break
+            joint_name = self._resolve_gripper_joint(observation)
 
         if joint_name is None:
             logger.warning("No joint specified for force criteria")
@@ -375,11 +395,9 @@ class TaskCompletionDetector:
 
         # Determine which joint to monitor
         if joint_name is None:
-            # Try to find a gripper joint
-            for key in observation.keys():
-                if "gripper" in key.lower() or "joint_7" in key:
-                    joint_name = key.replace(".force", "").replace(".pos", "")
-                    break
+            joint_name = self._resolve_gripper_joint(
+                observation, explicit=condition.get("gripper_joints")
+            )
 
         if joint_name is None:
             logger.warning("No joint specified for force criteria")
@@ -513,6 +531,7 @@ class TaskCompletionDetector:
         # Get parameters from condition
         target_joint_positions = condition.get("target_joint_positions", {})
         position_tolerance = condition.get("position_tolerance", 0.01)
+        gripper_joints = condition.get("gripper_joints") or self.criteria.gripper_joints
 
         if not target_joint_positions:
             return result
@@ -522,6 +541,9 @@ class TaskCompletionDetector:
         unsatisfied = []
 
         for joint_name, target_pos in target_joint_positions.items():
+            # Gripper joints are judged separately (e.g. by grip force) — skip the position test.
+            if joint_name in gripper_joints:
+                continue
             # Get current position
             current_pos = observation.get(f"{joint_name}.pos")
             if current_pos is None:

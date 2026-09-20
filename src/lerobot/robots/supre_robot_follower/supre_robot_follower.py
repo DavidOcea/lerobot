@@ -87,6 +87,9 @@ class SupreRobotFollower(Robot):
                 if joint_name not in self.calibration_limits:
                     raise ValueError(f"Missing calibration data for joint '{joint_name}' in config.")
 
+        # 夹爪关节名：来自 profile（串口夹爪 + is_gripper 电机夹爪）。旧路径无此信息 → 空列表。
+        self.gripper_joint_names = list(getattr(self._profile, "gripper_joint_names", []))
+
         self.prometheus_port = getattr(config, 'prometheus_port', None)
         self.joint_position_gauge = None
         if self.prometheus_port is not None:
@@ -473,7 +476,7 @@ class SupreRobotFollower(Robot):
                 if self._last_forces is not None and i < len(self._last_forces):
                     rate = abs(force - self._last_forces[i])
                 info = {"name": joint_name, "force": force, "rate": rate}
-                if "gripper" in joint_name.lower() or joint_name.endswith("_joint_7"):
+                if joint_name in self.gripper_joint_names or "gripper" in joint_name.lower():
                     gripper_joints.append(info)
                 elif "trunk" in joint_name.lower():
                     trunk_joints.append(info)

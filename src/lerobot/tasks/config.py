@@ -51,6 +51,12 @@ class CompletionCriteria:
     stability_tolerance: float = 0.05  # Max variation within window (rad, ~3° for physical arms)
     # Composite criteria
     conditions: list[dict[str, Any]] = field(default_factory=list)
+    # Gripper joints — exempt from the position-reached check.
+    # A position-controlled gripper stalls on contact when it clamps an object,
+    # so it can never reach its commanded angle. Keep it in target_joint_positions
+    # (so it is still commanded to close), but judge it separately (skip the
+    # |current - target| <= tolerance test for these joints).
+    gripper_joints: list[str] = field(default_factory=list)
 
 
 @dataclass
