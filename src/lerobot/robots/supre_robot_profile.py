@@ -35,6 +35,9 @@ class RobotProfile:
     num_joints: int
     # 夹爪关节名：串口夹爪(device+slave_id) + 电机驱动夹爪(is_gripper: true)
     gripper_joint_names: List[str]
+    # 夹爪力缩放：串口夹爪 0~1 归一化(需放大) vs 电机夹爪真实 Nm(不放大)。
+    # profile 顶层可选字段 gripper_force_scale；缺省 None → 由 scheduler 回退默认 5.0。
+    gripper_force_scale: float | None
 
 
 def load_profile(profile_path: str) -> RobotProfile:
@@ -44,6 +47,8 @@ def load_profile(profile_path: str) -> RobotProfile:
         raw = yaml.safe_load(f)
 
     joints = raw["joints"]
+    # 可选顶层字段：夹爪力缩放（缺省 None → scheduler 用默认 5.0，适用于串口夹爪 0~1）。
+    gripper_force_scale = raw.get("gripper_force_scale")
     joint_order: List[str] = []
     joint_direction: List[int] = []
     calibration: List[JointCalibration] = []
@@ -128,4 +133,5 @@ def load_profile(profile_path: str) -> RobotProfile:
         hardware_interfaces=hardware_interfaces,
         num_joints=len(joint_order),
         gripper_joint_names=gripper_joint_names,
+        gripper_force_scale=gripper_force_scale,
     )

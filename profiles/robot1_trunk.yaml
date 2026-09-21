@@ -1,4 +1,5 @@
 robot_type: supre_robot
+gripper_force_scale: 1.0   # 电机夹爪力是真实 Nm，不放大（串口夹爪 0~1 才需 5.0）
 
 joints:
   - {name: left_arm_joint_1,  direction: 1, min: -160, max: 160, node_id: 21}
