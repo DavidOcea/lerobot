@@ -69,6 +69,13 @@ class SmolVLAConfig(PreTrainedConfig):
     # Tokenizer
     tokenizer_max_length: int = 48
 
+    # Visual tokens - 控制视觉token数量
+    num_visual_tokens: int = 64
+
+    # Temporal smoothing - 时序平滑
+    temporal_smoothing: bool = False
+    smoothing_alpha: float = 0.9  # EMA 系数，越大越平滑
+
     # Decoding
     num_steps: int = 10
 
