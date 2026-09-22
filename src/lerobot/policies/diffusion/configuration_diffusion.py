@@ -168,6 +168,14 @@ class DiffusionConfig(PreTrainedConfig):
     # Loss computation
     do_mask_loss_for_padding: bool = False
 
+    # Action representation. When True, the policy predicts the residual action
+    # `action - current_state` (delta-from-current) instead of absolute joint targets.
+    # The residual is formed in normalized space (both `action` and `observation.state`
+    # are normalized), and `select_action` adds the current state back before
+    # unnormalization — so the policy's external contract (absolute actions) is unchanged
+    # and the robot side needs no modification. Mirrors ACT's `use_relative_action`.
+    use_relative_action: bool = False
+
     # Training presets
     optimizer_lr: float = 1e-4
     optimizer_betas: tuple = (0.95, 0.999)

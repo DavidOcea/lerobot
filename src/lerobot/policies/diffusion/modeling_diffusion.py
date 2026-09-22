@@ -114,6 +114,11 @@ class DiffusionPolicy(PreTrainedPolicy):
         with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=use_fp16 and on_cuda):
             actions = self.diffusion.generate_actions(batch)
 
+        # Relative action: add the current state (last observation step) back in
+        # normalized space, so the unnormalized output is absolute again.
+        if self.config.use_relative_action and "observation.state" in batch:
+            actions = actions + batch["observation.state"][:, -1:, :]
+
         # TODO(rcadene): make above methods return output dictionary?
         actions = self.unnormalize_outputs({ACTION: actions})[ACTION]
 
@@ -175,6 +180,12 @@ class DiffusionPolicy(PreTrainedPolicy):
             else:
                 batch[OBS_IMAGES] = torch.stack([batch[key] for key in self.config.image_features], dim=-4)
         batch = self.normalize_targets(batch)
+
+        # Relative action: convert the target to a residual w.r.t. the current state
+        # (last observation step) in normalized space. See config docstring.
+        if self.config.use_relative_action and "observation.state" in batch:
+            batch["action"] = batch["action"] - batch["observation.state"][:, -1:, :]
+
         loss = self.diffusion.compute_loss(batch)
         # no output_dict so returning None
         return loss, None
