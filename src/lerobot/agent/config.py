@@ -84,6 +84,25 @@ class LLMConfig:
 
 
 @dataclass
+class VisualDetectorConfig:
+    """Phase 4 visual success detector (evidence-only, pickup-only).
+
+    Inert unless ``enabled=True`` AND ``planner == "llm"``. Reads environment
+    camera frames and emits an advisory ``VisualVerdict`` into
+    ``skill_observation``; it never changes ``result.success`` / execution flow.
+    """
+
+    enabled: bool = False
+    method: str = "baseline_diff"  # only baseline_diff for now
+    camera_key: str = "head_cam"  # obs["images"][camera_key]
+    roi: tuple[int, int, int, int] | None = None  # (x, y, w, h) px; None = full frame
+    pixel_threshold: int = 30  # grayscale |Δ| threshold (0-255)
+    diff_threshold: float = 0.05  # changed-pixel fraction that fires success
+    direction: str = "decrease"  # "decrease"=pickup, "increase"=place (future)
+    settle_delay: float = 0.5  # seconds to wait after grasp before after-frame
+
+
+@dataclass
 class OrchestratorConfig(TasksOrchestratorConfig):
     """Extended orchestrator configuration with additional agent-specific settings.
 
@@ -111,6 +130,9 @@ class OrchestratorConfig(TasksOrchestratorConfig):
 
     # LLM planner configuration (inert unless planner == "llm")
     llm_config: LLMConfig = field(default_factory=LLMConfig)
+
+    # Visual success detector (evidence-only; inert unless enabled + planner == "llm")
+    visual_detector_config: VisualDetectorConfig = field(default_factory=VisualDetectorConfig)
 
     # New feature settings
     enable_interactive_mode: bool = False  # Enable interactive task selection before each task
