@@ -816,6 +816,7 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             enable_monitoring_dashboard=config_dict.get("enable_monitoring_dashboard", False),
             monitoring_dashboard_port=config_dict.get("monitoring_dashboard_port", 8080),
             task_memory_config=task_memory_config,
+            planner=config_dict.get("planner", "flash"),
         )
     except ImportError:
         # Fall back to base config

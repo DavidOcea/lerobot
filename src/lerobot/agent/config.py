@@ -75,6 +75,9 @@ class OrchestratorConfig(TasksOrchestratorConfig):
     use_local_execution: bool = True  # True=local (no Policy Server), False=remote (via gRPC)
     policy_device: str = "cuda"  # Device for local policy execution
 
+    # Planner mode: "flash" = deterministic YAML replay (现状), "llm" = LLM planner (Phase 3+)
+    planner: str = "flash"
+
     # Policy server settings (only used when use_local_execution=False)
     policy_server_host: str = "localhost"
     policy_server_port: int = 50051
