@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import logging
 import re
+import time
+from dataclasses import asdict
 from typing import Any
 
 from lerobot.agent.llm_client import LLMClientError
@@ -108,7 +110,7 @@ def run_llm_loop(orchestrator, planner=None) -> ExecutionSummary:
             logger.warning("Invalid tool call (%s); falling back to flash", e)
             return _flash_fallback(orchestrator, results, last_hint)
 
-        chain_results = _execute_skill_chain(orchestrator, task_dicts)
+        chain_results = _execute_skill_chain(orchestrator, task_dicts, skill_name=tc.name)
         results.extend(chain_results)
         history.append(build_tool_message(tc, skill_observation(tc, chain_results)))
         last_hint = _last_recovery_hint(chain_results)
@@ -223,7 +225,9 @@ def _resolve_station(orchestrator, spec: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _execute_skill_chain(orchestrator, task_dicts: list[dict[str, Any]]) -> list[TaskResult]:
+def _execute_skill_chain(
+    orchestrator, task_dicts: list[dict[str, Any]], skill_name: str = ""
+) -> list[TaskResult]:
     """Execute one skill's task_dict list through the deterministic engine.
 
     Mirrors the non-interactive routing loop, but scoped to a single skill's
@@ -244,6 +248,14 @@ def _execute_skill_chain(orchestrator, task_dicts: list[dict[str, Any]]) -> list
         parsed.append(tc)
         by_name[tc.name] = tc
 
+    # Phase 4 visual detector — built once per skill; inert unless enabled AND
+    # the skill is pickup. Lazily imported so the flash path never loads it.
+    vcfg = getattr(orchestrator.config, "visual_detector_config", None)
+    detector = None
+    if vcfg is not None and getattr(vcfg, "enabled", False) and skill_name == "pickup":
+        from lerobot.agent.visual_detector import build_visual_detector, capture_frame
+        detector = build_visual_detector(vcfg)
+
     results: list[TaskResult] = []
     idx = 0
     while idx < len(parsed):
@@ -252,12 +264,31 @@ def _execute_skill_chain(orchestrator, task_dicts: list[dict[str, Any]]) -> list
             idx += 1
             continue
 
+        # Bracket only the grasp node (position_sequence) — the AGV retreat's
+        # motion would swamp the material-disappearance diff.
+        do_visual = detector is not None and task.task_type == "position_sequence"
+        before_frame = None
+        if do_visual:
+            robot = getattr(orchestrator, "robot", None)
+            before_frame = capture_frame(robot, vcfg.camera_key) if robot is not None else None
+
         orchestrator._memory_warmstart(task)
         result = orchestrator._execute_single_task(task)
         results.append(result)
         orchestrator._memory_record(task, result)
         if result.collision_detected:
             orchestrator.total_collision_count += 1
+
+        if do_visual and before_frame is not None:
+            if vcfg.settle_delay > 0:
+                time.sleep(vcfg.settle_delay)
+            robot = getattr(orchestrator, "robot", None)
+            after_frame = capture_frame(robot, vcfg.camera_key) if robot is not None else None
+            if after_frame is not None:
+                verdict = detector.detect(before_frame, after_frame, camera_key=vcfg.camera_key)
+                if not isinstance(result.final_observation, dict):
+                    result.final_observation = {}
+                result.final_observation["visual_evidence"] = asdict(verdict)
 
         if result.status == TaskStatus.FATAL_FAILURE:
             break
