@@ -184,6 +184,14 @@ def skill_observation(tc: ToolCall, chain_results: list[Any]) -> str:
     fm = result_failure_mode(last)
     hint = FAILURE_RECOVERY_TABLE.get(fm) if fm is not None else None
     final_obs = getattr(last, "final_observation", None) or {}
+    # The verdict is attached to the *grasp* node of a pickup chain (index 0),
+    # not the last result (the retreat), so scan the whole chain for it.
+    visual_evidence = None
+    for r in chain_results:
+        obs = getattr(r, "final_observation", None) or {}
+        if "visual_evidence" in obs:
+            visual_evidence = obs["visual_evidence"]
+            break
     return json.dumps(
         {
             "tool": tc.name,
@@ -196,6 +204,7 @@ def skill_observation(tc: ToolCall, chain_results: list[Any]) -> str:
             "llm_hint": hint.llm_hint if hint is not None else "",
             "flash_action": hint.flash_action if hint is not None else "",
             "task_trace": final_obs.get("task_trace", {}),
+            "visual_evidence": visual_evidence,
         },
         ensure_ascii=False,
     )
