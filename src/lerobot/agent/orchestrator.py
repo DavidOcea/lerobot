@@ -129,6 +129,9 @@ class TaskAgentOrchestrator:
         # Task memory (opt-in, cross-cycle parameter memorization)
         self.task_memory: "TaskMemoryStore | None" = None
 
+        # LLM planner (opt-in, Phase 3: inert unless planner == "llm")
+        self.planner: "Planner | None" = None
+
         # Execution state
         self.is_initialized = False
         self.is_running = False
@@ -295,6 +298,9 @@ class TaskAgentOrchestrator:
 
         # 12. Initialize task memory if enabled (opt-in)
         self._init_task_memory()
+
+        # 13. Initialize LLM planner if planner == "llm" (opt-in, Phase 3)
+        self._init_llm_planner()
 
         self.is_initialized = True
         logger.info("Initialization complete (LOCAL mode)")
@@ -666,6 +672,31 @@ class TaskAgentOrchestrator:
         except Exception as e:
             logger.warning(f"Task memory init failed (will run without memory): {e}")
             self.task_memory = None
+
+    def _init_llm_planner(self):
+        """Initialize the LLM planner (optional module, Phase 3).
+
+        Reads ``config.planner``. When not ``"llm"`` (the default), returns
+        immediately at zero cost.  When ``"llm"``, lazily constructs a
+        ``Planner`` via ``build_planner`` and stores it on ``self.planner``.
+
+        Mirrors ``_init_task_memory``: all errors are caught — a failed init
+        sets ``self.planner`` to None, and ``run_llm_loop`` degrades to flash.
+        """
+        if getattr(self.config, "planner", "flash") != "llm":
+            return
+        try:
+            from lerobot.agent.planner import build_planner
+            self.planner = build_planner("api", self.config.llm_config)
+            logger.info("LLM planner initialized (model=%s)", self.config.llm_config.model)
+        except Exception as e:
+            logger.warning(f"LLM planner init failed (will degrade to flash at run): {e}")
+            self.planner = None
+
+    def _run_llm_loop(self) -> ExecutionSummary:
+        """Run the LLM planner loop (Phase 3); imported lazily (flash path never touches it)."""
+        from lerobot.agent.llm_loop import run_llm_loop
+        return run_llm_loop(self, planner=self.planner)
 
     def _memory_warmstart(self, task: TaskConfig) -> None:
         """Apply stored memory parameters to *task* config (pre-execution hook).
@@ -1397,6 +1428,12 @@ class TaskAgentOrchestrator:
         all_results = []
 
         try:
+            # LLM planner path (Phase 3, opt-in): decide-next-skill loop.
+            # Placed inside try so the finally below always runs is_running=False
+            # + _cleanup(), identical to the flash path.
+            if getattr(self.config, "planner", "flash") == "llm":
+                return self._run_llm_loop()
+
             # Execute tasks with cycle support
             while True:
                 cycle_count += 1

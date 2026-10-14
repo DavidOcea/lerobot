@@ -58,9 +58,11 @@ class InvalidToolCall(Exception):
 # ---------------------------------------------------------------------------
 
 
-def run_llm_loop(orchestrator) -> ExecutionSummary:
+def run_llm_loop(orchestrator, planner=None) -> ExecutionSummary:
     """Run the LLM decide → execute → observe loop until stop or budget.
 
+    ``planner`` may be a pre-built ``Planner`` (e.g. the orchestrator's
+    ``self.planner``, constructed at init); when ``None`` it is built here.
     Any construction/transport/dispatch failure degrades to flash replay via
     ``_flash_fallback``, so the robot always ends in a deterministic state.
     """
@@ -73,11 +75,12 @@ def run_llm_loop(orchestrator) -> ExecutionSummary:
     max_tool_calls = llm_cfg.max_tool_calls
     tools = serialize_tools(to_tool_spec())
 
-    try:
-        planner = build_planner("api", llm_cfg)
-    except Exception as e:  # bad base_url/model/key → degrade
-        logger.warning("LLM planner construction failed (%s); falling back to flash", e)
-        return orchestrator._execute_with_safety()
+    if planner is None:
+        try:
+            planner = build_planner("api", llm_cfg)
+        except Exception as e:  # bad base_url/model/key → degrade
+            logger.warning("LLM planner construction failed (%s); falling back to flash", e)
+            return orchestrator._execute_with_safety()
 
     history: list[dict[str, Any]] = []
     results: list[TaskResult] = []
