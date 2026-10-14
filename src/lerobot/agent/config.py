@@ -64,6 +64,26 @@ class TaskMemoryConfig:
 
 
 @dataclass
+class LLMConfig:
+    """LLM planner configuration (Phase 3). Inert unless ``planner == "llm"``.
+
+    The thin OpenAI-compatible client (see ``lerobot.agent.llm_client``) points
+    at ``base_url`` and reads ``api_key`` from ``api_key_env`` when ``api_key``
+    is empty, so the same config drives a cloud LLM or a local vLLM 7B server
+    (OpenAI-compatible endpoint).
+    """
+
+    model: str = "gpt-4o-mini"
+    base_url: str = "https://api.openai.com/v1"  # OpenAI-compatible / vLLM endpoint
+    api_key: str = ""  # explicit key; "" = read from api_key_env
+    api_key_env: str = "OPENAI_API_KEY"  # env var name to read api_key from
+    system_prompt: str = ""  # "" = use DEFAULT_SYSTEM_PROMPT
+    max_tool_calls: int = 12  # loop budget (LLM decisions per run)
+    temperature: float = 0.0
+    timeout: float = 60.0  # per-request seconds
+
+
+@dataclass
 class OrchestratorConfig(TasksOrchestratorConfig):
     """Extended orchestrator configuration with additional agent-specific settings.
 
@@ -88,6 +108,9 @@ class OrchestratorConfig(TasksOrchestratorConfig):
 
     # Task memory configuration (opt-in)
     task_memory_config: TaskMemoryConfig = field(default_factory=TaskMemoryConfig)
+
+    # LLM planner configuration (inert unless planner == "llm")
+    llm_config: LLMConfig = field(default_factory=LLMConfig)
 
     # New feature settings
     enable_interactive_mode: bool = False  # Enable interactive task selection before each task
