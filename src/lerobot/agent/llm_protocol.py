@@ -134,7 +134,7 @@ def build_tool_message(tc: ToolCall, content: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _result_failure_mode(last: Any) -> FailureMode | None:
+def result_failure_mode(last: Any) -> FailureMode | None:
     """Recover the structured failure mode from a ``TaskResult``.
 
     Two signal sources:
@@ -181,7 +181,7 @@ def skill_observation(tc: ToolCall, chain_results: list[Any]) -> str:
         )
 
     last = chain_results[-1]
-    fm = _result_failure_mode(last)
+    fm = result_failure_mode(last)
     hint = FAILURE_RECOVERY_TABLE.get(fm) if fm is not None else None
     final_obs = getattr(last, "final_observation", None) or {}
     return json.dumps(
