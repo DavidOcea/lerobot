@@ -179,6 +179,11 @@ def main():
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
+    # basicConfig only applies `level` when the root logger has no handlers yet;
+    # the lerobot import chain above has already attached one, so force the level
+    # explicitly (same pattern as orchestrator._setup_logging).
+    logging.getLogger().setLevel(log_level)
+    logging.getLogger("lerobot").setLevel(log_level)
 
     logger = logging.getLogger(__name__)
 
