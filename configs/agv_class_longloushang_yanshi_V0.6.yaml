@@ -1,0 +1,816 @@
+# AGV → A点 → 视觉对齐 → YOLO+ROI 拍照识别 → 12点位长料片抓取 (在线测试)
+#
+# 流程:
+#   1. AGV → A点 (LM16)
+#   2. 视觉对齐 (AprilTag)
+#   3. 拍照识别料片类型 + 位置:
+#      - long + ROI匹配 → 对应点位抓取 (pickup_at_station_XX)
+#      - short/box/no_detection → 语音"未检测到料片" → 每10s重试 → 2min超时 → 回到起点
+#      - long + IOU不达标 → 语音"请将料片放置到正确位置" → 每10s重试 → 2min超时 → 回到起点
+#   4. 抓取完成后 → 手臂归位 → 本轮cycle结束
+#
+# 依赖: pip install onnxruntime
+# 模型: best.onnx
+# ROI文件: roi_long_12positions.json (由 capture_roi_regions.py 采集)
+
+# ========== Named Positions ==========
+named_positions:
+  home:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -10.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.8
+    left_arm_joint_5: -96.8
+    left_arm_joint_6: -90.0
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 10.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 22.8
+    right_arm_joint_5: 97.0
+    right_arm_joint_6: 90.0
+    trunk_joint_1: 0.0
+    trunk_joint_2: 0.0
+
+  # ==== 第1行 (station 18/19/20): 中间/偏左/偏右 ====
+  # 中间
+  pickup_station_00_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_00_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 47.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_00_3: {left_arm_joint_1: -54.2, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -28.0, left_arm_joint_5: -96.8, left_arm_joint_6: -79.7, left_arm_joint_7: 0.0, right_arm_joint_1: 41.9, right_arm_joint_2: 5.8, right_arm_joint_3: 0.1, right_arm_joint_4: 45.1, right_arm_joint_5: 97.0, right_arm_joint_6: 88.5, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_00_4: {left_arm_joint_1: -54.2, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -28.0, left_arm_joint_5: -96.8, left_arm_joint_6: -79.7, left_arm_joint_7: 1.0, right_arm_joint_1: 41.9, right_arm_joint_2: 5.8, right_arm_joint_3: 0.1, right_arm_joint_4: 45.1, right_arm_joint_5: 97.0, right_arm_joint_6: 88.5, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_00_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  # 偏左
+  pickup_station_01_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_01_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 47.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_01_3: {left_arm_joint_1: -55.2, left_arm_joint_2: -11.1, left_arm_joint_3: -3.1, left_arm_joint_4: -21.6, left_arm_joint_5: -99.2, left_arm_joint_6: -78.7, left_arm_joint_7: 0.0, right_arm_joint_1: 45.7, right_arm_joint_2: 3.6, right_arm_joint_3: -5.8, right_arm_joint_4: 39.4, right_arm_joint_5: 97.5, right_arm_joint_6: 84.8, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_01_4: {left_arm_joint_1: -55.2, left_arm_joint_2: -11.1, left_arm_joint_3: -3.1, left_arm_joint_4: -21.6, left_arm_joint_5: -99.2, left_arm_joint_6: -78.7, left_arm_joint_7: 1.0, right_arm_joint_1: 45.7, right_arm_joint_2: 3.6, right_arm_joint_3: -5.8, right_arm_joint_4: 39.4, right_arm_joint_5: 97.5, right_arm_joint_6: 84.8, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_01_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  # 偏右
+  pickup_station_02_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_02_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 45.8, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_02_3: {left_arm_joint_1: -49.1, left_arm_joint_2: -0.9, left_arm_joint_3: -9.7, left_arm_joint_4: -37.1, left_arm_joint_5: -89.0, left_arm_joint_6: -86.1, left_arm_joint_7: 0.0, right_arm_joint_1: 47.4, right_arm_joint_2: 14.6, right_arm_joint_3: -12.7, right_arm_joint_4: 34.4, right_arm_joint_5: 108.2, right_arm_joint_6: 81.3, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_02_4: {left_arm_joint_1: -49.1, left_arm_joint_2: -0.9, left_arm_joint_3: -9.7, left_arm_joint_4: -37.1, left_arm_joint_5: -89.0, left_arm_joint_6: -86.1, left_arm_joint_7: 1.0, right_arm_joint_1: 47.4, right_arm_joint_2: 14.6, right_arm_joint_3: -12.7, right_arm_joint_4: 34.4, right_arm_joint_5: 108.2, right_arm_joint_6: 81.3, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_02_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+
+  # ==== 第2行 (station 21/22/23): 中间/偏左/偏右 ====
+  pickup_station_10_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_10_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 47.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_10_3: {left_arm_joint_1: -57.0, left_arm_joint_2: -5.1, left_arm_joint_3: 2.9, left_arm_joint_4: -22.1, left_arm_joint_5: -96.8, left_arm_joint_6: -76.8, left_arm_joint_7: 0.0, right_arm_joint_1: 58.2, right_arm_joint_2: 6.1, right_arm_joint_3: 1.8, right_arm_joint_4: 15.5, right_arm_joint_5: 90.4, right_arm_joint_6: 75.7, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_10_4: {left_arm_joint_1: -57.0, left_arm_joint_2: -5.1, left_arm_joint_3: 2.9, left_arm_joint_4: -22.1, left_arm_joint_5: -96.8, left_arm_joint_6: -76.8, left_arm_joint_7: 1.0, right_arm_joint_1: 58.2, right_arm_joint_2: 6.1, right_arm_joint_3: 1.8, right_arm_joint_4: 15.5, right_arm_joint_5: 90.4, right_arm_joint_6: 75.7, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_10_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_11_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_11_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 47.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_11_3: {left_arm_joint_1: -59.6, left_arm_joint_2: -12.3, left_arm_joint_3: 25.0, left_arm_joint_4: -18.1, left_arm_joint_5: -117.3, left_arm_joint_6: -74.3, left_arm_joint_7: 0.0, right_arm_joint_1: 58.7, right_arm_joint_2: 3.2, right_arm_joint_3: -10.0, right_arm_joint_4: 12.7, right_arm_joint_5: 104.5, right_arm_joint_6: 69.7, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_11_4: {left_arm_joint_1: -59.6, left_arm_joint_2: -12.3, left_arm_joint_3: 25.0, left_arm_joint_4: -18.1, left_arm_joint_5: -117.3, left_arm_joint_6: -74.3, left_arm_joint_7: 1.0, right_arm_joint_1: 58.7, right_arm_joint_2: 3.2, right_arm_joint_3: -10.0, right_arm_joint_4: 12.7, right_arm_joint_5: 104.5, right_arm_joint_6: 69.7, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_11_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_12_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_12_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 45.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_12_3: {left_arm_joint_1: -60.1, left_arm_joint_2: -1.4, left_arm_joint_3: 9.7, left_arm_joint_4: -16.6, left_arm_joint_5: -103.3, left_arm_joint_6: -73.8, left_arm_joint_7: 0.0, right_arm_joint_1: 58.1, right_arm_joint_2: 14.2, right_arm_joint_3: -3.3, right_arm_joint_4: 8.8, right_arm_joint_5: 103.3, right_arm_joint_6: 70.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_12_4: {left_arm_joint_1: -60.1, left_arm_joint_2: -1.4, left_arm_joint_3: 9.7, left_arm_joint_4: -16.6, left_arm_joint_5: -103.3, left_arm_joint_6: -73.8, left_arm_joint_7: 1.0, right_arm_joint_1: 58.1, right_arm_joint_2: 14.2, right_arm_joint_3: -3.3, right_arm_joint_4: 8.8, right_arm_joint_5: 103.3, right_arm_joint_6: 70.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_12_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+
+  # ==== 第3行 (station 24/25/26): 中间/偏左/偏右 ====
+  pickup_station_20_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_20_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 47.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_20_3: {left_arm_joint_1: -83.4, left_arm_joint_2: -5.9, left_arm_joint_3: 3.0, left_arm_joint_4: 1.2, left_arm_joint_5: -99.4, left_arm_joint_6: -57.8, left_arm_joint_7: 0.0, right_arm_joint_1: 78.2, right_arm_joint_2: 5.8, right_arm_joint_3: 6.4, right_arm_joint_4: 5.7, right_arm_joint_5: 86.1, right_arm_joint_6: 70.3, trunk_joint_1: 0.0, trunk_joint_2: 14.8}
+  pickup_station_20_4: {left_arm_joint_1: -83.4, left_arm_joint_2: -5.9, left_arm_joint_3: 3.0, left_arm_joint_4: 1.2, left_arm_joint_5: -99.4, left_arm_joint_6: -57.8, left_arm_joint_7: 1.0, right_arm_joint_1: 78.2, right_arm_joint_2: 5.8, right_arm_joint_3: 6.4, right_arm_joint_4: 5.7, right_arm_joint_5: 86.1, right_arm_joint_6: 70.3, trunk_joint_1: 0.0, trunk_joint_2: 14.8}
+  pickup_station_20_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_21_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_21_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 47.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_21_3: {left_arm_joint_1: -80.6, left_arm_joint_2: -8.4, left_arm_joint_3: -0.7, left_arm_joint_4: -6.2, left_arm_joint_5: -93.7, left_arm_joint_6: -71.7, left_arm_joint_7: 0.0, right_arm_joint_1: 77.0, right_arm_joint_2: 3.1, right_arm_joint_3: 5.9, right_arm_joint_4: 7.4, right_arm_joint_5: 88.7, right_arm_joint_6: 68.4, trunk_joint_1: 0.0, trunk_joint_2: 14.6}
+  pickup_station_21_4: {left_arm_joint_1: -80.6, left_arm_joint_2: -8.4, left_arm_joint_3: -0.7, left_arm_joint_4: -6.2, left_arm_joint_5: -93.7, left_arm_joint_6: -71.7, left_arm_joint_7: 1.0, right_arm_joint_1: 77.0, right_arm_joint_2: 3.1, right_arm_joint_3: 5.9, right_arm_joint_4: 7.4, right_arm_joint_5: 88.7, right_arm_joint_6: 68.4, trunk_joint_1: 0.0, trunk_joint_2: 14.6}
+  pickup_station_21_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_22_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_22_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 45.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_22_3: {left_arm_joint_1: -83.2, left_arm_joint_2: 2.1, left_arm_joint_3: 16.1, left_arm_joint_4: -1.4, left_arm_joint_5: -109.1, left_arm_joint_6: -68.1, left_arm_joint_7: 0.0, right_arm_joint_1: 71.0, right_arm_joint_2: 14.3, right_arm_joint_3: -4.5, right_arm_joint_4: 14.5, right_arm_joint_5: 106.3, right_arm_joint_6: 71.3, trunk_joint_1: 0.0, trunk_joint_2: 14.6}
+  pickup_station_22_4: {left_arm_joint_1: -83.2, left_arm_joint_2: 2.1, left_arm_joint_3: 16.1, left_arm_joint_4: -1.4, left_arm_joint_5: -109.1, left_arm_joint_6: -68.1, left_arm_joint_7: 1.0, right_arm_joint_1: 71.0, right_arm_joint_2: 14.3, right_arm_joint_3: -4.5, right_arm_joint_4: 14.5, right_arm_joint_5: 106.3, right_arm_joint_6: 71.3, trunk_joint_1: 0.0, trunk_joint_2: 14.6}
+  pickup_station_22_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+
+  # ==== 第4行 (station 27/28/29): 中间/偏左/偏右 ====
+  pickup_station_30_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_30_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 46.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_30_3: {left_arm_joint_1: -97.7, left_arm_joint_2: -3.4, left_arm_joint_3: -0.7, left_arm_joint_4: 0.2, left_arm_joint_5: -91.6, left_arm_joint_6: -69.2, left_arm_joint_7: 0.0, right_arm_joint_1: 92.3, right_arm_joint_2: 8.8, right_arm_joint_3: 5.9, right_arm_joint_4: 2.3, right_arm_joint_5: 91.8, right_arm_joint_6: 70.7, trunk_joint_1: 0.0, trunk_joint_2: 26.2}
+  pickup_station_30_4: {left_arm_joint_1: -97.7, left_arm_joint_2: -3.4, left_arm_joint_3: -0.7, left_arm_joint_4: 0.2, left_arm_joint_5: -91.6, left_arm_joint_6: -69.2, left_arm_joint_7: 1.0, right_arm_joint_1: 92.3, right_arm_joint_2: 8.8, right_arm_joint_3: 5.9, right_arm_joint_4: 2.3, right_arm_joint_5: 91.8, right_arm_joint_6: 70.7, trunk_joint_1: 0.0, trunk_joint_2: 26.2}
+  pickup_station_30_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_31_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_31_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 47.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_31_3: {left_arm_joint_1: -97.2, left_arm_joint_2: -8.9, left_arm_joint_3: -0.7, left_arm_joint_4: 0.2, left_arm_joint_5: -91.6, left_arm_joint_6: -69.2, left_arm_joint_7: 0.0, right_arm_joint_1: 93.4, right_arm_joint_2: 3.5, right_arm_joint_3: 5.9, right_arm_joint_4: 2.3, right_arm_joint_5: 87.0, right_arm_joint_6: 70.9, trunk_joint_1: 0.0, trunk_joint_2: 26.2}
+  pickup_station_31_4: {left_arm_joint_1: -97.2, left_arm_joint_2: -8.9, left_arm_joint_3: -0.7, left_arm_joint_4: 0.2, left_arm_joint_5: -91.6, left_arm_joint_6: -69.2, left_arm_joint_7: 1.0, right_arm_joint_1: 93.4, right_arm_joint_2: 3.5, right_arm_joint_3: 5.9, right_arm_joint_4: 2.3, right_arm_joint_5: 87.0, right_arm_joint_6: 70.9, trunk_joint_1: 0.0, trunk_joint_2: 26.2}
+  pickup_station_31_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_32_1: {left_arm_joint_1: -70.3, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -24.6, left_arm_joint_5: -90.0, left_arm_joint_6: -90.0, left_arm_joint_7: 0.0, right_arm_joint_1: 70.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 24.6, right_arm_joint_5: 90.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_32_2: {left_arm_joint_1: -48.8, left_arm_joint_2: -18.0, left_arm_joint_3: -0.5, left_arm_joint_4: -34.6, left_arm_joint_5: -100.0, left_arm_joint_6: -75.0, left_arm_joint_7: 0.0, right_arm_joint_1: 45.3, right_arm_joint_2: 18.0, right_arm_joint_3: 0.8, right_arm_joint_4: 34.6, right_arm_joint_5: 98.0, right_arm_joint_6: 78.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+  pickup_station_32_3: {left_arm_joint_1: -97.6, left_arm_joint_2: 1.2, left_arm_joint_3: -0.7, left_arm_joint_4: 0.2, left_arm_joint_5: -92.6, left_arm_joint_6: -70.9, left_arm_joint_7: 0.0, right_arm_joint_1: 91.7, right_arm_joint_2: 12.3, right_arm_joint_3: 5.9, right_arm_joint_4: 2.3, right_arm_joint_5: 89.4, right_arm_joint_6: 70.8, trunk_joint_1: 0.0, trunk_joint_2: 26.2}
+  pickup_station_32_4: {left_arm_joint_1: -97.6, left_arm_joint_2: 1.2, left_arm_joint_3: -0.7, left_arm_joint_4: 0.2, left_arm_joint_5: -92.6, left_arm_joint_6: -70.9, left_arm_joint_7: 1.0, right_arm_joint_1: 91.7, right_arm_joint_2: 12.3, right_arm_joint_3: 5.9, right_arm_joint_4: 2.3, right_arm_joint_5: 89.4, right_arm_joint_6: 70.8, trunk_joint_1: 0.0, trunk_joint_2: 26.2}
+  pickup_station_32_5: {left_arm_joint_1: -65.3, left_arm_joint_2: -7.0, left_arm_joint_3: -0.5, left_arm_joint_4: -25.8, left_arm_joint_5: -96.8, left_arm_joint_6: -90.0, left_arm_joint_7: 1.0, right_arm_joint_1: 63.8, right_arm_joint_2: 7.0, right_arm_joint_3: 0.5, right_arm_joint_4: 22.8, right_arm_joint_5: 97.0, right_arm_joint_6: 90.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+
+# ==料片放置
+  B_put_long_1:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -7.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -96.8
+    left_arm_joint_6: -47.4
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 7.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 22.8
+    right_arm_joint_5: 97.0
+    right_arm_joint_6: 42.4
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long_2:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -7.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -96.8
+    left_arm_joint_6: -47.4
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 17.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 22.8
+    right_arm_joint_5: 97.0
+    right_arm_joint_6: 42.4
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long_3:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -7.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -96.8
+    left_arm_joint_6: -47.4
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 6.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 30.8
+    right_arm_joint_5: 97.0
+    right_arm_joint_6: 42.4
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long2_3_2:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -7.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -96.8
+    left_arm_joint_6: -47.4
+    left_arm_joint_7: 1.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 6.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 24.8
+    right_arm_joint_5: 97.0
+    right_arm_joint_6: 42.4
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long2_4:
+    left_arm_joint_1: -65.3
+    left_arm_joint_2: -7.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -96.8
+    left_arm_joint_6: -47.4
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 6.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 23.8
+    right_arm_joint_5: 97.0
+    right_arm_joint_6: 42.4
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+  B_put_long2_5:
+    left_arm_joint_1: -70.8
+    left_arm_joint_2: -18.0
+    left_arm_joint_3: -0.5
+    left_arm_joint_4: -25.3
+    left_arm_joint_5: -77.8
+    left_arm_joint_6: -47.4
+    left_arm_joint_7: 0.0
+    right_arm_joint_1: 63.8
+    right_arm_joint_2: 6.0
+    right_arm_joint_3: 0.5
+    right_arm_joint_4: 23.8
+    right_arm_joint_5: 97.0
+    right_arm_joint_6: 42.4
+    trunk_joint_1: 0.0
+    trunk_joint_2: 44.0
+
+# === harness vla: task memory===
+task_memory_config:
+  enabled: true
+  store_path: "/home/t/workspace/dc_dir/.task_memory.json"
+
+# ========== AGV Global Configuration ==========
+agv_config:
+  enabled: true
+  host: "192.168.2.13"
+  port: 19204
+  connection_timeout: 5.0
+  read_timeout: 2.0
+  auto_reconnect: true
+  auto_disconnect_after_task: false
+  emergency_stop_enabled: true
+  check_arm_before_move: true
+  station_map:
+    station_A: [0.168, 0.029, 0.650]
+  default_arm_safe_positions: {left_arm_joint_1: 5.0, left_arm_joint_2: 5.0, left_arm_joint_3: 5.0, left_arm_joint_4: 5.0, left_arm_joint_5: 5.0, left_arm_joint_6: 5.0, right_arm_joint_1: 5.0, right_arm_joint_2: 5.0, right_arm_joint_3: 5.0, right_arm_joint_4: 5.0, right_arm_joint_5: 5.0, right_arm_joint_6: 5.0, trunk_joint_1: 3.0, trunk_joint_2: 3.0}
+  default_arm_home_positions: {left_arm_joint_1: -77.9, left_arm_joint_2: -9.8, left_arm_joint_3: -0.5, left_arm_joint_4: -28.0, left_arm_joint_5: -93.0, left_arm_joint_6: -85.0, left_arm_joint_7: 0.0, right_arm_joint_1: 76.3, right_arm_joint_2: 9.8, right_arm_joint_3: 0.05, right_arm_joint_4: 28.0, right_arm_joint_5: 93.0, right_arm_joint_6: 85.0, trunk_joint_1: 0.0, trunk_joint_2: 0.0}
+
+# ========== Robot Configuration ==========
+robot_config:
+  type: "supre_robot_follower"
+  control_frequency: 50
+  prometheus_port: 8000
+  max_relative_joint_move: 5.0
+  robot_profile: profiles/robot2_trunk.yaml
+  joint_config_file: "trunk_config_supre_robot_joint.yaml"
+  cameras:
+    head_cam: {type: opencv, index: 0, width: 640, height: 480, fps: 30}
+    left_wrist_cam: {type: opencv, index: 2, width: 640, height: 480, fps: 30}
+    right_wrist_cam: {type: opencv, index: 4, width: 640, height: 480, fps: 30}
+
+# ========== Collision Detection ==========
+collision_config:
+  collision_threshold: 2.0
+  detection_window: 5
+  adaptive_mode: true
+  velocity_compensation: true
+  auto_calibrate: true
+  calibration_samples: 20
+
+# ========== Monitoring ==========
+monitoring_config:
+  log_level: "INFO"
+  enable_prometheus: false
+  prometheus_port: 9090
+
+# ========== Task Sequence ==========
+tasks:
+  # Step 1: AGV到A点
+  - name: "agv_to_station_A"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM16"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  # Step 2: 视觉对齐
+  - name: "align_to_tag"
+    task_type: "visual_align"
+    max_duration: 60.0
+    max_retries: 2
+    stop_on_failure: false
+    next_tasks:
+      success: "classify_workpiece"
+      failed: "voice_align_failed"
+    visual_align_config:
+      marker_id: 0
+      tag_1_id: 1
+      marker_size: 0.18
+      tag_1_size: 0.18
+      marker_family: "tag36h11"
+      search_turn_step: 30.0
+      search_max_turn: 360.0
+      search_max_attempts: 99
+      max_iterations: 10
+      position_tolerance: 0.01
+      angle_tolerance: 1.0
+      # AGV 运动模式: 0=里程(默认, 平移不锁航向易横向漂移), 1=定位(激光/二维码闭环, 需 AGV 已定位稳定)
+      turn_mode: 0            # 转动保持里程模式(诊断已证转动超调仅 ~14%, 无漂移) 1基于地图闭环定位 0仅基于里程
+      translate_mode: 1       # 平移切定位模式(锁航向, 防 tag 从左甩到右) ← 本次改动 1基于地图闭环定位 0仅基于里程
+      # alignment_mode: "freego"   # ← 新增
+      # stop_between_turn_and_forward: true   # ← 加这一行
+      reference_pose_path: "/home/t/workspace/gitprj/lerobot/ref_station_2_2.json"
+      distance_offset: 0.0
+      camera_offset_x: 0.061
+      camera_offset_y: -0.018
+      camera_offset_pitch: 40.0
+      camera_matrix: [392.163, 0.0, 331.139, 0.0, 392.655, 201.662, 0.0, 0.0, 1.0]
+      dist_coeffs: [-0.410230, 0.191873, -0.001411, -0.003197, -0.050031]
+
+  # 对齐失败
+  - name: "voice_align_failed"
+    task_type: "system_command"
+    command: "python /home/t/workspace/dc_dir/tts_cache/speak.py '无法对齐，请调整工作台位置'"
+
+  - name: "agv_retreat_align"
+    task_type: "agv"
+    agv_config: {translate_dist: 0.30, translate_vx: -0.10, check_arm_safe_position: false}
+    cycle_end: true
+
+  # Step 3: YOLO+ROI拍照识别 (long料片 → 12点位匹配)
+  - name: "classify_workpiece"
+    task_type: "classify"
+    max_duration: 450.0      # 最多7.5分钟 (retry 30次 × 10s + 语音)
+    max_retries: 1
+    enabled: true
+    classify_config:
+      method: "yolo_roi"
+      model_path: "/home/t/workspace/dc_dir/models/yolov8n/best.onnx"
+      classes: ["short", "long", "box"]
+      default_label: "unknown"
+      # Retry on ANY non-long label, TTS before each retry
+      retry_on_no_detect: true
+      retry_labels: ["short", "box", "unknown", "no_detection"]
+      retry_wait_seconds: 10.0
+      retry_max_attempts: 2    # 12 × 10s = 2min
+      retry_command: "python /home/t/workspace/dc_dir/tts_cache/speak.py '正在等待重试，请调整料片'"
+      recovery_task: "timeout_return_home"
+      # Different TTS for different failure types (fired ONCE on first detection)
+      label_tts_commands:
+        short: "python /home/t/workspace/dc_dir/tts_cache/speak.py '检测到非目标料片，请放料片'"
+        box: "python /home/t/workspace/dc_dir/tts_cache/speak.py '检测到非目标料片，请放料片'"
+        no_detection: "python /home/t/workspace/dc_dir/tts_cache/speak.py '未检测到料片，请放料片'"
+        unknown: "python /home/t/workspace/dc_dir/tts_cache/speak.py '料片不在有效工作区域内，正在重新定位'"
+      # ROI file with 12 regions (one per station position)
+      roi_reference_path: "/home/t/workspace/dc_dir/roi_json/roi_long_12positions.json"
+      iou_threshold: 0.75
+      target_class: "long"
+      # Auto-align: micro-adjust AGV when IoU is ambiguous
+      auto_align_enabled: true
+      auto_align_max_attempts: 5 # 尝试4次 每次0.5cm 0.5度，共微调2cm 2度
+      auto_align_step_m: 0.01
+      auto_align_step_deg: 1.0
+      auto_align_voice_command: "python /home/t/workspace/dc_dir/tts_cache/speak.py '检测偏差正在微调对齐中'"
+    next_tasks:
+      long_00: "pickup_at_station_00"            # 第1行 中间
+      long_01: "pickup_at_station_01"            # 第1行 偏左
+      long_02: "pickup_at_station_02"            # 第1行 偏右
+      long_10: "pickup_at_station_10"            # 第2行 中间
+      long_11: "pickup_at_station_11"            # 第2行 偏左
+      long_12: "pickup_at_station_12"            # 第2行 偏右
+      long_20: "pickup_at_station_20"            # 第3行 中间
+      long_21: "pickup_at_station_21"            # 第3行 偏左
+      long_22: "pickup_at_station_22"            # 第3行 偏右
+      long_30: "pickup_at_station_30"            # 第4行 中间
+      long_31: "pickup_at_station_31"            # 第4行 偏左
+      long_32: "pickup_at_station_32"            # 第4行 偏右
+
+  # ==== 超时回起点 ====
+  - name: "timeout_return_home"
+    task_type: "system_command"
+    command: "python /home/t/workspace/dc_dir/tts_cache/speak.py '检测超时，返回起点'"
+  
+  - name: "agv_retreat_50cm"
+    task_type: "agv"
+    agv_config:
+      translate_dist: 0.50     # 后退 30cm
+      translate_vx: -0.10
+      check_arm_safe_position: false
+    cycle_end: true             # 完成后结束循环, 重新开始
+
+  # ===================================================
+  # 12个点位抓取动作 (各5步: 手臂摊开→下降→闭合→夹爪闭合→抬起)
+  # ===================================================
+
+  # --- 第1行 中间 ---
+  - name: "pickup_at_station_00"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_00_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_00_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_00_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_00_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_00_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第1行 偏左 ---
+  - name: "pickup_at_station_01"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_01_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_01_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_01_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_01_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_01_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第1行 偏右 ---
+  - name: "pickup_at_station_02"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_02_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_02_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_02_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_02_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_02_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第2行 中间 ---
+  - name: "pickup_at_station_10"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_10_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_10_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_10_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_10_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_10_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第2行 偏左 ---
+  - name: "pickup_at_station_11"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_11_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_11_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_11_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_11_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_11_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第2行 偏右 ---
+  - name: "pickup_at_station_12"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_12_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_12_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_12_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_12_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_12_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第3行 中间 ---
+  - name: "pickup_at_station_20"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_20_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_20_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_20_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_20_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_20_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第3行 偏左 ---
+  - name: "pickup_at_station_21"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_21_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_21_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_21_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_21_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_21_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第3行 偏右 ---
+  - name: "pickup_at_station_22"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_22_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_22_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_22_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_22_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_22_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第4行 中间 ---
+  - name: "pickup_at_station_30"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_30_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_30_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_30_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_30_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_30_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第4行 偏左 ---
+  - name: "pickup_at_station_31"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    steps:
+      - {name: "手臂摊开", position: pickup_station_31_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_31_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_31_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_31_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_31_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+  # --- 第4行 偏右 ---
+  - name: "pickup_at_station_32"
+    task_type: "position_sequence"
+    max_duration: 20.0
+    max_retries: 1
+    enabled: true
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"
+      failed: "voice_pickup_failed"
+    next_tasks:
+      success: "agv_backward_50cm_A1_1"   # 抓取成功 → 跳到终点放置
+      failed: "voice_pickup_failed"    # 抓取失败 → 跳到语音播报
+    steps:
+      - {name: "手臂摊开", position: pickup_station_32_1, max_duration: 0.5, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂下降", position: pickup_station_32_2, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂闭合", position: pickup_station_32_3, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "夹爪闭合", position: pickup_station_32_4, max_duration: 2.0, position_tolerance: 3.0, overlap_next: true}
+      - {name: "手臂抬起", position: pickup_station_32_5, max_duration: 1.0, position_tolerance: 3.0, overlap_next: true}
+
+# ==== 抓取失败 ====
+  - name: "voice_pickup_failed"
+    task_type: "system_command"
+    command: "python /home/t/workspace/dc_dir/tts_cache/speak.py '抓取失败，准备重新抓取'"
+    next_tasks:
+      success: "classify_workpiece"   # 成功 → 重新执行检测
+      failed: "agv_retreat_50cm"    # 失败 → 结束cycle
+
+
+
+# ==成功抓到料片后续统一动作==
+  - name: "agv_backward_50cm_A1_1"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.50      # 距离绝对值 0.2米
+      translate_vx: -0.1      # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+
+  - name: "check_material_before_pickup_A1"
+    task_type: "classify"
+    classify_config:
+      method: "yolo_roi"                   # 复用 ROI 文件做边界检查
+      model_path: "/home/t/workspace/dc_dir/models/yolov8n/best.onnx"
+      classes: ["short", "long", "box"]
+      default_label: "unknown"
+      roi_reference_path: "/home/t/workspace/dc_dir/roi_json/roi_long_12positions.json"
+      boundary_check_mode: "iou"           # 抓取后料片靠近相机，用 IoU 判断
+      boundary_iou_threshold: 0.15         # bbox 与边界 IoU < 0.15 → 料片掉落
+      retry_on_no_detect: false
+    next_tasks:
+      long: "agv_to_station_B1"
+      none: "voice_material_dropped_A"
+      unknown: "voice_material_dropped_A"
+
+  - name: "voice_material_dropped_A"
+    task_type: "system_command"
+    # command: "espeak-ng -v zh '未检测到料片，请放料片'"
+    command: "python /home/t/workspace/dc_dir/tts_cache/speak.py '料片掉落，准备返回重新抓取'"
+
+  - name: "agv_return_to_A_for_repick"
+    task_type: "agv"
+    cycle_end: true    # 结束循环
+    agv_config:
+      target_station: "LM16"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      check_arm_safe_position: false
+    # 回到 A 站后 cycle 会自动重新开始 → 重新执行抓取 
+  
+  - name: "agv_to_station_B1"
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM2"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+  - name: "check_material_before_place_B1"
+    task_type: "classify"                  # 和搬运前检查用同一个 YOLO 模型
+    camera_config:
+      type: "opencv"
+      index: 0
+      width: 640
+      height: 480
+      fps: 30
+    classify_config:
+      method: "yolo_detect"
+      model_path: "/home/t/workspace/dc_dir/models/yolov8n/best.onnx"
+      classes: ["short", "long", "box"]
+      default_label: "unknown"               # 什么都没检测到 → 料片掉了
+      retry_on_no_detect: false           # 不重试，直接判定
+    next_tasks:
+      long: "agv_forward_5cm_B1_1"                # 有料片 → 正常放置
+      none: "voice_material_dropped_B"      # 没料片 → 语音 + 返回重抓
+      unknown: "voice_material_dropped_B"
+
+  - name: "voice_material_dropped_B"
+    task_type: "system_command"
+    # command: "espeak-ng -v zh '未检测到料片，请放料片'"
+    command: "python /home/t/workspace/dc_dir/tts_cache/speak.py '料片掉落，准备返回重新抓取'"
+
+  - name: "agv_return_to_A_for_repick"
+    task_type: "agv"
+    cycle_end: true    # 结束循环
+    agv_config:
+      target_station: "LM16"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      check_arm_safe_position: false
+    # 回到 A 站后 cycle 会自动重新开始 → 重新执行抓取 
+
+  - name: "agv_forward_5cm_B1_1"
+    task_type: "agv"
+    max_duration: 30.0
+    max_retries: 1
+    enabled: true
+    agv_config:
+      translate_dist: 0.05      # 距离绝对值 0.2米
+      translate_vx: 0.1       # X方向速度 -0.3m/s (后退)
+      translate_mode: 0        # 里程模式
+      wait_for_arrival: true
+      arrival_timeout: 30.0
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 1
+      emergency_stop_on_error: true
+      angle_correction: true             # 启用角度修正
+      angle_correction_tolerance: 0.03   # 可选, 默认 0.03rad(1.7°)
+
+
+  # 长料片放置1 (第1次)
+  - name: "place_long_1"
+    task_type: "position_sequence"
+    max_duration: 16.0
+    max_retries: 1
+    enabled: true
+    steps:
+      - name: "step_2"
+        position: B_put_long_1
+        max_duration: 2.0
+        position_tolerance: 3.0
+        overlap_next: true
+      - name: "step_3"
+        position: B_put_long_2
+        max_duration: 1.2
+        position_tolerance: 3.0
+        overlap_next: true
+      - name: "step_4"
+        position: B_put_long_3
+        max_duration: 1.1
+        position_tolerance: 3.0
+        overlap_next: true
+      - name: "step_4_5"
+        position: B_put_long2_3_2
+        max_duration: 0.7
+        position_tolerance: 3.0
+        overlap_next: true
+      - name: "step_5"
+        position: B_put_long2_4
+        max_duration: 0.2
+        position_tolerance: 3.0
+        overlap_next: true
+      - name: "step_6"
+        position: B_put_long2_5
+        max_duration: 1.1
+        position_tolerance: 3.0      
+
+  - name: "home_and_return_A_after_long_1"
+    task_type: "parallel"
+    tasks:
+      - name: "arm_home_after_place_long_1"
+        task_type: "position"
+        max_duration: 10.0
+        max_retries: 1
+        enabled: true
+        completion_criteria:
+          type: "position"
+          position: home
+          position_tolerance: 3.0
+
+      - name: "agv_backward_20cm_B1_1"
+        task_type: "agv"
+        max_duration: 30.0
+        max_retries: 1
+        enabled: true
+        agv_config:
+          translate_dist: 0.20      # 距离绝对值 0.2米
+          translate_vx: -0.1      # X方向速度 -0.3m/s (后退)
+          translate_mode: 0        # 里程模式
+          wait_for_arrival: true
+          arrival_timeout: 30.0
+          check_arm_safe_position: false
+          retry_on_timeout: true
+          retry_count: 1
+          emergency_stop_on_error: true
+
+
+  - name: "agv_return_from_B1_to_A"
+    cycle_end: true
+    task_type: "agv"
+    max_duration: 60.0
+    max_retries: 2
+    enabled: true
+    agv_config:
+      target_station: "LM16"
+      wait_for_arrival: true
+      arrival_timeout: 60.0
+      arrival_tolerance: 0.3
+      check_arm_safe_position: false
+      retry_on_timeout: true
+      retry_count: 2
+      emergency_stop_on_error: true
+
+
+# ========== Cycle Execution Settings ==========
+max_cycles: -1          # 无限循环, 成功抓取后 cycle_end 才结束
+cycle_delay: 1.0
+enable_cycle_prompt: true
+environment_dt: 1.0 / 30.0
+observation_timeout: 5.0
+action_timeout: 5.0
+reset_duration: 3.0
+reset_positions: {}
+
+# ========== Phase 3/4 opt-in keys (offline LLM + visual detector test fixture) ==========
+planner: llm
+llm:
+  model: fake-model
+  base_url: "http://127.0.0.1:9999/v1"
+  api_key: fake-key
+  max_tool_calls: 6
+  temperature: 0.0
+  timeout: 60.0
+visual_detector:
+  enabled: true
+  method: baseline_diff
+  camera_key: head_cam
+  pixel_threshold: 30
+  diff_threshold: 0.05
+  direction: decrease
+  settle_delay: 0.5
