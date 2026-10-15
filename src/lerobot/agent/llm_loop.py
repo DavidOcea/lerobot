@@ -289,6 +289,10 @@ def _execute_skill_chain(
                 if not isinstance(result.final_observation, dict):
                     result.final_observation = {}
                 result.final_observation["visual_evidence"] = asdict(verdict)
+                logger.info(
+                    "visual_evidence[%s]: success=%s changed_fraction=%.3f",
+                    task.name, verdict.success, verdict.changed_fraction,
+                )
 
         if result.status == TaskStatus.FATAL_FAILURE:
             break
