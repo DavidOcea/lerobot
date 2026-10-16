@@ -89,6 +89,10 @@ class SupreRobotFollower(Robot):
 
         # 夹爪关节名：来自 profile（串口夹爪 + is_gripper 电机夹爪）。旧路径无此信息 → 空列表。
         self.gripper_joint_names = list(getattr(self._profile, "gripper_joint_names", []))
+        # 夹爪力缩放：profile 可选。串口夹爪 0~1 需放大(5.0)，电机夹爪真实 Nm 不放大(1.0)。
+        # 缺省 None → scheduler 回退默认 5.0。
+        self.gripper_force_scale = getattr(self._profile, "gripper_force_scale", None)
+        logger.info(f"gripper_force_scale = {self.gripper_force_scale} (None → 默认 5.0)")
 
         self.prometheus_port = getattr(config, 'prometheus_port', None)
         self.joint_position_gauge = None

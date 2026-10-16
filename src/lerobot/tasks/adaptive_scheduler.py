@@ -544,13 +544,14 @@ class AdaptiveTaskScheduler:
         Args:
             observation: Current observation dict with force data
 
-        Note: Gripper force is normalized 0-1, needs to be scaled for comparison
+        Note: Gripper force scale is per-robot — see below.
         """
         # Extract gripper forces for all gripper joints. The gripper joint list comes
         # from the robot profile (serial + motor-driven grippers, any joint number),
         # not a hardcoded joint number.
-        # Note: Gripper force is in 0-1 range, scale to Nm equivalent
-        gripper_force_scale = self.gripper_config.get("gripper_force_scale", 5.0)
+        # 力缩放按机器人区分：串口夹爪 0~1 归一化(放大 5.0)，电机夹爪真实 Nm(1.0)。
+        # 优先用 robot 暴露的 gripper_force_scale（来自 profile），缺省回退 config 默认 5.0。
+        gripper_force_scale = getattr(self.scheduler.robot, "gripper_force_scale", None) or self.gripper_config.get("gripper_force_scale", 5.0)
 
         gripper_joints = getattr(self.scheduler.robot, "gripper_joint_names", None) or []
         gripper_forces_raw = [

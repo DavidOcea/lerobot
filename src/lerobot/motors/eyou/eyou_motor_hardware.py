@@ -7,6 +7,12 @@ import eu_motor_py
 from .hardware_interface import HardwareInterface
 from lerobot.utils.monitor_utils import monitor_performance
 
+# 第二批 PHU/RHU 谐波电机（joint_6/7, node 16/17/26/27）的减速比：脉冲/输出圈。
+# 0x6064 返回输出轴编码器计数，完整一圈 = 52953088 = 101 × 2^19（0x6092 feed constant = 524288）。
+# 该批电机 TPDO 被动反馈失效，read() 回退到裸 SDO 读 0x6064 时用它换算角度。
+# 诊断实测（0420_1.log）：+5° → Δraw=735384 → 735384/5×360=52947648，与厂商标注 52953088 一致。
+_PULSES_PER_REV_SECOND_BATCH = 52953088
+
 class EyouMotorHardware(HardwareInterface):
     """
     一个模仿 supre_robot_control::EyouSystemInterface 的 Python 类。
@@ -15,6 +21,12 @@ class EyouMotorHardware(HardwareInterface):
     1. 它作为有状态对象，在内部维护 hw_states_* 和 hw_commands_* 变量。
     2. read() 和 write() 方法同时提供清晰的参数和返回值，以方便控制循环。
     """
+
+    _POSITION_FEEDBACK_SYNC_TYPE = 1
+    # With the default 20 ms SYNC schedule, type 3 reports status/error every 60 ms.
+    _ERROR_FEEDBACK_SYNC_TYPE = 3
+    _SYNC_FEEDBACK_EVENT_TIMER_MS = 0
+
 
     def __init__(self):
         """构造函数。初始化内部状态存储。"""
@@ -32,13 +44,17 @@ class EyouMotorHardware(HardwareInterface):
         self.hw_start_enabled_: List[bool] = []
         
         self._config: Dict[str, Any] = {}
+        self._can_device_index: Optional[int] = None
+        self._sync_period_ms: int = 20
         self._last_log_time = time.monotonic()
         self._max_write_duration_us = 0.0
 
     def init(self, config: Dict[str, Any]) -> bool:
         """
         初始化硬件接口。
-        【已更新以从 'parameters' 中读取 start_enabled】
+        ``sync_period_ms`` controls the SDK-managed CANopen SYNC period and
+        defaults to 20 ms. SYNC starts only after PDO configuration succeeds
+        during :meth:`activate`.
         """
         print("Initializing EyouMotorHardware...")
         self._config = config
@@ -47,6 +63,11 @@ class EyouMotorHardware(HardwareInterface):
             # 读取顶层参数
             can_device_index = int(self._config["can_device_index"])
             baud_rate_str = self._config["can_baud_rate"]
+            sync_period_ms = int(self._config.get("sync_period_ms", 20))
+            if sync_period_ms <= 0:
+                raise ValueError("sync_period_ms must be greater than zero")
+            self._can_device_index = can_device_index
+            self._sync_period_ms = sync_period_ms
             
             baud_rate_map = {
                 "1M": eu_motor_py.Baudrate.BPS_1M,
@@ -145,23 +166,48 @@ class EyouMotorHardware(HardwareInterface):
                 joint_name = self.joint_names_[i]
                 if self.hw_start_enabled_[i]:
                     print(f"Enabling motor for joint {joint_name}...")
-                    if not all([motor.clear_fault(),
-                                motor.configure_csp_mode(0, False),
-                                motor.start_auto_feedback(0, 255, 20),
-                                motor.start_error_feedback_tpdo(1, 255, 60)]):
-                        print(f"Error: Failed to configure enabled joint {joint_name}")
+                    if not motor.clear_fault():
+                        print(f"Error: Failed to clear fault for {joint_name}")
+                        return False
+                    if not motor.configure_csp_mode(0, True):
+                        print(f"Error: Failed to configure CSP mode for {joint_name}")
+                        return False
+                    if not motor.start_auto_feedback(
+                        0, self._POSITION_FEEDBACK_SYNC_TYPE, self._SYNC_FEEDBACK_EVENT_TIMER_MS
+                    ):
+                        print(f"Error: Failed to configure position feedback for {joint_name}")
+                        return False
+                    if not motor.start_error_feedback_tpdo(
+                        1, self._ERROR_FEEDBACK_SYNC_TYPE, self._SYNC_FEEDBACK_EVENT_TIMER_MS
+                    ):
+                        print(f"Error: Failed to configure error feedback for {joint_name}")
                         return False
                 else:
                     print(f"Skipping activation for joint {joint_name} as it is disabled.")
                     motor.disable()
-                    if not all([motor.clear_fault(),
-                                motor.start_auto_feedback(0, 255, 20),
-                                motor.start_error_feedback_tpdo(1, 255, 60)]):
-                         print(f"Warning: Failed to configure disabled joint {joint_name}")
+                    if not motor.clear_fault():
+                        print(f"Error: Failed to clear fault for disabled joint {joint_name}")
+                        return False
+                    if not motor.start_auto_feedback(
+                        0, self._POSITION_FEEDBACK_SYNC_TYPE, self._SYNC_FEEDBACK_EVENT_TIMER_MS
+                    ):
+                        print(f"Error: Failed to configure position feedback for disabled joint {joint_name}")
+                        return False
+                    if not motor.start_error_feedback_tpdo(
+                        1, self._ERROR_FEEDBACK_SYNC_TYPE, self._SYNC_FEEDBACK_EVENT_TIMER_MS
+                    ):
+                        print(f"Error: Failed to configure error feedback for disabled joint {joint_name}")
+                        return False
+
             
             self.feedback_manager_ = eu_motor_py.MotorFeedbackManager.get_instance()
             self.feedback_manager_.register_callback()
             print("Global feedback callback registered.")
+            if not self.can_manager_.start_sync(self._can_device_index, self._sync_period_ms):
+                print("Error: Failed to start CANopen SYNC scheduler.")
+                return False
+            print(f"CANopen SYNC scheduler started ({self._sync_period_ms} ms).")
+
 
         except RuntimeError as e:
             print(f"Error during activation: {e}")
@@ -177,12 +223,23 @@ class EyouMotorHardware(HardwareInterface):
         """
         for i, motor in enumerate(self.motor_nodes_):
             feedback = motor.get_latest_feedback()
-            
+
             if feedback.last_update_time > datetime.timedelta(0):
                 self.hw_states_positions_[i] = feedback.position_deg
                 self.hw_states_velocities_[i] = feedback.velocity_dps
                 self.hw_states_torques_[i] = float(feedback.torque_milli)/1000.0
-        
+            else:
+                # TPDO 被动反馈失效（第二批 PHU/RHU 谐波电机 joint_6/7 不上报），
+                # 回退到裸 SDO 读 0x6064（harmonic_readDirectory 通用路径）。
+                # 不用 get_position()：它内部先吃 TPDO 缓存、超时才走厂商 harmonic_getActualPos，
+                # 后者对第二批电机返回过冻结旧值；read_s32(0x6064) 是实测确认新鲜的通路。
+                # velocity 不读：下游 supre_robot_hardware_manager.read() 把 velocities 写死为 0。
+                raw = motor.read_s32(0x6064, 0)
+                self.hw_states_positions_[i] = raw / _PULSES_PER_REV_SECOND_BATCH * 360.0
+                # get_torque() 返回 per-mille（0.1% 额定扭矩），须 /1000 对齐 if 分支的
+                # torque_milli/1000.0；漏除会把 4~31 毫放大成 4~31 Nm，触发碰撞检测误报。
+                self.hw_states_torques_[i] = float(motor.get_torque()) / 1000.0
+
         # 返回内部状态的拷贝，防止外部代码意外修改
         return list(zip(self.hw_states_positions_, self.hw_states_torques_))
     def busy_wait(self, wait_time_s):
@@ -234,6 +291,8 @@ class EyouMotorHardware(HardwareInterface):
         """停用硬件。"""
         print("Deactivating EyouMotorHardware...")
         try:
+            if self.can_manager_ is not None and self._can_device_index is not None:
+                self.can_manager_.stop_sync(self._can_device_index)
             for motor in self.motor_nodes_:
                 motor.disable()
         except RuntimeError as e:
