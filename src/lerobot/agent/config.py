@@ -64,6 +64,45 @@ class TaskMemoryConfig:
 
 
 @dataclass
+class LLMConfig:
+    """LLM planner configuration (Phase 3). Inert unless ``planner == "llm"``.
+
+    The thin OpenAI-compatible client (see ``lerobot.agent.llm_client``) points
+    at ``base_url`` and reads ``api_key`` from ``api_key_env`` when ``api_key``
+    is empty, so the same config drives a cloud LLM or a local vLLM 7B server
+    (OpenAI-compatible endpoint).
+    """
+
+    model: str = "gpt-4o-mini"
+    base_url: str = "https://api.openai.com/v1"  # OpenAI-compatible / vLLM endpoint
+    api_key: str = ""  # explicit key; "" = read from api_key_env
+    api_key_env: str = "OPENAI_API_KEY"  # env var name to read api_key from
+    system_prompt: str = ""  # "" = use DEFAULT_SYSTEM_PROMPT
+    max_tool_calls: int = 12  # loop budget (LLM decisions per run)
+    temperature: float = 0.0
+    timeout: float = 60.0  # per-request seconds
+
+
+@dataclass
+class VisualDetectorConfig:
+    """Phase 4 visual success detector (evidence-only, pickup-only).
+
+    Inert unless ``enabled=True`` AND ``planner == "llm"``. Reads environment
+    camera frames and emits an advisory ``VisualVerdict`` into
+    ``skill_observation``; it never changes ``result.success`` / execution flow.
+    """
+
+    enabled: bool = False
+    method: str = "baseline_diff"  # only baseline_diff for now
+    camera_key: str = "head_cam"  # obs["images"][camera_key]
+    roi: tuple[int, int, int, int] | None = None  # (x, y, w, h) px; None = full frame
+    pixel_threshold: int = 30  # grayscale |Δ| threshold (0-255)
+    diff_threshold: float = 0.05  # changed-pixel fraction that fires success
+    direction: str = "decrease"  # "decrease"=pickup, "increase"=place (future)
+    settle_delay: float = 0.5  # seconds to wait after grasp before after-frame
+
+
+@dataclass
 class OrchestratorConfig(TasksOrchestratorConfig):
     """Extended orchestrator configuration with additional agent-specific settings.
 
@@ -75,6 +114,9 @@ class OrchestratorConfig(TasksOrchestratorConfig):
     use_local_execution: bool = True  # True=local (no Policy Server), False=remote (via gRPC)
     policy_device: str = "cuda"  # Device for local policy execution
 
+    # Planner mode: "flash" = deterministic YAML replay (现状), "llm" = LLM planner (Phase 3+)
+    planner: str = "flash"
+
     # Policy server settings (only used when use_local_execution=False)
     policy_server_host: str = "localhost"
     policy_server_port: int = 50051
@@ -85,6 +127,12 @@ class OrchestratorConfig(TasksOrchestratorConfig):
 
     # Task memory configuration (opt-in)
     task_memory_config: TaskMemoryConfig = field(default_factory=TaskMemoryConfig)
+
+    # LLM planner configuration (inert unless planner == "llm")
+    llm_config: LLMConfig = field(default_factory=LLMConfig)
+
+    # Visual success detector (evidence-only; inert unless enabled + planner == "llm")
+    visual_detector_config: VisualDetectorConfig = field(default_factory=VisualDetectorConfig)
 
     # New feature settings
     enable_interactive_mode: bool = False  # Enable interactive task selection before each task

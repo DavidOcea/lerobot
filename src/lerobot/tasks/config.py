@@ -785,6 +785,18 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
     tmc_dict = config_dict.get("task_memory_config", {})
     task_memory_config = TMC(**tmc_dict) if isinstance(tmc_dict, dict) else TMC()
 
+    # Parse llm config (inert unless planner == "llm" — zero impact if absent)
+    from lerobot.agent.config import LLMConfig
+    llm_dict = config_dict.get("llm", {})
+    llm_config = LLMConfig(**llm_dict) if isinstance(llm_dict, dict) else LLMConfig()
+
+    # Parse visual detector config (inert unless enabled + planner == "llm")
+    from lerobot.agent.config import VisualDetectorConfig
+    vd_dict = config_dict.get("visual_detector", {})
+    visual_detector_config = (
+        VisualDetectorConfig(**vd_dict) if isinstance(vd_dict, dict) else VisualDetectorConfig()
+    )
+
     # Create main config - use the extended orchestrator config if available
     try:
         # Try to import the extended config from agent module
@@ -816,6 +828,9 @@ def load_config_from_yaml(config_path: str | Path) -> OrchestratorConfig:
             enable_monitoring_dashboard=config_dict.get("enable_monitoring_dashboard", False),
             monitoring_dashboard_port=config_dict.get("monitoring_dashboard_port", 8080),
             task_memory_config=task_memory_config,
+            planner=config_dict.get("planner", "flash"),
+            llm_config=llm_config,
+            visual_detector_config=visual_detector_config,
         )
     except ImportError:
         # Fall back to base config
