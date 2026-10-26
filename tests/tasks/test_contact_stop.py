@@ -1,5 +1,11 @@
-from lerobot.tasks.config import parse_task_dict
+from types import SimpleNamespace
 
+from lerobot.agent.orchestrator import TaskAgentOrchestrator
+from lerobot.tasks.config import CompletionCriteria, TaskConfig, parse_task_dict
+from lerobot.tasks.task_scheduler import TaskStatus
+
+
+# ── Task 2: config parsing ──────────────────────────────────────────────────
 
 def _contact_step(**overrides):
     step = {
@@ -45,3 +51,75 @@ def test_stop_on_contact_with_overlap_next_raises():
         pass
     else:
         raise AssertionError("expected ValueError for stop_on_contact + overlap_next")
+
+
+# ── Task 3: orchestrator wiring ─────────────────────────────────────────────
+
+class _FakeRobot:
+    def __init__(self, target, force_sequence):
+        self._target = target
+        self._force_sequence = force_sequence
+        self._i = 0
+        self.observation_joint_names = list(target.keys())
+        self.gripper_joint_names = []
+
+    def get_current_position(self):
+        return dict(self._target)
+
+    def send_action(self, action):
+        pass
+
+    def get_observation(self):
+        torque = self._force_sequence[min(self._i, len(self._force_sequence) - 1)]
+        self._i += 1
+        joint = self.observation_joint_names[0]
+        return {f"{joint}.force": torque}
+
+
+def _make_orch(robot, control_frequency=500):
+    orch = TaskAgentOrchestrator.__new__(TaskAgentOrchestrator)
+    orch.robot = robot
+    orch.config = SimpleNamespace(robot_config=SimpleNamespace(control_frequency=control_frequency))
+    orch.monitor_collector = None
+    orch.collision_detector = None
+    orch.total_collision_count = 0
+    orch.current_cycle = 0
+    orch.total_cycles = 0
+    orch._add_monitor_event = lambda *a, **k: None
+    return orch
+
+
+def _contact_criteria():
+    return CompletionCriteria(
+        type="position",
+        target_joint_positions={"left_arm_joint_3": 10.0},
+        position_tolerance=3.0,
+        stop_on_contact=True,
+        contact_joints=["left_arm_joint_3"],
+        contact_torque_threshold=1.0,
+        contact_baseline_window=5,
+        contact_confirm_window=3,
+    )
+
+
+def test_execute_position_task_stops_on_contact():
+    robot = _FakeRobot({"left_arm_joint_3": 10.0}, [2.0] * 5 + [3.5] * 20)
+    orch = _make_orch(robot)
+    task = TaskConfig(
+        name="close", task_type="position", max_duration=0.2,
+        completion_criteria=_contact_criteria(),
+    )
+    result = orch._execute_position_task(task)
+    assert result.status == TaskStatus.COMPLETED and result.error_message is None
+    assert result.duration < 0.2  # broke early on contact
+
+
+def test_execute_position_task_reaches_target_without_contact():
+    robot = _FakeRobot({"left_arm_joint_3": 10.0}, [2.0] * 100)
+    orch = _make_orch(robot)
+    task = TaskConfig(
+        name="close", task_type="position", max_duration=0.2,
+        completion_criteria=_contact_criteria(),
+    )
+    result = orch._execute_position_task(task)
+    assert result.status == TaskStatus.COMPLETED and result.error_message is None

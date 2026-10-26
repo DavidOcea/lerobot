@@ -32,6 +32,7 @@ from lerobot.safety import (
     create_enhanced_collision_config,
 )
 from lerobot.safety.collision_detector import CollisionConfig
+from lerobot.safety.local_contact_detector import LocalContactConfig, LocalContactDetector
 from lerobot.tasks.completion_detector import TaskCompletionDetector
 from lerobot.tasks.config import TaskConfig, parse_task_dict
 from lerobot.tasks.local_policy_executor import LocalPolicyExecutor
@@ -2996,6 +2997,23 @@ class TaskAgentOrchestrator:
         step_count = 0
         total_steps = int(actual_duration * control_frequency)
 
+        # Contact-stop: monitor torque rise over a local (just-before-contact)
+        # baseline and stop the move early when the arms close onto the box,
+        # instead of pushing past the fixed target angle and stalling.
+        contact_detector = None
+        monitored_contact_joints: list[str] = []
+        contact_stopped = False
+        if task.completion_criteria.stop_on_contact:
+            monitored_contact_joints = list(
+                task.completion_criteria.contact_joints or target_positions.keys()
+            )
+            contact_detector = LocalContactDetector(LocalContactConfig(
+                joints=monitored_contact_joints,
+                threshold=task.completion_criteria.contact_torque_threshold,
+                baseline_window=task.completion_criteria.contact_baseline_window,
+                confirm_window=task.completion_criteria.contact_confirm_window,
+            ))
+
         success = True
         while time.time() - start_time < actual_duration:
             elapsed = time.time() - start_time
@@ -3022,6 +3040,20 @@ class TaskAgentOrchestrator:
 
             # Get observation for collision and monitoring
             observation = self.robot.get_observation()
+
+            # Contact-stop check (local-differential torque rise)
+            if contact_detector is not None:
+                torques = {
+                    j: float(observation.get(f"{j}.force", 0.0))
+                    for j in monitored_contact_joints
+                }
+                if contact_detector.update(torques):
+                    logger.info(
+                        f"Contact detected during {task.name} on {monitored_contact_joints} — "
+                        f"stopping early"
+                    )
+                    contact_stopped = True
+                    break
 
             # Update real-time monitoring dashboard (non-blocking)
             if self.monitor_collector is not None:
@@ -3070,6 +3102,11 @@ class TaskAgentOrchestrator:
                 if abs(final - target) > tolerance:
                     all_reached = False
                     logger.debug(f"Joint {joint_name}: target={target:.1f}, actual={final:.1f}, diff={abs(final-target):.1f}")
+
+        # Contact-stop counts as reaching the goal: the move stopped at contact,
+        # not at the fixed angle — that is the intended behavior, not a failure.
+        if contact_stopped:
+            all_reached = True
 
         duration = time.time() - start_time
         # Use COMPLETED status (SUCCESS is not a valid TaskStatus enum value)
@@ -3305,6 +3342,11 @@ class TaskAgentOrchestrator:
                     type="position",
                     target_joint_positions=step.position,
                     position_tolerance=step.position_tolerance,
+                    stop_on_contact=step.stop_on_contact,
+                    contact_joints=step.contact_joints,
+                    contact_torque_threshold=step.contact_torque_threshold,
+                    contact_baseline_window=step.contact_baseline_window,
+                    contact_confirm_window=step.contact_confirm_window,
                 ),
             )
             if speed_multiplier != 1.0:
