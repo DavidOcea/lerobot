@@ -57,6 +57,13 @@ class CompletionCriteria:
     # (so it is still commanded to close), but judge it separately (skip the
     # |current - target| <= tolerance test for these joints).
     gripper_joints: list[str] = field(default_factory=list)
+    # Contact-stop — complete the move early when torque rises above a local
+    # (just-before-contact) baseline, instead of reaching target_joint_positions.
+    stop_on_contact: bool = False
+    contact_joints: list[str] = field(default_factory=list)
+    contact_torque_threshold: float = 5.0
+    contact_baseline_window: int = 5
+    contact_confirm_window: int = 3
 
 
 @dataclass
@@ -180,6 +187,12 @@ class PositionSequenceStep:
     max_duration: float = 10.0
     position_tolerance: float = 3.0
     overlap_next: bool = False  # 到位前提前发下一步, 消除停顿
+    # Contact-stop (standalone steps only — see parse_task_dict guard).
+    stop_on_contact: bool = False
+    contact_joints: list[str] = field(default_factory=list)
+    contact_torque_threshold: float = 5.0
+    contact_baseline_window: int = 5
+    contact_confirm_window: int = 3
 
 
 @dataclass
@@ -535,12 +548,23 @@ def parse_task_dict(
                     pos = named_positions[pos].copy()
                 else:
                     raise ValueError(f"Unknown named position: '{pos}'")
+            if step_dict.get("stop_on_contact") and step_dict.get("overlap_next"):
+                raise ValueError(
+                    f"Step '{step_dict.get('name', '')}' cannot combine "
+                    "stop_on_contact with overlap_next: contact-stop only "
+                    "applies to standalone (non-overlap) steps"
+                )
             steps.append(PositionSequenceStep(
                 name=step_dict.get("name", ""),
                 position=pos,
                 max_duration=step_dict.get("max_duration", 10.0),
                 position_tolerance=step_dict.get("position_tolerance", 3.0),
                 overlap_next=step_dict.get("overlap_next", False),
+                stop_on_contact=step_dict.get("stop_on_contact", False),
+                contact_joints=step_dict.get("contact_joints", []),
+                contact_torque_threshold=step_dict.get("contact_torque_threshold", 5.0),
+                contact_baseline_window=step_dict.get("contact_baseline_window", 5),
+                contact_confirm_window=step_dict.get("contact_confirm_window", 3),
             ))
         task_kwargs["steps"] = steps
         total_steps_duration = sum(s.max_duration for s in steps)
