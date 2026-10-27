@@ -3073,8 +3073,13 @@ class TaskAgentOrchestrator:
                 except Exception:
                     pass  # Never let monitoring errors affect the control loop
 
-            # Check for collision
-            if self.collision_detector:
+            # Check for collision. For a contact-stop step, skip the soft
+            # anomaly check — contact is the *intended* outcome, and the
+            # collision detector's static base-torque deviation would either
+            # false-fire on gravity drift or preempt the graceful contact-stop.
+            # The step's own contact detector + max_duration remain the stop
+            # conditions; the robot's hardware torque clamps stay as backstop.
+            if self.collision_detector and not task.completion_criteria.stop_on_contact:
                 collision_result = self.collision_detector.check_collision(observation, target_action)
                 if collision_result.is_detected:
                     logger.warning(f"Collision detected during position task {task.name}")
@@ -3178,7 +3183,10 @@ class TaskAgentOrchestrator:
                 # Include it as the chain's final waypoint — that way the
                 # continuous control loop covers the entire trajectory and
                 # stops naturally at the last step (no loop-restart gap).
-                if i < len(task.steps):
+                # EXCEPT a contact-stop step: it must run standalone so its
+                # local-differential contact detector actually runs (a chain
+                # waypoint is pure position control with no contact stop).
+                if i < len(task.steps) and not getattr(task.steps[i], "stop_on_contact", False):
                     i += 1
                 chain_steps = task.steps[chain_start:i]
                 chain_names = [s.name or f"step_{chain_start + k + 1}" for k, s in enumerate(chain_steps)]

@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from lerobot.agent.orchestrator import TaskAgentOrchestrator
 from lerobot.tasks.config import CompletionCriteria, TaskConfig, parse_task_dict
-from lerobot.tasks.task_scheduler import TaskStatus
+from lerobot.tasks.task_scheduler import TaskResult, TaskStatus
 
 
 # ── Task 2: config parsing ──────────────────────────────────────────────────
@@ -123,3 +123,56 @@ def test_execute_position_task_reaches_target_without_contact():
     )
     result = orch._execute_position_task(task)
     assert result.status == TaskStatus.COMPLETED and result.error_message is None
+
+
+# ── Final-review fixes ──────────────────────────────────────────────────────
+
+def test_stop_on_contact_step_runs_standalone_not_in_chain(monkeypatch):
+    """A stop_on_contact step after an overlap_next step must run standalone,
+    not be absorbed as a chain waypoint."""
+    calls = []
+
+    def spy(self, step_task):
+        calls.append((step_task.name, step_task.completion_criteria.stop_on_contact))
+        return TaskResult(task_name=step_task.name, status=TaskStatus.COMPLETED)
+
+    monkeypatch.setattr(TaskAgentOrchestrator, "_execute_position_task", spy)
+
+    task = parse_task_dict({
+        "name": "pickup",
+        "task_type": "position_sequence",
+        "steps": [
+            {"name": "手臂下降", "position": {"left_arm_joint_3": 1.0}, "overlap_next": True},
+            {"name": "手臂闭合", "position": {"left_arm_joint_3": 2.0},
+             "overlap_next": False, "stop_on_contact": True},
+        ],
+    })
+    robot = _FakeRobot({"left_arm_joint_3": 0.0}, [2.0] * 100)
+    orch = _make_orch(robot)
+    orch._execute_position_sequence_task(task)
+    assert ("pickup/手臂闭合", True) in calls
+
+
+def test_collision_detector_suppressed_for_contact_stop():
+    """For a stop_on_contact step, the collision backstop must not run and
+    preempt the graceful contact-stop."""
+
+    class _StubCollisionDetector:
+        def __init__(self):
+            self.checked = 0
+
+        def check_collision(self, observation, action):
+            self.checked += 1
+            return SimpleNamespace(is_detected=True)
+
+    robot = _FakeRobot({"left_arm_joint_3": 10.0}, [2.0] * 5 + [3.5] * 20)
+    orch = _make_orch(robot)
+    stub = _StubCollisionDetector()
+    orch.collision_detector = stub
+    task = TaskConfig(
+        name="close", task_type="position", max_duration=0.2,
+        completion_criteria=_contact_criteria(),
+    )
+    result = orch._execute_position_task(task)
+    assert result.status == TaskStatus.COMPLETED and result.error_message is None
+    assert stub.checked == 0  # collision backstop suppressed
