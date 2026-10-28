@@ -3048,9 +3048,16 @@ class TaskAgentOrchestrator:
                     for j in monitored_contact_joints
                 }
                 if contact_detector.update(torques):
+                    trigger_detail = ", ".join(
+                        f"{j}: +{d:.2f} Nm"
+                        for j, d in sorted(
+                            contact_detector.last_trigger.items(),
+                            key=lambda kv: -kv[1],
+                        )
+                    )
                     logger.info(
-                        f"Contact detected during {task.name} on {monitored_contact_joints} — "
-                        f"stopping early"
+                        f"Contact detected during {task.name} — "
+                        f"trigger: {trigger_detail} — stopping early"
                     )
                     contact_stopped = True
                     break

@@ -49,6 +49,10 @@ class LocalContactDetector:
             joint: deque(maxlen=config.baseline_window) for joint in config.joints
         }
         self._consecutive: dict[str, int] = {joint: 0 for joint in config.joints}
+        # joint -> delta at the most recent trigger (empty when the last update
+        # did not trigger). Exposed so callers can log *which* joint rose and by
+        # how much, rather than just "contact detected".
+        self.last_trigger: dict[str, float] = {}
 
     def update(self, torques: dict[str, float]) -> bool:
         """Feed one sample and report whether contact is now confirmed.
@@ -62,6 +66,7 @@ class LocalContactDetector:
             update does not re-fire until another ``confirm_window`` rises.
         """
         triggered = False
+        triggered_joints: dict[str, float] = {}
 
         for joint in self.config.joints:
             current = torques.get(joint)
@@ -87,10 +92,14 @@ class LocalContactDetector:
 
             if self._consecutive[joint] >= self.config.confirm_window:
                 triggered = True
+                triggered_joints[joint] = delta
 
         if triggered:
             for joint in self.config.joints:
                 self._consecutive[joint] = 0
+            self.last_trigger = triggered_joints
+        else:
+            self.last_trigger = {}
 
         return triggered
 
