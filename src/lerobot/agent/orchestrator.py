@@ -2446,7 +2446,7 @@ class TaskAgentOrchestrator:
 
                 # Manually get bbox + best-two ROIs
                 h0, w0 = bgr_img.shape[:2]
-                img = bgr_img[:, :, ::-1].copy()
+                img = bgr_img.copy()  # no channel flip — camera RGB (bgr_img is a misnomer), model expects RGB; see NOTE in YOLOClassifier.classify
                 img = cv2.resize(img, (640, 640)).transpose(2, 0, 1).astype(np.float32) / 255.0
                 img = np.expand_dims(img, axis=0)
                 try:

@@ -166,8 +166,20 @@ class YOLOClassifier(BaseClassifier):
             return ClassifyResult(label=self.default_label, confidence=0.0)
 
         h0, w0 = image.shape[:2]
-        # Preprocess: BGR→RGB (copy needed — cv2.resize rejects negative strides)
-        img = image[:, :, ::-1].copy()
+        # Preprocess: feed RGB as-is. Camera returns RGB (OpenCVCameraConfig
+        # .color_mode defaults to ColorMode.RGB) and this model was trained on
+        # RGB, so there is NO channel flip.
+        #
+        # NOTE(color-format) — RGB/BGR flip history (robot1 vs robot2):
+        #   This line previously did `image[:, :, ::-1].copy()` (BGR→RGB), a bug
+        #   since the input is already RGB. Fixed by removing the flip.
+        #   - robot1 (box/box_stack): confirmed via scripts/confirm_classify_flip.py
+        #     — flip lowered conf 0.93→0.84 and mislabeled box_stack→box on 2/3 frames.
+        #   - robot2 (short/long/box): color-insensitive, NOT end-to-end confirmed.
+        #     If robot2 detection ever looks inaccurate, re-check THIS color-format
+        #     assumption first (and the other two flip sites: RoiIouClassifier.classify
+        #     and orchestrator._run_auto_align).
+        img = image.copy()
         img = cv2.resize(img, (640, 640)).transpose(2, 0, 1).astype(np.float32) / 255.0
         img = np.expand_dims(img, axis=0)
 
@@ -355,7 +367,7 @@ class RoiIouClassifier(YOLOClassifier):
             return ClassifyResult(label=self.default_label, confidence=0.0)
 
         h0, w0 = image.shape[:2]
-        img = image[:, :, ::-1].copy()
+        img = image.copy()  # no channel flip — camera RGB, model expects RGB (see NOTE in YOLOClassifier.classify)
         img = cv2.resize(img, (640, 640)).transpose(2, 0, 1).astype(np.float32) / 255.0
         img = np.expand_dims(img, axis=0)
         outputs = self._session.run(None, {"images": img})
