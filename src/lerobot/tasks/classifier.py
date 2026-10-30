@@ -6,8 +6,10 @@ implementations just subclass BaseClassifier and register in the
 factory.
 
 Supported methods:
-  - "apriltag":     AprilTagClassifier
-  - "yolo_detect":  YOLOClassifier (ONNX), no marker needed
+  - "apriltag":         AprilTagClassifier (marker-based)
+  - "yolo_detect":      YOLOClassifier (ONNX), no marker needed
+  - "yolo_roi":         RoiIouClassifier (YOLO + ROI-IoU position matching)
+  - "color_threshold":  ColorThresholdClassifier (binary color gate, no model)
 """
 
 from abc import ABC, abstractmethod
@@ -457,13 +459,61 @@ class RoiIouClassifier(YOLOClassifier):
 import cv2  # needed for resize, cvtColor in YOLOClassifier.classify
 
 
+class ColorThresholdClassifier(BaseClassifier):
+    """Binary color-presence gate (e.g. 绿灯亮/灭) inside a fixed pixel ROI.
+
+    No model needed — thresholds the fraction of pixels matching a hue band in
+    a fixed ROI. Used as a "wait until green light" gate before box pickup.
+
+    NOTE(color-format): input image is RGB (camera returns RGB), so the HSV
+    conversion MUST be cv2.COLOR_RGB2HSV. Using BGR2HSV would silently never
+    detect green — the same channel-order trap as YOLOClassifier.classify.
+    """
+
+    def __init__(self, roi: Optional[list] = None, color_target: str = "green",
+                 hue_range: Optional[list] = None, saturation_min: int = 80,
+                 value_min: int = 80, color_fraction_threshold: float = 0.20,
+                 default_label: str = "no_green", default_next_task: str = ""):
+        self.roi = [int(v) for v in roi] if roi else None
+        self.color_target = color_target
+        self.hue_range = tuple(hue_range) if hue_range else (35, 85)
+        self.saturation_min = int(saturation_min)
+        self.value_min = int(value_min)
+        self.color_fraction_threshold = float(color_fraction_threshold)
+        self.default_label = default_label
+        self.default_next_task = default_next_task
+
+    def classify(self, image: np.ndarray) -> ClassifyResult:
+        if image is None or self.roi is None:
+            return ClassifyResult(label=self.default_label, confidence=0.0)
+        h, w = image.shape[:2]
+        x, y, rw, rh = self.roi
+        x0 = max(0, min(int(x), w - 1))
+        y0 = max(0, min(int(y), h - 1))
+        x1 = max(x0 + 1, min(int(x + rw), w))
+        y1 = max(y0 + 1, min(int(y + rh), h))
+        roi_img = image[y0:y1, x0:x1]
+        if roi_img.size == 0:
+            return ClassifyResult(label=self.default_label, confidence=0.0)
+
+        hsv = cv2.cvtColor(roi_img, cv2.COLOR_RGB2HSV)  # input is RGB — no flip
+        h_lo, h_hi = self.hue_range
+        hc, sc, vc = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        mask = (hc >= h_lo) & (hc <= h_hi) & (sc > self.saturation_min) & (vc > self.value_min)
+        frac = float(mask.sum()) / float(mask.size)
+        if frac > self.color_fraction_threshold:
+            return ClassifyResult(label=self.color_target, confidence=frac)
+        return ClassifyResult(label=self.default_label, confidence=1.0 - frac)
+
+
 def make_classifier(method: str, **kwargs) -> BaseClassifier:
     """Factory to create a classifier from a method name.
 
     Supported methods:
-      - "apriltag":     AprilTagClassifier (marker-based)
-      - "yolo_detect":  YOLOClassifier (ONNX, no marker needed)
-      - "yolo_roi":     RoiIouClassifier (YOLO + ROI-IoU position matching)
+      - "apriltag":         AprilTagClassifier (marker-based)
+      - "yolo_detect":      YOLOClassifier (ONNX, no marker needed)
+      - "yolo_roi":         RoiIouClassifier (YOLO + ROI-IoU position matching)
+      - "color_threshold":  ColorThresholdClassifier (binary color gate, no model)
     """
     method = method.lower()
     if method == "apriltag":
@@ -494,5 +544,16 @@ def make_classifier(method: str, **kwargs) -> BaseClassifier:
             boundary_check_mode=kwargs.get("boundary_check_mode", "contain") or "contain",
             boundary_iou_threshold=kwargs.get("boundary_iou_threshold", 0.6),
             target_class=kwargs.get("target_class", ""),
+        )
+    if method == "color_threshold":
+        return ColorThresholdClassifier(
+            roi=kwargs.get("roi", None),
+            color_target=kwargs.get("color_target", "green"),
+            hue_range=kwargs.get("hue_range", [35, 85]),
+            saturation_min=kwargs.get("saturation_min", 80),
+            value_min=kwargs.get("value_min", 80),
+            color_fraction_threshold=kwargs.get("color_fraction_threshold", 0.20),
+            default_label=kwargs.get("default_label", "no_green"),
+            default_next_task=kwargs.get("default_next_task", ""),
         )
     raise ValueError(f"Unknown classify method: {method}")

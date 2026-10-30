@@ -268,7 +268,7 @@ class ClassifyConfig:
     has its own set of parameters as nested fields.
     """
 
-    method: str = "apriltag"  # classification method: "apriltag", "color", "model"
+    method: str = "apriltag"  # classification method: "apriltag", "yolo_detect", "yolo_roi", "color_threshold"
 
     # --- AprilTag method ---
     marker_id_map: dict[int, str] = field(default_factory=dict)
@@ -293,6 +293,16 @@ class ClassifyConfig:
     # post-pickup checks where the workpiece appears larger near the camera).
     boundary_check_mode: str = "contain"   # "contain" or "iou"
     boundary_iou_threshold: float = 0.6    # only used when boundary_check_mode="iou"
+
+    # --- Color threshold method ("color_threshold") ---
+    # Binary green-light gate: fraction of pixels matching a hue band inside a
+    # fixed pixel ROI. No model needed. Image is RGB (see NOTE(color-format)).
+    roi: list = field(default_factory=list)   # [x, y, w, h] pixel ROI in camera frame
+    color_target: str = "green"               # label returned when the color is "lit"
+    hue_range: list = field(default_factory=lambda: [35, 85])  # OpenCV H (0-180) green band
+    saturation_min: int = 80                  # minimum S (0-255)
+    value_min: int = 80                       # minimum V (0-255)
+    color_fraction_threshold: float = 0.20    # min color-pixel fraction in ROI to count as "lit"
 
     # --- Auto-align (AGV micro-adjustment on ambiguous IoU) ---
     auto_align_enabled: bool = False       # enable AGV auto-alignment

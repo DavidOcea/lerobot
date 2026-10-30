@@ -2587,6 +2587,13 @@ class TaskAgentOrchestrator:
             "boundary_check_mode": cc.boundary_check_mode or "contain",
             "boundary_iou_threshold": cc.boundary_iou_threshold,
             "target_class": cc.target_class or "",
+            # Color-threshold (used by "color_threshold" method, ignored by others)
+            "roi": cc.roi,
+            "color_target": cc.color_target,
+            "hue_range": cc.hue_range,
+            "saturation_min": cc.saturation_min,
+            "value_min": cc.value_min,
+            "color_fraction_threshold": cc.color_fraction_threshold,
         }
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
