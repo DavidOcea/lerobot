@@ -71,6 +71,9 @@ def parse_args():
     p = argparse.ArgumentParser(description="Capture ROI regions for YOLO-ROI classifier")
     p.add_argument("--config", required=True, help="YAML config with robot_config")
     p.add_argument("--output", default="roi_regions.json", help="Output JSON path")
+    p.add_argument("--live", action="store_true",
+                   help="Re-capture the head_cam frame every loop (real-time view) "
+                        "instead of freezing the first frame")
     return p.parse_args()
 
 
@@ -111,6 +114,11 @@ def main():
     cv2.setMouseCallback("Capture ROI Regions", _mouse_callback)
 
     while True:
+        if args.live:
+            obs = robot.get_observation()
+            img = obs.get("images", {}).get("head_cam")
+            if img is not None:
+                frame = img if img.dtype == np.uint8 else img.astype(np.uint8)
         display = frame.copy()
 
         # Draw confirmed ROIs (green)
@@ -156,6 +164,9 @@ def main():
             with open(args.output, 'w') as f:
                 json.dump(data, f, indent=2)
             print(f"Saved {len(_rois)} ROIs to {args.output}")
+            print("Paste into color_threshold config (roi: [x, y, w, h]):")
+            for label, r in data["regions"].items():
+                print(f"  roi: [{r['x']}, {r['y']}, {r['w']}, {r['h']}]   # {label}")
             break
 
         elif key == ord('q') or key == ord('Q'):
