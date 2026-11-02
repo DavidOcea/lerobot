@@ -119,7 +119,7 @@ def main():
             img = obs.get("images", {}).get("head_cam")
             if img is not None:
                 frame = img if img.dtype == np.uint8 else img.astype(np.uint8)
-        display = frame.copy()
+        display = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # display-only; camera returns RGB
 
         # Draw confirmed ROIs (green)
         for i, r in enumerate(_rois):

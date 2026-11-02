@@ -76,7 +76,7 @@ def main():
         lit = result.label == "green"
         frac = result.confidence if lit else 1.0 - result.confidence
 
-        display = frame.copy()
+        display = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # display-only; classifier still sees RGB
         x, y, w, h = roi
         col = (0, 255, 0) if lit else (0, 0, 255)
         cv2.rectangle(display, (x, y), (x + w, y + h), col, 3)
@@ -87,9 +87,9 @@ def main():
 
         # zoomed ROI inset (top-right) so the lamp region is visible up close
         x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(frame.shape[1], x + w), min(frame.shape[0], y + h)
+        x1, y1 = min(display.shape[1], x + w), min(display.shape[0], y + h)
         if x1 > x0 and y1 > y0:
-            zoom = cv2.resize(frame[y0:y1, x0:x1], None, fx=2.0, fy=2.0,
+            zoom = cv2.resize(display[y0:y1, x0:x1], None, fx=2.0, fy=2.0,
                               interpolation=cv2.INTER_NEAREST)
             zh, zw = zoom.shape[:2]
             fh, fw = display.shape[:2]
