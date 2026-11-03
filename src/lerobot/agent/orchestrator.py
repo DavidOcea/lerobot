@@ -2981,6 +2981,27 @@ class TaskAgentOrchestrator:
         # Get joint names from robot config
         joint_names = self.robot.observation_joint_names if hasattr(self.robot, 'observation_joint_names') else list(target_positions.keys())
 
+        # b-min: a partial target (e.g. waist-only rotation) is valid — joints the
+        # robot has but the task omits are held at their current position, so the
+        # action dict stays complete and the robot does not reject it with
+        # "Could not find required joint '...'". Unknown (typo'd) target joints
+        # still fail loudly so the old typo protection is preserved.
+        held_joints = [
+            j for j in joint_names
+            if j not in target_positions and j in current_positions_dict
+        ]
+        if held_joints:
+            logger.warning(
+                f"Holding {len(held_joints)} joint(s) at current position "
+                f"(not in target_positions): {', '.join(held_joints)}"
+            )
+        unknown_joints = [j for j in target_positions if j not in joint_names]
+        if unknown_joints:
+            raise ValueError(
+                f"Unknown joint(s) in target_joint_positions (not on robot): "
+                f"{', '.join(unknown_joints)}. Valid joints: {', '.join(joint_names)}"
+            )
+
         # Calculate movement duration based on max distance
         max_distance = 0.0
         for joint_name in joint_names:
@@ -3031,9 +3052,10 @@ class TaskAgentOrchestrator:
             # Calculate intermediate positions
             target_action = {}
             for joint_name in joint_names:
-                if joint_name in target_positions and joint_name in current_positions_dict:
+                if joint_name in current_positions_dict:
                     current = current_positions_dict[joint_name]
-                    target = target_positions[joint_name]
+                    # Omitted joint = hold at current position (target defaults to current)
+                    target = target_positions.get(joint_name, current)
                     # Interpolate: current + (target - current) * progress
                     intermediate = current + (target - current) * smooth_progress
                     # Add .pos suffix for send_action format
