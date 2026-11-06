@@ -33,6 +33,7 @@ from lerobot.safety import (
 )
 from lerobot.safety.collision_detector import CollisionConfig
 from lerobot.safety.local_contact_detector import LocalContactConfig, LocalContactDetector
+from lerobot.motors.eyou.cst_soft_spring import CompliantDriftTrip
 from lerobot.tasks.completion_detector import TaskCompletionDetector
 from lerobot.tasks.config import TaskConfig, parse_task_dict
 from lerobot.tasks.local_policy_executor import LocalPolicyExecutor
@@ -3089,6 +3090,12 @@ class TaskAgentOrchestrator:
                         f"trigger: {trigger_detail} — stopping early"
                     )
                     contact_stopped = True
+                    if task.completion_criteria.compliant_stop:
+                        flexible_joints = (
+                            task.completion_criteria.compliant_joints
+                            or monitored_contact_joints
+                        )
+                        self._run_compliant_stop(task, flexible_joints)
                     break
 
             # Update real-time monitoring dashboard (non-blocking)
@@ -3172,6 +3179,40 @@ class TaskAgentOrchestrator:
             start_time=start_time,
             end_time=start_time + duration,
         )
+
+    def _run_compliant_stop(self, task: TaskConfig, compliant_joints: list[str]) -> None:
+        """Phase 2 of compliant-stop: float the contact joints on a CST soft
+        spring until the float conforms (drift reaches stop_drift_deg) or times
+        out, then return so the caller's ``break`` stops all joints together.
+
+        The compliant float is a hardware capability of the EYou robot only. A
+        robot without ``compliant_hold`` (any non-supre follower) falls back to
+        the rigid stop: we return without floating and the outer ``break`` does
+        the stop, preserving the original behaviour.
+        """
+        crit = task.completion_criteria
+        compliant_hold = getattr(self.robot, "compliant_hold", None)
+        if compliant_hold is None:
+            logger.warning(
+                f"Robot does not support compliant_hold; "
+                f"falling back to rigid stop for {task.name}"
+            )
+            return
+        for joint in compliant_joints:
+            try:
+                compliant_hold(
+                    joint,
+                    kp=crit.compliant_kp,
+                    kd=crit.compliant_kd,
+                    stop_drift_deg=crit.compliant_stop_drift_deg,
+                    seconds=crit.compliant_hold_seconds,
+                    max_drift_deg=crit.compliant_max_drift_deg,
+                    hold_on_stop=True,
+                )
+            except CompliantDriftTrip as exc:
+                logger.warning(f"Compliant hold safety trip on {joint}: {exc}")
+            except Exception as exc:  # noqa: BLE001 - never fail the whole task
+                logger.warning(f"Compliant hold failed on {joint}: {exc}")
 
     def _execute_position_sequence_task(self, task: TaskConfig) -> TaskResult:
         """Execute a position_sequence task - move joints through multiple positions sequentially.
@@ -3391,6 +3432,13 @@ class TaskAgentOrchestrator:
                     contact_torque_threshold=step.contact_torque_threshold,
                     contact_baseline_window=step.contact_baseline_window,
                     contact_confirm_window=step.contact_confirm_window,
+                    compliant_stop=step.compliant_stop,
+                    compliant_joints=step.compliant_joints,
+                    compliant_kp=step.compliant_kp,
+                    compliant_kd=step.compliant_kd,
+                    compliant_stop_drift_deg=step.compliant_stop_drift_deg,
+                    compliant_hold_seconds=step.compliant_hold_seconds,
+                    compliant_max_drift_deg=step.compliant_max_drift_deg,
                 ),
             )
             if speed_multiplier != 1.0:

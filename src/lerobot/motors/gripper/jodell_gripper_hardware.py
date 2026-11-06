@@ -1,5 +1,10 @@
 import time
-import jodell_gripper_py # 导入 pybind11 生成的模块
+# jodell_gripper_py 是机器人机上的夹爪 SDK，开发/CI 机器上没有。
+# 用 try/except 让本模块在无 SDK 的环境也能 import（便于单测），真连硬件时才需要它非空。
+try:
+    import jodell_gripper_py  # 导入 pybind11 生成的模块
+except ImportError:  # pragma: no cover - SDK only present on the robot machine
+    jodell_gripper_py = None
 from ..eyou.hardware_interface import HardwareInterface
 from lerobot.utils.monitor_utils import monitor_performance
 from typing import List, Dict, Any, Tuple, Optional

@@ -3,8 +3,15 @@ import math
 from typing import List, Dict, Any, Tuple, Optional
 import datetime
 # 导入更新后的 eu_motor_py 绑定
-import eu_motor_py 
+# eu_motor_py 是机器人机上的 CAN/EYou 硬件 SDK，开发/CI 机器上没有。
+# 用 try/except 让本模块（及其中的纯逻辑）在无 SDK 的环境也能 import，
+# 便于单元测试；真连硬件时才需要 eu_motor_py 非空（见各方法内的运行时调用）。
+try:
+    import eu_motor_py
+except ImportError:  # pragma: no cover - SDK only present on the robot machine
+    eu_motor_py = None
 from .hardware_interface import HardwareInterface
+from .cst_soft_spring import CstSoftSpringController, CompliantDriftTrip
 from lerobot.utils.monitor_utils import monitor_performance
 
 # 第二批 PHU/RHU 谐波电机（joint_6/7, node 16/17/26/27）的减速比：脉冲/输出圈。
@@ -286,6 +293,107 @@ class EyouMotorHardware(HardwareInterface):
             print(f"Max write() duration in last second: {self._max_write_duration_us:.0f} us")
             self._max_write_duration_us = 0.0
             self._last_log_time = now
+
+    def compliant_hold(
+        self,
+        node_index: int,
+        kp: float = 20.0,
+        kd: float = 5.0,
+        vel_alpha: float = 0.3,
+        spring_limit: float = 300.0,
+        damp_limit: float = 300.0,
+        total_limit: float = 500.0,
+        max_drift_deg: float = 15.0,
+        seconds: float = 10.0,
+        loop_ms: int = 20,
+        stop_drift_deg: float | None = None,
+        hold_on_stop: bool = False,
+    ) -> float:
+        """将单个关节切到 CST 转矩模式并进入软弹簧保持（漂浮态）。
+
+        即探针脚本 ``eyou_probe_cst.py --soft-hold`` 的核心循环，作为接触停止后
+        "降刚度"的基元：``tau = Kp*(theta0 - theta) - Kd*omega``（主机侧算好经 CST
+        下发）。关节在 theta0 附近漂浮、可被手推随动，直到：
+        - 漂移达 ``stop_drift_deg``（正常"到位"，返回），或
+        - 超 ``max_drift_deg``（安全跳闸，抛 :class:`CompliantDriftTrip`），或
+        - 到 ``seconds`` 超时。
+
+        安全前提（务必遵守）：只用轻载关节——右臂 joint_5=node 15 / joint_6=node 16，
+        左臂 25/26。**绝不用腰(node 1/2)**：腰承载整机重量，软瘫会直接倒地。
+
+        Args:
+            node_index: ``self.motor_nodes_`` 中的下标（不是 CAN node id）。
+            kp/kd: 弹簧/阻尼增益（千分比/度、千分比/(度/秒)）。
+            vel_alpha: 速度低通 alpha(0,1]，滤噪防自激。
+            spring_limit/damp_limit/total_limit: 千分比钳位。
+            max_drift_deg: 漂移安全阈值（度），超限抛 :class:`CompliantDriftTrip`。
+            seconds: 最长保持时长；loop_ms: 循环周期（毫秒）。
+            stop_drift_deg: 正常停止阈值（度）。|drift| 达此值即返回（应 <
+                max_drift_deg）；None 表示只靠超时/安全跳闸结束。
+            hold_on_stop: True 时结束不 disable，而是切回 CSP 并按最终位置刚性保持
+                （"抓住盒子"）；False（默认，探针）结束即 disable。
+
+        Returns:
+            结束时刻相对 theta0 的漂移（度）。
+        Raises:
+            CompliantDriftTrip: 漂移超 ``max_drift_deg``。
+            RuntimeError: clear_fault 或 configure_cst_mode 失败。
+        """
+        motor = self.motor_nodes_[node_index]
+        joint_name = self.joint_names_[node_index]
+
+        # 关键顺序：必须在仍处于 CSP 位置保持时读 theta0。CST 下零扭矩=软瘫，
+        # 若切到 CST 之后再读，读到的是已下垂的位置，不是原始参考。
+        theta0 = motor.get_position()
+
+        if not motor.clear_fault():
+            raise RuntimeError(f"clear_fault failed for {joint_name}")
+        # 参数与已验证的探针脚本一致（见 eyou_probe_cst.py do_soft_hold）。
+        if not motor.configure_cst_mode(20, 0, False):
+            raise RuntimeError(f"configure_cst_mode failed for {joint_name}")
+
+        dt = loop_ms / 1000.0
+        controller = CstSoftSpringController(
+            kp=kp,
+            kd=kd,
+            theta0=theta0,
+            dt=dt,
+            vel_alpha=vel_alpha,
+            spring_limit=spring_limit,
+            damp_limit=damp_limit,
+            total_limit=total_limit,
+        )
+
+        t_end = time.perf_counter() + seconds
+        final_drift = 0.0
+        try:
+            while time.perf_counter() < t_end:
+                step = controller.step(motor.get_position())
+                motor.send_cst_target_torque(step.tau, 0, False)
+                final_drift = step.drift
+                # Safety trip FIRST: a runaway drift past max_drift_deg must
+                # raise even when stop_drift_deg is also set (a drift that
+                # overshoots max also satisfies >= stop, so a stop-first order
+                # would silently treat the runaway as 'conformed' and never trip).
+                if abs(step.drift) > max_drift_deg:
+                    raise CompliantDriftTrip(
+                        f"{joint_name} drifted {step.drift:+.2f} deg "
+                        f"(limit {max_drift_deg} deg)"
+                    )
+                # Normal stop: the box has conformed the joint to the target drift.
+                if stop_drift_deg is not None and abs(step.drift) >= stop_drift_deg:
+                    break
+                time.sleep(dt)
+        finally:
+            if hold_on_stop:
+                # 结束不软瘫：切回 CSP 并按最终(贴合后)位置刚性保持，抓住物体。
+                # configure_csp_mode(0, False) 的第二参语义(是否重使能)需真机确认。
+                final_pos = motor.get_position()
+                motor.configure_csp_mode(0, False)
+                motor.send_csp_target_position(final_pos, 0, False)
+            else:
+                motor.disable()
+        return final_drift
 
     def deactivate(self):
         """停用硬件。"""

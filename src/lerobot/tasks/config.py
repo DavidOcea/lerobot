@@ -64,6 +64,21 @@ class CompletionCriteria:
     contact_torque_threshold: float = 5.0
     contact_baseline_window: int = 5
     contact_confirm_window: int = 3
+    # Compliant-stop — instead of a rigid break at the touch threshold, switch
+    # the contact joints to a CST soft-spring float ("不锁死也不运动") and stop
+    # all joints once the float conforms (drift reaches compliant_stop_drift_deg)
+    # or times out (compliant_hold_seconds).
+    compliant_stop: bool = False
+    # Joints to float once contact triggers. Independent of contact_joints
+    # (which decide *detection*): default empty -> fall back to contact_joints.
+    # Use this to flex the stall-prone (force-bearing) joints while a lighter
+    # joint remains the touch detector. NEVER list the waist (node 1/2).
+    compliant_joints: list[str] = field(default_factory=list)
+    compliant_kp: float = 20.0
+    compliant_kd: float = 5.0
+    compliant_stop_drift_deg: float = 3.0
+    compliant_hold_seconds: float = 2.0
+    compliant_max_drift_deg: float = 15.0
 
 
 @dataclass
@@ -193,6 +208,14 @@ class PositionSequenceStep:
     contact_torque_threshold: float = 5.0
     contact_baseline_window: int = 5
     contact_confirm_window: int = 3
+    # Compliant-stop (see CompletionCriteria for semantics).
+    compliant_stop: bool = False
+    compliant_joints: list[str] = field(default_factory=list)
+    compliant_kp: float = 20.0
+    compliant_kd: float = 5.0
+    compliant_stop_drift_deg: float = 3.0
+    compliant_hold_seconds: float = 2.0
+    compliant_max_drift_deg: float = 15.0
 
 
 @dataclass
@@ -575,6 +598,13 @@ def parse_task_dict(
                 contact_torque_threshold=step_dict.get("contact_torque_threshold", 5.0),
                 contact_baseline_window=step_dict.get("contact_baseline_window", 5),
                 contact_confirm_window=step_dict.get("contact_confirm_window", 3),
+                compliant_stop=step_dict.get("compliant_stop", False),
+                compliant_joints=step_dict.get("compliant_joints", []),
+                compliant_kp=step_dict.get("compliant_kp", 20.0),
+                compliant_kd=step_dict.get("compliant_kd", 5.0),
+                compliant_stop_drift_deg=step_dict.get("compliant_stop_drift_deg", 3.0),
+                compliant_hold_seconds=step_dict.get("compliant_hold_seconds", 2.0),
+                compliant_max_drift_deg=step_dict.get("compliant_max_drift_deg", 15.0),
             ))
         task_kwargs["steps"] = steps
         total_steps_duration = sum(s.max_duration for s in steps)
