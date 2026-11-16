@@ -68,3 +68,21 @@ def test_returns_integer_torque():
     out = _ctl(kp=1.0, kd=0.0).step(-1.0)
     assert out.tau == 1
     assert isinstance(out.tau, int)
+
+
+def test_feedforward_torque_holds_when_resting():
+    # tau_ff is the measured gravity torque; at rest (no drift, no velocity)
+    # the output torque must equal tau_ff, not the old zero.
+    out = _ctl(kp=20.0, kd=5.0, tau_ff=120.0).step(0.0)
+    assert out.tau == 120
+
+
+def test_feedforward_torque_combines_with_spring():
+    out = _ctl(kp=10.0, kd=0.0, tau_ff=50.0).step(-1.0)
+    assert out.spring == 10.0
+    assert out.tau == 60  # tau_ff + spring
+
+
+def test_feedforward_torque_clamped_by_total_limit():
+    out = _ctl(kp=0.0, kd=0.0, tau_ff=500.0, total_limit=80.0).step(0.0)
+    assert out.tau == 80

@@ -64,9 +64,13 @@ class CstSoftSpringController:
         dt: Loop period in seconds (e.g. 0.02).
         vel_alpha: Velocity low-pass alpha in (0, 1]. Lower = smoother damping;
             essential to stop velocity noise from self-oscillating.
+        tau_ff: Per-thousand feed-forward torque, added on top of the spring and
+            damping. For gravity-compensated float, set this to the torque the
+            joint needs to hold its pose (read once from the CSP holding torque),
+            then keep ``kp`` small as a safety-only backup spring.
         spring_limit / damp_limit / total_limit: Per-thousand clamps. Spring and
             damping are clamped separately so a saturated spring never cuts the
-            damping; the sum is then clamped to total_limit.
+            damping; the sum (with tau_ff) is then clamped to total_limit.
     """
 
     kp: float
@@ -74,6 +78,7 @@ class CstSoftSpringController:
     theta0: float
     dt: float
     vel_alpha: float = 0.3
+    tau_ff: float = 0.0
     spring_limit: float = 300.0
     damp_limit: float = 300.0
     total_limit: float = 500.0
@@ -92,7 +97,7 @@ class CstSoftSpringController:
             self.kp * (self.theta0 - theta), -self.spring_limit, self.spring_limit
         )
         damp = _clamp(-self.kd * self._omega_f, -self.damp_limit, self.damp_limit)
-        tau = _clamp(spring + damp, -self.total_limit, self.total_limit)
+        tau = _clamp(self.tau_ff + spring + damp, -self.total_limit, self.total_limit)
         self._theta_prev = theta
         return SpringStep(
             tau=int(tau),

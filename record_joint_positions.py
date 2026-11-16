@@ -127,6 +127,15 @@ def main():
                 print(f"  已重新使能: {', '.join(names)}")
             print(f"  当前解除总数: {len(disabled)}/{num_joints}")
 
+        elif cmd == 'g':
+            if len(parts) < 2:
+                print("  用法: G <索引> 或 G all  (零重力漂浮, 单人拖动)")
+                continue
+            indices = _parse_motor_input(parts[1], num_joints)
+            if not indices:
+                continue
+            _zero_g_float(robot, indices)
+
         elif cmd == 's':
             if disabled:
                 print(f"  ⚠ 仍有 {len(disabled)} 个电机未使能: "
@@ -163,6 +172,8 @@ def _print_help(joint_names):
     print(f"    D <索引>      解除使能 (如: D 5  或  D 0,2,5  或  D all)")
     print(f"                  解除后会自动松抱闸以便拖动；重力关节请先扶稳")
     print(f"    E <索引>      重新使能")
+    print(f"    G <索引>      零重力漂浮(重力补偿), 单人拖动摆位 (如 G 5,6)")
+    print(f"                  松手停在原地/轻推随动; 结束后自动锁住, Ctrl-C 立即锁住")
     print(f"    L              列出所有关节当前角度")
     print(f"    S              记录当前位置 → 输出 YAML")
     print(f"    H              显示此帮助")
@@ -377,6 +388,70 @@ def _set_motors(robot, indices, enable):
     if fail_idx:
         print(f"  失败: {', '.join(obs_names[i] for i in fail_idx)}")
     return ok_idx, fail_idx
+
+
+def _zero_g_float(robot, indices, max_torque=500.0, seconds=60.0):
+    """零重力漂浮指定关节，便于单人拖动整臂摆位（无重力模型）。
+
+    原理：仍处于 CSP 位置保持时读一次每个关节的实际扭矩（=该位姿下"重力+
+    摩擦"的平衡力矩），切到 CST 后把它作为前馈 tau_ff 下发，再叠加小兜底
+    弹簧 + 阻尼，实现"松手不坠、轻推随动"。结束（或 Ctrl-C）自动切回 CSP
+    按当前位置锁住。见 EyouMotorHardware.zero_g_float。
+
+    安全：**绝不用腰(trunk_joint_1/2, node 1/2)**——腰承整机重量，失重会
+    倾覆。承重的肩/肘大行程关节也要先收紧扭矩钳位并有人监护再试。
+    """
+    hw = robot._hardware_manager
+    if hw is None:
+        print("  ✗ 硬件管理器未初始化")
+        return
+
+    motor_hw = None
+    for inst in hw._hardware_instances:
+        if hasattr(inst, 'motor_nodes_'):
+            motor_hw = inst
+            break
+    if motor_hw is None:
+        print("  ✗ 找不到电机硬件实例 (EyouMotorHardware)")
+        return
+
+    obs_names = robot.observation_joint_names
+    motor_names = getattr(motor_hw, 'joint_names_', None) or list(obs_names)
+    obs_to_motor = {}
+    for obs_i, name in enumerate(obs_names):
+        obs_to_motor[obs_i] = motor_names.index(name) if name in motor_names else -1
+
+    motor_indices = []
+    names = []
+    for idx in indices:
+        name = obs_names[idx]
+        if name.startswith("trunk"):
+            print(f"  ⛔ 已拒绝 {name}：腰/躯干承整机重量，零重力会倾覆，绝不漂浮。")
+            continue
+        mi = obs_to_motor.get(idx, -1)
+        if mi < 0:
+            print(f"  ⚠ {name} 无独立电机 (可能为夹爪), 跳过")
+            continue
+        motor_indices.append(mi)
+        names.append(name)
+
+    if not motor_indices:
+        print("  没有可漂浮的关节。")
+        return
+
+    print(f"  零重力漂浮: {', '.join(names)}")
+    print(f"  松手应停在原地，轻推可随动；Ctrl-C 结束并锁住。")
+    print(f"  ⚠ 承重的大行程关节(肩/肘)请先有人监护再试。")
+    try:
+        drifts = motor_hw.zero_g_float(
+            motor_indices, max_torque=max_torque, seconds=seconds
+        )
+    except Exception as e:
+        print(f"  ✗ 漂浮异常: {e}")
+        return
+    print("  已结束漂浮，关节已锁定（切回 CSP；若回锁失败则已掉电抱闸，同样安全）。")
+    for name, d in zip(names, drifts):
+        print(f"    {name}: 漂移 {d:+.2f}°")
 
 
 def _save_position(pos_name, positions, output_path):

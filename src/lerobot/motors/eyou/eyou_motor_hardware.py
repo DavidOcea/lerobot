@@ -294,6 +294,197 @@ class EyouMotorHardware(HardwareInterface):
             self._max_write_duration_us = 0.0
             self._last_log_time = now
 
+    def _wait_stationary(
+        self,
+        motor,
+        settle_window_s: float = 0.2,
+        threshold_deg: float = 0.5,
+        timeout_s: float = 2.0,
+    ) -> float | None:
+        """等待关节静止（速度≈0），返回静止位置；超时返回 ``None``。
+
+        CST 下编码器仍在跑、位置仍可读（0x6064），所以用"连续两个采样窗内
+        Δθ < ``threshold_deg``"判静止，避免单次巧合误判。这是切 CSP 的前提——
+        手册要求"使能**静止**状态下"才能切换运行模式，带速度切进去就是冲击。
+
+        返回的是最后一次读到的静止位置（供回锁后 hold 用），不是调用方预先读的
+        final_pos：零扭矩后关节还会再挪一点，hold 目标应是"停住的位置"。
+
+        返回 ``None`` = ``timeout_s`` 内未静止（被推/重载塌下/欠阻尼振荡），
+        调用方必须 ``disable()`` 掉电抱闸兜底，绝不继续切 CSP。
+        """
+        deadline = time.perf_counter() + timeout_s
+        try:
+            prev = motor.get_position()
+        except Exception:
+            # 连位置都读不到就无从判静止，按"不安全"处理。
+            return None
+        stable_streak = 0
+        while time.perf_counter() < deadline:
+            time.sleep(settle_window_s)
+            try:
+                cur = motor.get_position()
+            except Exception:
+                continue
+            if abs(cur - prev) < threshold_deg:
+                stable_streak += 1
+            else:
+                stable_streak = 0
+            prev = cur
+            if stable_streak >= 2:
+                return cur
+        return None
+
+    def _relatch_csp(self, motor) -> bool:
+        """软瘫(CST) → CSP 回锁，带"等静止 + 绝不残留非零扭矩"的双重安全兜底。
+
+        真机翻车教训（0420.log）：旧实现**没先清零扭矩**就切 CSP，此时关节还
+        挂着 float 循环最后一步的非零 torque（"非静止"），固件按手册"使能静止
+        状态下切换运行模式"拒绝切换（0x6061 停 10），非零扭矩残留在 CST →
+        开环空转跑飞。关键不在切法，而在**切之前关节必须静止**。
+
+        真机已验证（0420_1/0420_2.log）：先零扭矩再 ``configure_csp_mode``，
+        0x6061 稳定回 8，位置流 hold-ok（max drift +0.00°）。本实现在此之上再
+        加一层"等静止"：零扭矩只停掉"驱动"，关节可能还在惯性/被推/塌下地运动，
+        必须 Δθ 连续两窗 < 阈值才敢切 CSP。
+
+        顺序（每层都失败才到下一层，任何一层失败都以抱闸收尾）：
+        1. **先清零扭矩**：仍在 CST 时下发 tau=0，立刻停掉驱动。这是"绝不跑飞"
+           的最低保底——后续任何一步失败，关节都不会再空转。
+        2. **等静止**：读位置滑窗判 Δθ，超时未静止 → ``disable()`` 抱闸。
+        3. **切 CSP**：用 ``configure_csp_mode``（会顺带把 RPDO 重映射到
+           0x607A），读 0x6061 确认切到 8；切不到就不发位置（避免写进扭矩通道）。
+        4. **预载目标再使能**：先按"停住的位置"下发 0x607A 目标，再确认真使能。
+           第二电机(node 16/17)上 configure_csp_mode 内部 enableStateMachine 没走到
+           Operation Enabled，裸发控制字 0x06→0x07→0x0F 补使能（0420.log 验证有效）；
+           预载在前使能在后，使能瞬间才不会去追 0x607A 里的旧目标值。
+        5. 没真使能（statusword bit2=0）或切不回 CSP → ``disable()`` 掉电抱闸。
+
+        返回 True=已回 CSP 且真使能；False=未回 CSP 或未使能，但已 disable 抱闸
+        （同样安全）。
+        """
+        # 1) 立刻停驱动：CST 下零扭矩。这是"不会跑飞"的最低保底。
+        try:
+            motor.send_cst_target_torque(0, 0, False)
+        except Exception:
+            pass
+
+        # 2) 等静止。零扭矩只停驱动，关节可能还在动；不静止就不切 CSP。
+        settled = self._wait_stationary(motor)
+        if settled is None:
+            # 超时未静止（被推/塌下/振荡）：掉电抱闸，绝不切 CSP。
+            try:
+                motor.disable()
+            except Exception:
+                pass
+            return False
+
+        # 3) 尝试切 CSP。用 configure_csp_mode（而非裸写 0x6060=8）：它会把
+        #    RPDO 重映射到 0x607A，下面 send_csp_target_position 才走位置通道。
+        try:
+            motor.configure_csp_mode(0, False)
+        except Exception:
+            pass
+
+        # 确认切到 CSP 模式（0x6061==8）。切不到就不发位置——避免位置写进仍映射
+        # 扭矩通道的 RPDO（0420 空转根因）。
+        mode_ok = False
+        for _ in range(10):  # 最多 ~0.5s，容纳异步模式切换到位
+            time.sleep(0.05)
+            try:
+                if motor.read_u8(0x6061, 0) == 8:
+                    mode_ok = True
+                    break
+            except Exception:
+                pass
+        if not mode_ok:
+            try:
+                motor.disable()
+            except Exception:
+                pass
+            return False
+
+        # 4) 先把目标位置预载为"停住的位置"（0x607A=settled），再使能。这样使能
+        #    瞬间驱动器不会去追 0x607A 里的旧目标值（否则可能跳一段）。手册
+        #    §4.6.1 也要求切位置模式前把 0x6064 写入 0x607A。
+        try:
+            motor.send_csp_target_position(settled, 0, False)
+        except Exception:
+            pass
+
+        # 5) 第二电机(node 16/17)：configure_csp_mode 内部 enableStateMachine 没走到
+        #    Operation Enabled（0420_3.log 卡 0x0331），裸控制字有效（0420.log）。
+        #    第一电机已使能则跳过。目标已预载，使能不会追旧目标。
+        try:
+            already_enabled = bool(motor.read_u16(0x6041, 0) & 0x04)
+        except Exception:
+            already_enabled = False
+        if not already_enabled:
+            self._enable_operation(motor)
+
+        # 6) 确认真使能：statusword bit2 operation_enabled=1。
+        latched = False
+        for _ in range(10):  # 最多 ~0.5s，容纳异步使能到位
+            time.sleep(0.05)
+            try:
+                sw = motor.read_u16(0x6041, 0)
+            except Exception:
+                continue
+            if sw & 0x04:
+                latched = True
+                break
+        if latched:
+            return True
+
+        # 7) 没真使能：掉电抱闸，绝不留非零扭矩指令在 CST。
+        try:
+            motor.disable()
+        except Exception:
+            pass
+        return False
+
+    def _enable_operation(self, motor, poll_s: float = 0.05, max_attempts: int = 20) -> bool:
+        """裸发 CiA 402 控制字 0x6040 = 0x06→0x07→0x0F 使能，逐步确认状态机到位。
+
+        第二电机(node 16/17)上 configure_csp_mode 只切模式+重映射 RPDO，内部
+        enableStateMachine 没走到 Operation Enabled（statusword 卡 0x0331）；但裸
+        控制字序列有效（0420.log：0x06→0x07→0x0F 最终 0x1337 op_enabled=1）。
+
+        关键：每条控制字之间必须**确认上一条已生效**再发下一条。CiA 402 状态机是
+        条件转移——必须先 Ready to Switch On 才能 0x07 切 Switched On，必须先
+        Switched On 才能 0x0F 使能。第二电机 SDO 慢，盲目连发 0x07/0x0F 会被状态机
+        拒绝，最终仍卡 0x0331（0420.log/0420_5.log 2026-11-16 复现）。第一电机已
+        使能时调用方应跳过本方法。目标位置需先预载（见 _relatch_csp）。
+        """
+        def _confirm(cond) -> bool:
+            for _ in range(max_attempts):
+                time.sleep(poll_s)
+                try:
+                    sw = motor.read_u16(0x6041, 0)
+                except Exception:
+                    continue
+                if cond(sw):
+                    return True
+            return False
+
+        try:
+            motor.write_u16(0x6040, 0, 0x06)  # Shutdown -> Ready to Switch On
+        except Exception:
+            return False
+        if not _confirm(lambda sw: not (sw & 0x04)):
+            return False
+        try:
+            motor.write_u16(0x6040, 0, 0x07)  # Switch On -> Switched On
+        except Exception:
+            return False
+        if not _confirm(lambda sw: sw & 0x02):
+            return False
+        try:
+            motor.write_u16(0x6040, 0, 0x0F)  # Enable Operation
+        except Exception:
+            return False
+        return _confirm(lambda sw: sw & 0x04)
+
     def compliant_hold(
         self,
         node_index: int,
@@ -386,14 +577,136 @@ class EyouMotorHardware(HardwareInterface):
                 time.sleep(dt)
         finally:
             if hold_on_stop:
-                # 结束不软瘫：切回 CSP 并按最终(贴合后)位置刚性保持，抓住物体。
-                # configure_csp_mode(0, False) 的第二参语义(是否重使能)需真机确认。
-                final_pos = motor.get_position()
-                motor.configure_csp_mode(0, False)
-                motor.send_csp_target_position(final_pos, 0, False)
+                # 结束不软瘫：切回 CSP 并按"静止后停住的位置"刚性保持，抓住物体。
+                # _relatch_csp 内部会零扭矩→等静止→切 CSP；等不到静止或切不动会
+                # 自动 disable 抱闸（见 _relatch_csp），同样安全锁住。
+                if not self._relatch_csp(motor):
+                    print(f"[warn] {joint_name} 回锁 CSP 失败，已 disable 掉电抱闸（安全锁定，非 CSP）")
             else:
                 motor.disable()
         return final_drift
+
+    def zero_g_float(
+        self,
+        node_indices,
+        kd: float = 5.0,
+        vel_alpha: float = 0.3,
+        backup_kp: float = 5.0,
+        max_torque: float = 500.0,
+        max_drift_deg: float = 30.0,
+        seconds: float = 60.0,
+        loop_ms: int = 20,
+    ) -> list:
+        """多关节零重力漂浮（直接示教 hand-guiding），无重力模型。
+
+        无模型重力补偿的关键：仍处于 CSP 位置保持时读一次每个关节的实际扭矩
+        ``tau_hold``（千分比）——它就是该位姿下"重力+摩擦"的平衡力矩。把它作为
+        前馈 ``tau_ff`` 下发后，关节"停哪停哪"：松手停在原地（前馈托住），轻推
+        随动（只有阻尼 + 小弹簧轻微抵抗）。扭矩优先读 TPDO 反馈
+        ``get_latest_feedback().torque_milli``（生产 ``read()`` 的主路径），裸 SDO
+        ``get_torque()``(0x6077) 作兜底。**必须在关节仍处于 CSP 位置保持（已下发
+        目标位置）时读**：未下发保持命令时读到的保持扭矩是 0——不是反馈坏，是关节
+        没在对抗重力。
+
+        ::
+
+            tau = tau_hold + backup_kp*(theta0 - theta) - kd*omega
+
+        ``backup_kp`` 只是安全兜底小弹簧（前馈不准时兜住下垂），不是主承力。
+        因此它远小于刚性位置环，能实现"推得动、松手不坠"。
+
+        多关节在同一个 20ms 循环里逐个 step+下发，所以整条臂的重关节可同时漂，
+        单人即可拖动整臂摆位。
+
+        安全前提（务必遵守）：只在轻载关节上示范——右臂 joint_5/6(node 15/16)、
+        左臂 25/26。**绝不用腰(node 1/2)**；承重的肩/肘大行程关节要先把
+        ``max_torque``/``max_drift_deg`` 收紧并有人监护再试。``max_torque`` 是
+        扭矩钳位兜底（防止 tau_hold 读错时整臂下坠/上甩）。
+
+        Args:
+            node_indices: ``self.motor_nodes_`` 中的下标列表（不是 CAN node id）。
+            kd: 阻尼增益（千分比/(度/秒)），低值=轻快，高值=粘滞。
+            vel_alpha: 速度低通 alpha(0,1]，滤噪防自激（见 CstSoftSpringController）。
+            backup_kp: 兜底弹簧增益（千分比/度），只用于前馈不准时兜住漂移。
+            max_torque: 扭矩总钳位（千分比）。
+            max_drift_deg: 漂移安全阈值（度），超限抛 :class:`CompliantDriftTrip`。
+            seconds: 最长漂浮时长；loop_ms: 循环周期（毫秒）。
+
+        Returns:
+            各关节结束时刻相对 theta0 的漂移（度），与 node_indices 同序。
+
+        Raises:
+            CompliantDriftTrip: 任一关节漂移超 ``max_drift_deg``。
+            RuntimeError: clear_fault 或 configure_cst_mode 失败。
+
+        说明: Ctrl-C 在循环内被捕获并正常返回（finally 仍会锁住全部关节），
+        以便调用方（如 record_joint_positions.py 的 REPL）继续运行而不退出。
+        """
+        motors = [self.motor_nodes_[i] for i in node_indices]
+        names = [self.joint_names_[i] for i in node_indices]
+
+        # 关键顺序：必须在仍处于 CSP 位置保持时读 theta0 和实际扭矩（重力+摩擦）。
+        # CST 下 0x6077≈命令值（驱动照办），读不到重力；切过去再读就读空了。
+        # 扭矩优先走 TPDO 反馈(get_latest_feedback().torque_milli，生产 read() 主路径)，
+        # get_torque()(裸 SDO 0x6077) 兜底。前提：此刻关节必须仍处于 CSP 位置保持
+        # (已下发目标位置)，否则读到的保持扭矩是 0（关节没在对抗重力）。
+        theta0s = [m.get_position() for m in motors]
+        tau_holds = []
+        for m in motors:
+            fb = m.get_latest_feedback()
+            if fb is not None and fb.last_update_time > datetime.timedelta(0):
+                tau_holds.append(float(fb.torque_milli))
+            else:
+                tau_holds.append(float(m.get_torque()))
+
+        for j, m in enumerate(motors):
+            if not m.clear_fault():
+                raise RuntimeError(f"clear_fault failed for {names[j]}")
+        for j, m in enumerate(motors):
+            if not m.configure_cst_mode(20, 0, False):
+                raise RuntimeError(f"configure_cst_mode failed for {names[j]}")
+
+        dt = loop_ms / 1000.0
+        controllers = [
+            CstSoftSpringController(
+                kp=backup_kp,
+                kd=kd,
+                theta0=theta0s[j],
+                dt=dt,
+                vel_alpha=vel_alpha,
+                tau_ff=tau_holds[j],
+                spring_limit=max_torque,
+                damp_limit=max_torque,
+                total_limit=max_torque,
+            )
+            for j in range(len(motors))
+        ]
+
+        t_end = time.perf_counter() + seconds
+        final_drifts = [0.0] * len(motors)
+        try:
+            while time.perf_counter() < t_end:
+                for j, m in enumerate(motors):
+                    step = controllers[j].step(m.get_position())
+                    m.send_cst_target_torque(step.tau, 0, False)
+                    final_drifts[j] = step.drift
+                    if abs(step.drift) > max_drift_deg:
+                        raise CompliantDriftTrip(
+                            f"{names[j]} drifted {step.drift:+.2f} deg "
+                            f"(limit {max_drift_deg} deg)"
+                        )
+                time.sleep(dt)
+        except KeyboardInterrupt:
+            # 用户 Ctrl-C 结束示教：吞掉，正常返回，让 REPL 继续。
+            pass
+        finally:
+            # 结束切回 CSP 并按"静止后停住的位置"刚性保持（锁住），防止"没人扶就掉"。
+            # _relatch_csp 内部会零扭矩→等静止→切 CSP；等不到静止或切不动会自动
+            # disable 抱闸（见 _relatch_csp），同样安全锁住。
+            for j, m in enumerate(motors):
+                if not self._relatch_csp(m):
+                    print(f"[warn] {names[j]} 回锁 CSP 失败，已 disable 掉电抱闸（安全锁定，非 CSP）")
+        return final_drifts
 
     def deactivate(self):
         """停用硬件。"""
