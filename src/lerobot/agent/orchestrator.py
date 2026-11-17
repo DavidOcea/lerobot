@@ -16,6 +16,7 @@ New Features:
 - AGV navigation task support (NEW)
 """
 
+import json
 import logging
 import os
 import select
@@ -3041,9 +3042,18 @@ class TaskAgentOrchestrator:
                 threshold=task.completion_criteria.contact_torque_threshold,
                 baseline_window=task.completion_criteria.contact_baseline_window,
                 confirm_window=task.completion_criteria.contact_confirm_window,
+                mode=task.completion_criteria.contact_mode,
+                rate_threshold=task.completion_criteria.contact_rate_threshold,
             ))
 
         success = True
+
+        # Force logging — record per-tick joint torque for offline analysis
+        # (e.g. identify load-bearing joints during box placement). Best-effort:
+        # a logging failure must never affect the control loop.
+        record_force = getattr(task.completion_criteria, "record_force", False)
+        force_samples: list[dict[str, Any]] = []
+
         while time.time() - start_time < actual_duration:
             elapsed = time.time() - start_time
             progress = min(1.0, elapsed / actual_duration)
@@ -3071,15 +3081,25 @@ class TaskAgentOrchestrator:
             # Get observation for collision and monitoring
             observation = self.robot.get_observation()
 
+            # Record force for offline analysis (best-effort)
+            if record_force:
+                forces = {
+                    k[: -len(".force")]: float(v)
+                    for k, v in observation.items()
+                    if k.endswith(".force")
+                }
+                force_samples.append({"t": round(elapsed, 3), "forces": forces})
+
             # Contact-stop check (local-differential torque rise)
             if contact_detector is not None:
                 torques = {
                     j: float(observation.get(f"{j}.force", 0.0))
                     for j in monitored_contact_joints
                 }
-                if contact_detector.update(torques):
+                if contact_detector.update(torques, dt):
+                    trigger_unit = "Nm/s" if task.completion_criteria.contact_mode == "drop_rate" else "Nm"
                     trigger_detail = ", ".join(
-                        f"{j}: +{d:.2f} Nm"
+                        f"{j}: +{d:.2f} {trigger_unit}"
                         for j, d in sorted(
                             contact_detector.last_trigger.items(),
                             key=lambda kv: -kv[1],
@@ -3132,6 +3152,20 @@ class TaskAgentOrchestrator:
 
             # Pace the control loop to the configured control frequency
             time.sleep(dt)
+
+        # Dump recorded force samples (best-effort — never affect the task result)
+        if record_force and force_samples:
+            try:
+                force_path = task.completion_criteria.force_log_path or (
+                    f"/tmp/{task.name.replace('/', '_').replace(' ', '_')}_force.jsonl"
+                )
+                Path(force_path).parent.mkdir(parents=True, exist_ok=True)
+                with open(force_path, "w") as f:
+                    for s in force_samples:
+                        f.write(json.dumps(s) + "\n")
+                logger.info(f"Force log written: {force_path} ({len(force_samples)} samples)")
+            except Exception as exc:  # noqa: BLE001 - diagnostic, never fatal
+                logger.warning(f"Force log failed: {exc}")
 
         # Check if reached target positions
         final_positions_dict = self.robot.get_current_position()
@@ -3432,6 +3466,8 @@ class TaskAgentOrchestrator:
                     contact_torque_threshold=step.contact_torque_threshold,
                     contact_baseline_window=step.contact_baseline_window,
                     contact_confirm_window=step.contact_confirm_window,
+                    contact_mode=step.contact_mode,
+                    contact_rate_threshold=step.contact_rate_threshold,
                     compliant_stop=step.compliant_stop,
                     compliant_joints=step.compliant_joints,
                     compliant_kp=step.compliant_kp,
@@ -3439,6 +3475,8 @@ class TaskAgentOrchestrator:
                     compliant_stop_drift_deg=step.compliant_stop_drift_deg,
                     compliant_hold_seconds=step.compliant_hold_seconds,
                     compliant_max_drift_deg=step.compliant_max_drift_deg,
+                    record_force=step.record_force,
+                    force_log_path=step.force_log_path,
                 ),
             )
             if speed_multiplier != 1.0:

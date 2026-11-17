@@ -32,6 +32,16 @@ class LocalContactConfig:
     threshold: float
     baseline_window: int = 5
     confirm_window: int = 3
+    # Detection mode:
+    #   "abs"        — existing |current − baseline| rise/drop detection (default).
+    #   "drop_rate"  — sustained fast torque fall: windowed slope ≤ −rate_threshold
+    #                  Nm/s for confirm_window ticks. Used for unload detection
+    #                  (box weight released onto a surface) where the fall *rate*
+    #                  separates the event from slow pose-change drift, so it is
+    #                  independent of both box weight and surface height.
+    mode: str = "abs"
+    rate_threshold: float = 0.3  # Nm/s, drop_rate mode only
+    rate_window: int = 5  # samples for the slope window, drop_rate mode only
 
 
 class LocalContactDetector:
@@ -45,8 +55,11 @@ class LocalContactDetector:
 
     def __init__(self, config: LocalContactConfig) -> None:
         self.config = config
+        # drop_rate mode uses the buffer as a slope history; abs mode uses it as
+        # the baseline. Only one mode is active per detector, so one buffer works.
+        window = config.rate_window if config.mode == "drop_rate" else config.baseline_window
         self._buffers: dict[str, deque[float]] = {
-            joint: deque(maxlen=config.baseline_window) for joint in config.joints
+            joint: deque(maxlen=window) for joint in config.joints
         }
         self._consecutive: dict[str, int] = {joint: 0 for joint in config.joints}
         # joint -> delta at the most recent trigger (empty when the last update
@@ -54,17 +67,24 @@ class LocalContactDetector:
         # how much, rather than just "contact detected".
         self.last_trigger: dict[str, float] = {}
 
-    def update(self, torques: dict[str, float]) -> bool:
-        """Feed one sample and report whether contact is now confirmed.
+    def update(self, torques: dict[str, float], dt: float = 1.0) -> bool:
+        """Feed one sample and report whether the configured condition fired.
 
         Args:
             torques: Current torque per bare joint name (missing joints skipped).
+            dt: Control-tick interval in seconds. Used only by ``drop_rate`` mode
+                to convert a windowed slope to Nm/s; ignored by ``abs`` mode.
 
         Returns:
-            ``True`` the first time a joint's rise is confirmed; ``False``
-            otherwise. After a ``True`` the counters reset, so a subsequent
-            update does not re-fire until another ``confirm_window`` rises.
+            ``True`` the first time the condition is confirmed; ``False``
+            otherwise. After a ``True`` the counters reset.
         """
+        if self.config.mode == "drop_rate":
+            return self._update_drop_rate(torques, dt)
+        return self._update_abs(torques)
+
+    def _update_abs(self, torques: dict[str, float]) -> bool:
+        """Existing |current − baseline| rise/drop detection (unchanged)."""
         triggered = False
         triggered_joints: dict[str, float] = {}
 
@@ -94,14 +114,52 @@ class LocalContactDetector:
                 triggered = True
                 triggered_joints[joint] = delta
 
+        self._finish(triggered, triggered_joints)
+        return triggered
+
+    def _update_drop_rate(self, torques: dict[str, float], dt: float) -> bool:
+        """Sustained fast torque fall: windowed slope ≤ −rate_threshold Nm/s."""
+        triggered = False
+        triggered_joints: dict[str, float] = {}
+
+        for joint in self.config.joints:
+            current = torques.get(joint)
+            if current is None:
+                continue
+
+            buffer = self._buffers[joint]
+            buffer.append(current)
+            if len(buffer) < self.config.rate_window:
+                continue
+
+            window_time = (len(buffer) - 1) * dt
+            if window_time <= 0:
+                continue
+            # Magnitude change: |torque| shrinking = unload (box weight released).
+            # Using abs() makes it sign-agnostic so the left/right mirror arms —
+            # whose torques have opposite signs — behave identically. Positive =
+            # |torque| rising (loading), negative = |torque| falling (unload).
+            slope = (abs(buffer[-1]) - abs(buffer[0])) / window_time
+
+            if slope <= -self.config.rate_threshold:
+                self._consecutive[joint] += 1
+            else:
+                self._consecutive[joint] = 0
+
+            if self._consecutive[joint] >= self.config.confirm_window:
+                triggered = True
+                triggered_joints[joint] = -slope  # report fall rate as positive
+
+        self._finish(triggered, triggered_joints)
+        return triggered
+
+    def _finish(self, triggered: bool, triggered_joints: dict[str, float]) -> None:
         if triggered:
             for joint in self.config.joints:
                 self._consecutive[joint] = 0
             self.last_trigger = triggered_joints
         else:
             self.last_trigger = {}
-
-        return triggered
 
     def reset(self) -> None:
         """Clear baseline buffers and counters, returning to a fresh state."""

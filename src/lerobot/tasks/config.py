@@ -64,6 +64,8 @@ class CompletionCriteria:
     contact_torque_threshold: float = 5.0
     contact_baseline_window: int = 5
     contact_confirm_window: int = 3
+    contact_mode: str = "abs"  # "abs" (existing rise) or "drop_rate" (unload fall)
+    contact_rate_threshold: float = 0.3  # Nm/s, drop_rate mode only
     # Compliant-stop — instead of a rigid break at the touch threshold, switch
     # the contact joints to a CST soft-spring float ("不锁死也不运动") and stop
     # all joints once the float conforms (drift reaches compliant_stop_drift_deg)
@@ -79,6 +81,10 @@ class CompletionCriteria:
     compliant_stop_drift_deg: float = 3.0
     compliant_hold_seconds: float = 2.0
     compliant_max_drift_deg: float = 15.0
+    # Force logging — record per-tick joint torque during the move for offline
+    # analysis (e.g. identify load-bearing joints during box placement).
+    record_force: bool = False
+    force_log_path: str = ""
 
 
 @dataclass
@@ -208,6 +214,8 @@ class PositionSequenceStep:
     contact_torque_threshold: float = 5.0
     contact_baseline_window: int = 5
     contact_confirm_window: int = 3
+    contact_mode: str = "abs"  # "abs" (existing rise) or "drop_rate" (unload fall)
+    contact_rate_threshold: float = 0.3  # Nm/s, drop_rate mode only
     # Compliant-stop (see CompletionCriteria for semantics).
     compliant_stop: bool = False
     compliant_joints: list[str] = field(default_factory=list)
@@ -216,6 +224,10 @@ class PositionSequenceStep:
     compliant_stop_drift_deg: float = 3.0
     compliant_hold_seconds: float = 2.0
     compliant_max_drift_deg: float = 15.0
+    # Force logging — record per-tick joint torque during this step for offline
+    # analysis (e.g. identify load-bearing joints during box placement).
+    record_force: bool = False
+    force_log_path: str = ""
 
 
 @dataclass
@@ -598,6 +610,8 @@ def parse_task_dict(
                 contact_torque_threshold=step_dict.get("contact_torque_threshold", 5.0),
                 contact_baseline_window=step_dict.get("contact_baseline_window", 5),
                 contact_confirm_window=step_dict.get("contact_confirm_window", 3),
+                contact_mode=step_dict.get("contact_mode", "abs"),
+                contact_rate_threshold=step_dict.get("contact_rate_threshold", 0.3),
                 compliant_stop=step_dict.get("compliant_stop", False),
                 compliant_joints=step_dict.get("compliant_joints", []),
                 compliant_kp=step_dict.get("compliant_kp", 20.0),
@@ -605,6 +619,8 @@ def parse_task_dict(
                 compliant_stop_drift_deg=step_dict.get("compliant_stop_drift_deg", 3.0),
                 compliant_hold_seconds=step_dict.get("compliant_hold_seconds", 2.0),
                 compliant_max_drift_deg=step_dict.get("compliant_max_drift_deg", 15.0),
+                record_force=step_dict.get("record_force", False),
+                force_log_path=step_dict.get("force_log_path", ""),
             ))
         task_kwargs["steps"] = steps
         total_steps_duration = sum(s.max_duration for s in steps)

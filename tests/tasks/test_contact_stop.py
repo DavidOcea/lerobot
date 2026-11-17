@@ -43,6 +43,32 @@ def test_step_parses_contact_fields():
     ) == (True, ["left_arm_joint_3"], 7.5, 4, 2)
 
 
+def test_step_parses_record_force_fields():
+    step = _contact_step(record_force=True, force_log_path="/tmp/f.jsonl")
+    parsed = _parse(step).steps[0]
+    assert parsed.record_force is True
+    assert parsed.force_log_path == "/tmp/f.jsonl"
+
+
+def test_step_record_force_defaults_off():
+    parsed = _parse(_contact_step()).steps[0]
+    assert parsed.record_force is False
+    assert parsed.force_log_path == ""
+
+
+def test_step_parses_contact_mode_fields():
+    step = _contact_step(contact_mode="drop_rate", contact_rate_threshold=0.4)
+    parsed = _parse(step).steps[0]
+    assert parsed.contact_mode == "drop_rate"
+    assert parsed.contact_rate_threshold == 0.4
+
+
+def test_step_contact_mode_defaults_abs():
+    parsed = _parse(_contact_step()).steps[0]
+    assert parsed.contact_mode == "abs"
+    assert parsed.contact_rate_threshold == 0.3
+
+
 def test_stop_on_contact_with_overlap_next_raises():
     step = _contact_step(stop_on_contact=True, overlap_next=True)
     try:
