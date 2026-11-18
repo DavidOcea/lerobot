@@ -3013,8 +3013,11 @@ class TaskAgentOrchestrator:
                 distance = abs(target - current)
                 max_distance = max(max_distance, distance)
 
-        # Estimate time needed — speed constant and floor scale with multiplier
-        speed_deg_per_s = 30.0 * max(multiplier, 1.0)
+        # Estimate time needed — speed constant and floor scale with multiplier.
+        # Base speed is per-step (speed_deg_per_s, default 30); the global
+        # speed_multiplier only ever scales UP (>=1) on top of it.
+        base_speed = getattr(task.completion_criteria, 'speed_deg_per_s', 30.0)
+        speed_deg_per_s = base_speed * max(multiplier, 1.0)
         duration_floor = max(1.0, 3.0 / max(multiplier, 1.0))
         estimated_duration = max_distance / speed_deg_per_s + (1.0 / max(multiplier, 1.0))
         actual_duration = min(max_duration, max(estimated_duration, duration_floor))
@@ -3053,9 +3056,15 @@ class TaskAgentOrchestrator:
         # a logging failure must never affect the control loop.
         record_force = getattr(task.completion_criteria, "record_force", False)
         force_samples: list[dict[str, Any]] = []
+        prev_elapsed = 0.0  # previous loop's elapsed, to measure the REAL tick dt
 
         while time.time() - start_time < actual_duration:
             elapsed = time.time() - start_time
+            # Real loop period = elapsed - prev_elapsed (theoretical dt only counts
+            # time.sleep, not send_action/get_observation overhead). Use it so the
+            # drop_rate slope is computed in true Nm/s, not overestimated.
+            actual_dt = elapsed - prev_elapsed
+            prev_elapsed = elapsed
             progress = min(1.0, elapsed / actual_duration)
 
             # Use smooth interpolation (ease-in-out)
@@ -3096,7 +3105,7 @@ class TaskAgentOrchestrator:
                     j: float(observation.get(f"{j}.force", 0.0))
                     for j in monitored_contact_joints
                 }
-                if contact_detector.update(torques, dt):
+                if contact_detector.update(torques, actual_dt):
                     trigger_unit = "Nm/s" if task.completion_criteria.contact_mode == "drop_rate" else "Nm"
                     trigger_detail = ", ".join(
                         f"{j}: +{d:.2f} {trigger_unit}"
@@ -3477,6 +3486,7 @@ class TaskAgentOrchestrator:
                     compliant_max_drift_deg=step.compliant_max_drift_deg,
                     record_force=step.record_force,
                     force_log_path=step.force_log_path,
+                    speed_deg_per_s=step.speed_deg_per_s,
                 ),
             )
             if speed_multiplier != 1.0:

@@ -85,6 +85,10 @@ class CompletionCriteria:
     # analysis (e.g. identify load-bearing joints during box placement).
     record_force: bool = False
     force_log_path: str = ""
+    # Movement speed for position moves (°/s). Default 30 matches the legacy
+    # hardcoded value; set lower to slow a single step (e.g. 6 for a slow box
+    # descent). Global speed_multiplier still scales this up on top.
+    speed_deg_per_s: float = 30.0
 
 
 @dataclass
@@ -228,6 +232,9 @@ class PositionSequenceStep:
     # analysis (e.g. identify load-bearing joints during box placement).
     record_force: bool = False
     force_log_path: str = ""
+    # Movement speed (°/s), standalone steps only (see _execute_position_task).
+    # Default 30; set lower to slow this step. Not applied to overlap chains.
+    speed_deg_per_s: float = 30.0
 
 
 @dataclass
@@ -621,6 +628,7 @@ def parse_task_dict(
                 compliant_max_drift_deg=step_dict.get("compliant_max_drift_deg", 15.0),
                 record_force=step_dict.get("record_force", False),
                 force_log_path=step_dict.get("force_log_path", ""),
+                speed_deg_per_s=step_dict.get("speed_deg_per_s", 30.0),
             ))
         task_kwargs["steps"] = steps
         total_steps_duration = sum(s.max_duration for s in steps)

@@ -69,6 +69,17 @@ def test_step_contact_mode_defaults_abs():
     assert parsed.contact_rate_threshold == 0.3
 
 
+def test_step_parses_speed_deg_per_s():
+    step = _contact_step(speed_deg_per_s=6.0)
+    parsed = _parse(step).steps[0]
+    assert parsed.speed_deg_per_s == 6.0
+
+
+def test_step_speed_deg_per_s_defaults_30():
+    parsed = _parse(_contact_step()).steps[0]
+    assert parsed.speed_deg_per_s == 30.0
+
+
 def test_stop_on_contact_with_overlap_next_raises():
     step = _contact_step(stop_on_contact=True, overlap_next=True)
     try:
