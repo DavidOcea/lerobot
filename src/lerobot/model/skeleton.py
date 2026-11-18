@@ -1,29 +1,31 @@
-"""Screw-axis (Skeleton) 运动学描述 — supre 机器人模板。
+"""Screw-axis (Skeleton) 运动学描述 — supre 机器人模板（全局 PoE 版）。
 
-背景 / 为什么不用 DH 而用 screw 轴
----------------------------------
-DH 用每关节 4 参数 (alpha, a, d, theta) 描述，代价是强框架约定：
+背景 / 为什么不用 DH、也不用局部 PoE
+-----------------------------------
+DH：每关节 4 参数 (alpha, a, d, theta)，框架约束强：
   - 相邻关节轴平行时"公法线"不唯一 -> 参数奇异、标定病态；
   - 第 i 框架建在第 i-1 框架上 -> 测量误差逐关节累积；
-  - 几何要被硬拆成 alpha/a/d 三个量 -> 对"反测标定"极不友好。
+  - 几何被硬拆成 alpha/a/d -> 对"反测标定"极不友好。
 
-screw/Skeleton 表示每关节只问一句："这根关节绕空间里哪条线转？"
-  - axis: 单位旋转轴 (omega)
-  - parent_t_this: 零位姿下"父系 -> 本元素系"的固定刚体变换
-这等价于 Product-of-Exponentials (PoE)。每个轴在同一个基座系里独立测量，
-平行轴不奇异、误差不累积。本文件刻意对齐 Intrinsic Core 的
-`intrinsic_kinematics` Skeleton 格式（element 图 + parent_t_this + axis + limits）。
+局部 PoE（本文件旧版）：轴表达在各连杆系、parent_t_this 逐段相乘；
+  但中间连杆 frame 单 tracker 测不到、需反算，误差仍沿链累积 —— 本质还是 DH 毛病。
 
-与 DH 的对应关系（便于你把"粗 DH"结论迁移过来）：
-  - 杆长 a / 偏距 d   -> 由各 element 的 parent_t_this 里的 position 承载
-  - 扭转角 alpha       -> 由 axis 方向承载（screw 里 alpha 根本不单独存在）
-  - 零点偏置 theta0    -> 约定"零位姿"吸收：所有 parent_t_this/axis 都在某个
-                          参考位姿（theta=0）下测量。先定零点再测几何。
+全局 PoE（本文件）：所有 screw 轴都表达在同一个基座系里：
+    T(θ) = exp(S1·θ1) · exp(S2·θ2) · … · exp(Sn·θn) · M
+  - Si = (ωi, qi)：关节 i 的旋转轴方向 ωi + 轴上一点 qi，均在基座系。
+  - M：零位姿（θ=0）下末端法兰在基座系的位姿。
+  圆拟合"直进直出"：单关节慢扫 → tracker 画圆 → 圆面法向 = ωi、圆心 = qi；
+  各轴独立测量、平行轴不奇异、误差不累积。
 
-待填值（CPA / 物理测量产出）：
-  - 每个 element 的 parent_t_this（关节/连杆的固定几何变换）
-  - 每个 joint 的 axis（旋转轴方向）
-  - limits 已自动从 profile 读入（见 build_supre_skeleton）
+数据来源（VIVE 反测标定）：
+  - 每关节 axis(ω) / point(q)：单关节慢扫的 3D 圆拟合。
+  - M：θ=0 时 T2(法兰 probe) 在 T0(基座) 里的位姿。
+  - limits 已自动从 profile 读入（见 build_supre_skeleton）。
+
+与"粗 DH"的对应（便于把已有 DH 结论迁移过来）：
+  - 杆长 a / 偏距 d -> 由各 joint 的 point(q) 位置承载；
+  - 扭转角 alpha   -> 由 axis(ω) 方向承载（screw 里 alpha 不单独存在）；
+  - 零点偏置 theta0 -> 约定"零位姿"吸收：所有 axis/point/M 都在 θ=0 参考位姿下测。
 """
 
 from __future__ import annotations
@@ -37,11 +39,11 @@ import numpy as np
 
 
 # --------------------------------------------------------------------------- #
-# 基础数学：SE(3) 变换 + 旋转
+# 基础数学：四元数 / 旋转 / screw 指数
 # --------------------------------------------------------------------------- #
 
 def quat_to_rot(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
-    """四元数 (x, y, z, w) -> 3x3 旋转矩阵。"""
+    """四元数 (x, y, z, w) -> 3x3 旋转矩阵（自动归一化）。"""
     x, y, z, w = float(qx), float(qy), float(qz), float(qw)
     n = np.sqrt(x * x + y * y + z * z + w * w)
     x, y, z, w = x / n, y / n, z / n, w / n
@@ -52,16 +54,60 @@ def quat_to_rot(qx: float, qy: float, qz: float, qw: float) -> np.ndarray:
     ], dtype=float)
 
 
-def axis_angle_to_rot4(axis: tuple[float, float, float], angle: float) -> np.ndarray:
-    """绕单位轴 axis 旋转 angle(rad) 的 4x4 齐次变换（Rodrigues）。"""
+def rot_to_quat(R: np.ndarray) -> np.ndarray:
+    """3x3 旋转矩阵 -> 四元数 (x, y, z, w)。Shepperd 方法，数值稳健。"""
+    R = np.asarray(R, dtype=float)
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+    if tr > 0:
+        s = np.sqrt(tr + 1.0) * 2.0
+        w = 0.25 * s
+        x = (R[2, 1] - R[1, 2]) / s
+        y = (R[0, 2] - R[2, 0]) / s
+        z = (R[1, 0] - R[0, 1]) / s
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+        w = (R[2, 1] - R[1, 2]) / s
+        x = 0.25 * s
+        y = (R[0, 1] + R[1, 0]) / s
+        z = (R[0, 2] + R[2, 0]) / s
+    elif R[1, 1] > R[2, 2]:
+        s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+        w = (R[0, 2] - R[2, 0]) / s
+        x = (R[0, 1] + R[1, 0]) / s
+        y = 0.25 * s
+        z = (R[1, 2] + R[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+        w = (R[1, 0] - R[0, 1]) / s
+        x = (R[0, 2] + R[2, 0]) / s
+        y = (R[1, 2] + R[2, 1]) / s
+        z = 0.25 * s
+    q = np.array([x, y, z, w])
+    return q / np.linalg.norm(q)
+
+
+def axis_angle_to_rot(axis, angle: float) -> np.ndarray:
+    """绕单位轴 axis 旋转 angle(rad) 的 3x3 旋转矩阵（Rodrigues）。"""
     a = np.asarray(axis, dtype=float)
     a = a / np.linalg.norm(a)
     K = np.array([[0, -a[2], a[1]],
                   [a[2], 0, -a[0]],
                   [-a[1], a[0], 0]], dtype=float)
-    R = np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+    return np.eye(3) + np.sin(angle) * K + (1 - np.cos(angle)) * (K @ K)
+
+
+def screw_transform(axis, point, angle: float) -> np.ndarray:
+    """绕基座系里的轴 (axis 单位方向, point 轴上一点) 转 angle(rad) 的 4x4 变换。
+
+    R = exp([ω]× θ)；平移 = (I - R)·q。对应全局 PoE 里的 exp(S·θ)。
+    """
+    omega = np.asarray(axis, dtype=float)
+    omega = omega / np.linalg.norm(omega)
+    q = np.asarray(point, dtype=float)
+    R = axis_angle_to_rot(omega, angle)
     T = np.eye(4)
     T[:3, :3] = R
+    T[:3, 3] = (np.eye(3) - R) @ q
     return T
 
 
@@ -88,26 +134,28 @@ class Transform:
 
 
 # --------------------------------------------------------------------------- #
-# 数据模型（对齐 Intrinsic Skeleton）
+# 数据模型（全局 PoE）
 # --------------------------------------------------------------------------- #
 
 @dataclass
 class Element:
-    """Skeleton 图里的一个节点：link 或 joint（两者共用同一结构）。
+    """Skeleton 图里的一个节点：link 或 joint。
 
-    parent_t_this = 零位姿下"父元素系 -> 本元素系"的固定变换。
-    joint 额外有 axis（旋转轴）和 limits。
+    全局 PoE 里，joint 的几何都在基座系：
+      axis  = ω（单位旋转轴方向）
+      point = q（轴上一点）
+    link 元素只有结构/打印意义，不参与 FK。
     """
     id: int
     name: str
     kind: str                                # "link" | "joint"
-    parent_t_this: Optional[Transform] = None  # None = 待测（CPA/物理测量填）
     parent: Optional[int] = None
     children: list[int] = field(default_factory=list)
 
-    # joint 专属
-    axis: Optional[tuple[float, float, float]] = None  # None = 待测
-    limits: Optional[tuple[float, float]] = None       # (lower, upper) 单位：度
+    # joint 专属几何（基座系，None=待测）
+    axis: Optional[np.ndarray] = None        # ω，3 维单位向量
+    point: Optional[np.ndarray] = None       # q，轴上一点（3 维）
+    limits: Optional[tuple[float, float]] = None  # (lower, upper) 单位：度
 
     # link 专属（模板阶段暂不需要动力学量，留接口）
     mass: Optional[float] = None
@@ -117,9 +165,10 @@ class Element:
 
 @dataclass
 class Skeleton:
-    """一条串行链（基座 -> 末端）的运动学描述。"""
+    """一条串行链（基座 -> 末端）的全局 PoE 描述。"""
     name: str
     elements: list[Element] = field(default_factory=list)
+    M: Optional[Transform] = None            # 零位姿末端（基座系），None=待测
 
     def joints(self) -> list[Element]:
         return [e for e in self.elements if e.kind == "joint"]
@@ -131,43 +180,35 @@ class Skeleton:
         return len(self.joints())
 
     def missing_geometry(self) -> list[str]:
-        """列出尚未测量的几何量（axis / parent_t_this 仍为 None 的）。"""
+        """列出尚未测量的几何量（axis / point / M）。"""
         missing = []
-        for e in self.elements:
-            if e.parent_t_this is None and e.parent is not None:
-                missing.append(f"{e.name}.parent_t_this")
-            if e.kind == "joint" and e.axis is None:
+        for e in self.joints():
+            if e.axis is None:
                 missing.append(f"{e.name}.axis")
+            if e.point is None:
+                missing.append(f"{e.name}.point")
+        if self.M is None:
+            missing.append("M (零位姿末端)")
         return missing
 
 
 # --------------------------------------------------------------------------- #
-# 正运动学（PoE）：填完几何后即可验证
+# 正运动学（全局 PoE）
 # --------------------------------------------------------------------------- #
 
 def forward_kinematics(skeleton: Skeleton, joint_angles: dict[str, float]) -> np.ndarray:
-    """基座系 -> 末端系的 4x4 变换。
+    """基座系 -> 末端系的 4x4 变换：T(θ) = exp(S1θ1)·…·exp(Snθn)·M。
 
     joint_angles: {joint_name: 角度(度)}，未给出的关节按 0 处理。
-
-    PoE 约定（与 Intrinsic 一致）：沿 element 链顺序相乘，
-    每个 element 先乘 parent_t_this（固定），joint 再乘绕本地 axis 的旋转。
     """
-    T = np.eye(4)
-    for e in skeleton.elements:
-        if e.parent_t_this is None:
-            if e.parent is None:
-                continue  # base 元素（parent=None）默认单位变换
-            raise ValueError(
-                f"几何未填：{e.name}.parent_t_this 为 None。"
-                f"请先用 CPA/物理测量补齐（missing_geometry() 列出全部待填项）。"
-            )
-        T = T @ e.parent_t_this.matrix()
-        if e.kind == "joint":
-            if e.axis is None:
-                raise ValueError(f"几何未填：{e.name}.axis 为 None。")
-            theta = np.deg2rad(joint_angles.get(e.name, 0.0))
-            T = T @ axis_angle_to_rot4(e.axis, theta)
+    if skeleton.M is None:
+        raise ValueError("几何未填：M（零位姿末端）为 None。")
+    T = skeleton.M.matrix()
+    for e in reversed(skeleton.joints()):
+        if e.axis is None or e.point is None:
+            raise ValueError(f"几何未填：{e.name}.axis/point 为 None。")
+        theta = np.deg2rad(joint_angles.get(e.name, 0.0))
+        T = screw_transform(e.axis, e.point, theta) @ T
     return T
 
 
@@ -253,7 +294,7 @@ def build_supre_skeleton(profile_path: str | Path, arm: str,
     elements[parent_id].children.append(eid)
 
     name = f"supre_{arm}_arm" + ("_with_trunk" if include_trunk else "")
-    return Skeleton(name=name, elements=elements)
+    return Skeleton(name=name, elements=elements)  # M 默认 None（待测）
 
 
 def _print_skeleton(sk: Skeleton) -> None:
@@ -261,13 +302,18 @@ def _print_skeleton(sk: Skeleton) -> None:
     for e in sk.elements:
         tag = "L" if e.kind == "link" else "J"
         lim = f"  limits={e.limits}" if e.kind == "joint" and e.limits else ""
-        axis = f"  axis={e.axis}" if e.kind == "joint" else ""
-        ptt = "待测" if e.parent_t_this is None and e.parent is not None else "单位"
-        print(f"  [{tag}] id={e.id:<3} {e.name:<28} parent={e.parent}  parent_t_this={ptt}{lim}{axis}")
+        geo = ""
+        if e.kind == "joint":
+            a = "待测" if e.axis is None else np.array2string(np.asarray(e.axis), precision=3)
+            p = "待测" if e.point is None else np.array2string(np.asarray(e.point), precision=3)
+            geo = f"  axis={a}  point={p}"
+        print(f"  [{tag}] id={e.id:<3} {e.name:<28} parent={e.parent}{geo}{lim}")
+    m = "待测" if sk.M is None else f"({sk.M.x:.3f},{sk.M.y:.3f},{sk.M.z:.3f})"
+    print(f"  M(零位姿末端) = {m}")
     missing = sk.missing_geometry()
     print(f"  待测几何 ({len(missing)} 项):")
-    for m in missing:
-        print(f"    - {m}")
+    for x in missing:
+        print(f"    - {x}")
 
 
 if __name__ == "__main__":
