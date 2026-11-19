@@ -89,6 +89,11 @@ class CompletionCriteria:
     # hardcoded value; set lower to slow a single step (e.g. 6 for a slow box
     # descent). Global speed_multiplier still scales this up on top.
     speed_deg_per_s: float = 30.0
+    # Relative move (degrees from CURRENT position), mutually exclusive with
+    # target_joint_positions. Joints omitted from delta are held at their current
+    # position. Used for "micro-retract" after a drop_rate stop, where the
+    # absolute target is unknown but the relative retract is fixed.
+    delta: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -235,6 +240,9 @@ class PositionSequenceStep:
     # Movement speed (°/s), standalone steps only (see _execute_position_task).
     # Default 30; set lower to slow this step. Not applied to overlap chains.
     speed_deg_per_s: float = 30.0
+    # Relative move (degrees from CURRENT position). Mutually exclusive with
+    # `position`; omitted joints are held at current position. Standalone only.
+    delta: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -606,9 +614,21 @@ def parse_task_dict(
                     "stop_on_contact with overlap_next: contact-stop only "
                     "applies to standalone (non-overlap) steps"
                 )
+            if step_dict.get("delta") and step_dict.get("position"):
+                raise ValueError(
+                    f"Step '{step_dict.get('name', '')}' cannot combine "
+                    "'delta' (relative move) with 'position' (absolute target)"
+                )
+            if step_dict.get("delta") and step_dict.get("overlap_next"):
+                raise ValueError(
+                    f"Step '{step_dict.get('name', '')}' cannot combine "
+                    "'delta' with overlap_next: relative move only applies to "
+                    "standalone steps"
+                )
             steps.append(PositionSequenceStep(
                 name=step_dict.get("name", ""),
                 position=pos,
+                delta=step_dict.get("delta", {}),
                 max_duration=step_dict.get("max_duration", 10.0),
                 position_tolerance=step_dict.get("position_tolerance", 3.0),
                 overlap_next=step_dict.get("overlap_next", False),

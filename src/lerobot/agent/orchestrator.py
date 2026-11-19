@@ -2956,12 +2956,13 @@ class TaskAgentOrchestrator:
             )
 
         target_positions = task.completion_criteria.target_joint_positions
-        if not target_positions:
+        delta = getattr(task.completion_criteria, 'delta', {}) or {}
+        if not target_positions and not delta:
             return TaskResult(
                 task_name=task.name,
                 status=TaskStatus.FAILED,
                 duration=0.0,
-                error_message="No target_joint_positions provided",
+                error_message="No target_joint_positions or delta provided",
                 collision_detected=False,
                 attempts=1,
             )
@@ -2979,6 +2980,15 @@ class TaskAgentOrchestrator:
         # Get current positions using the robot's helper method
         # SupreRobotFollower.get_current_position() returns {"joint_name": position} in degrees
         current_positions_dict = self.robot.get_current_position()
+
+        # delta mode: relative move — target = current + delta for the joints
+        # listed in delta (omitted joints are held at current by the b-min logic
+        # below). Must happen BEFORE joint_names is derived from target_positions.
+        if delta:
+            target_positions = {
+                j: current_positions_dict.get(j, 0.0) + d
+                for j, d in delta.items()
+            }
 
         # Get joint names from robot config
         joint_names = self.robot.observation_joint_names if hasattr(self.robot, 'observation_joint_names') else list(target_positions.keys())
@@ -3487,6 +3497,7 @@ class TaskAgentOrchestrator:
                     record_force=step.record_force,
                     force_log_path=step.force_log_path,
                     speed_deg_per_s=step.speed_deg_per_s,
+                    delta=step.delta,
                 ),
             )
             if speed_multiplier != 1.0:

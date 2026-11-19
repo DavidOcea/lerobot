@@ -80,6 +80,38 @@ def test_step_speed_deg_per_s_defaults_30():
     assert parsed.speed_deg_per_s == 30.0
 
 
+def test_step_parses_delta():
+    step = _contact_step(position={}, delta={"right_arm_joint_3": 2.0})
+    parsed = _parse(step).steps[0]
+    assert parsed.delta == {"right_arm_joint_3": 2.0}
+    assert parsed.position == {}
+
+
+def test_step_delta_defaults_empty():
+    parsed = _parse(_contact_step()).steps[0]
+    assert parsed.delta == {}
+
+
+def test_step_delta_and_position_mutually_exclusive():
+    step = _contact_step(delta={"right_arm_joint_3": 2.0})  # 默认带 position
+    try:
+        _parse(step)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for delta + position")
+
+
+def test_step_delta_and_overlap_next_mutually_exclusive():
+    step = _contact_step(position={}, delta={"right_arm_joint_3": 2.0}, overlap_next=True)
+    try:
+        _parse(step)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError for delta + overlap_next")
+
+
 def test_stop_on_contact_with_overlap_next_raises():
     step = _contact_step(stop_on_contact=True, overlap_next=True)
     try:
