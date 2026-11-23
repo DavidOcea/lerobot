@@ -182,8 +182,9 @@ ros2_ws/log/
 =======
 
 #
-*.md 
+*.md
 *.mdx
+!BRANCHES.md
 # Serena MCP project cache
 .serena/
 >>>>>>> david/temp-agent

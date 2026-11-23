@@ -16,6 +16,7 @@ New Features:
 - AGV navigation task support (NEW)
 """
 
+import json
 import logging
 import os
 import select
@@ -32,6 +33,8 @@ from lerobot.safety import (
     create_enhanced_collision_config,
 )
 from lerobot.safety.collision_detector import CollisionConfig
+from lerobot.safety.local_contact_detector import LocalContactConfig, LocalContactDetector
+from lerobot.motors.eyou.cst_soft_spring import CompliantDriftTrip
 from lerobot.tasks.completion_detector import TaskCompletionDetector
 from lerobot.tasks.config import TaskConfig, parse_task_dict
 from lerobot.tasks.local_policy_executor import LocalPolicyExecutor
@@ -2445,7 +2448,7 @@ class TaskAgentOrchestrator:
 
                 # Manually get bbox + best-two ROIs
                 h0, w0 = bgr_img.shape[:2]
-                img = bgr_img[:, :, ::-1].copy()
+                img = bgr_img.copy()  # no channel flip — camera RGB (bgr_img is a misnomer), model expects RGB; see NOTE in YOLOClassifier.classify
                 img = cv2.resize(img, (640, 640)).transpose(2, 0, 1).astype(np.float32) / 255.0
                 img = np.expand_dims(img, axis=0)
                 try:
@@ -2586,6 +2589,13 @@ class TaskAgentOrchestrator:
             "boundary_check_mode": cc.boundary_check_mode or "contain",
             "boundary_iou_threshold": cc.boundary_iou_threshold,
             "target_class": cc.target_class or "",
+            # Color-threshold (used by "color_threshold" method, ignored by others)
+            "roi": cc.roi,
+            "color_target": cc.color_target,
+            "hue_range": cc.hue_range,
+            "saturation_min": cc.saturation_min,
+            "value_min": cc.value_min,
+            "color_fraction_threshold": cc.color_fraction_threshold,
         }
         try:
             classifier = make_classifier(cc.method, **classifier_kwargs)
@@ -2946,12 +2956,13 @@ class TaskAgentOrchestrator:
             )
 
         target_positions = task.completion_criteria.target_joint_positions
-        if not target_positions:
+        delta = getattr(task.completion_criteria, 'delta', {}) or {}
+        if not target_positions and not delta:
             return TaskResult(
                 task_name=task.name,
                 status=TaskStatus.FAILED,
                 duration=0.0,
-                error_message="No target_joint_positions provided",
+                error_message="No target_joint_positions or delta provided",
                 collision_detected=False,
                 attempts=1,
             )
@@ -2970,8 +2981,38 @@ class TaskAgentOrchestrator:
         # SupreRobotFollower.get_current_position() returns {"joint_name": position} in degrees
         current_positions_dict = self.robot.get_current_position()
 
+        # delta mode: relative move — target = current + delta for the joints
+        # listed in delta (omitted joints are held at current by the b-min logic
+        # below). Must happen BEFORE joint_names is derived from target_positions.
+        if delta:
+            target_positions = {
+                j: current_positions_dict.get(j, 0.0) + d
+                for j, d in delta.items()
+            }
+
         # Get joint names from robot config
         joint_names = self.robot.observation_joint_names if hasattr(self.robot, 'observation_joint_names') else list(target_positions.keys())
+
+        # b-min: a partial target (e.g. waist-only rotation) is valid — joints the
+        # robot has but the task omits are held at their current position, so the
+        # action dict stays complete and the robot does not reject it with
+        # "Could not find required joint '...'". Unknown (typo'd) target joints
+        # still fail loudly so the old typo protection is preserved.
+        held_joints = [
+            j for j in joint_names
+            if j not in target_positions and j in current_positions_dict
+        ]
+        if held_joints:
+            logger.warning(
+                f"Holding {len(held_joints)} joint(s) at current position "
+                f"(not in target_positions): {', '.join(held_joints)}"
+            )
+        unknown_joints = [j for j in target_positions if j not in joint_names]
+        if unknown_joints:
+            raise ValueError(
+                f"Unknown joint(s) in target_joint_positions (not on robot): "
+                f"{', '.join(unknown_joints)}. Valid joints: {', '.join(joint_names)}"
+            )
 
         # Calculate movement duration based on max distance
         max_distance = 0.0
@@ -2982,8 +3023,11 @@ class TaskAgentOrchestrator:
                 distance = abs(target - current)
                 max_distance = max(max_distance, distance)
 
-        # Estimate time needed — speed constant and floor scale with multiplier
-        speed_deg_per_s = 30.0 * max(multiplier, 1.0)
+        # Estimate time needed — speed constant and floor scale with multiplier.
+        # Base speed is per-step (speed_deg_per_s, default 30); the global
+        # speed_multiplier only ever scales UP (>=1) on top of it.
+        base_speed = getattr(task.completion_criteria, 'speed_deg_per_s', 30.0)
+        speed_deg_per_s = base_speed * max(multiplier, 1.0)
         duration_floor = max(1.0, 3.0 / max(multiplier, 1.0))
         estimated_duration = max_distance / speed_deg_per_s + (1.0 / max(multiplier, 1.0))
         actual_duration = min(max_duration, max(estimated_duration, duration_floor))
@@ -2996,9 +3040,41 @@ class TaskAgentOrchestrator:
         step_count = 0
         total_steps = int(actual_duration * control_frequency)
 
+        # Contact-stop: monitor torque rise over a local (just-before-contact)
+        # baseline and stop the move early when the arms close onto the box,
+        # instead of pushing past the fixed target angle and stalling.
+        contact_detector = None
+        monitored_contact_joints: list[str] = []
+        contact_stopped = False
+        if task.completion_criteria.stop_on_contact:
+            monitored_contact_joints = list(
+                task.completion_criteria.contact_joints or target_positions.keys()
+            )
+            contact_detector = LocalContactDetector(LocalContactConfig(
+                joints=monitored_contact_joints,
+                threshold=task.completion_criteria.contact_torque_threshold,
+                baseline_window=task.completion_criteria.contact_baseline_window,
+                confirm_window=task.completion_criteria.contact_confirm_window,
+                mode=task.completion_criteria.contact_mode,
+                rate_threshold=task.completion_criteria.contact_rate_threshold,
+            ))
+
         success = True
+
+        # Force logging — record per-tick joint torque for offline analysis
+        # (e.g. identify load-bearing joints during box placement). Best-effort:
+        # a logging failure must never affect the control loop.
+        record_force = getattr(task.completion_criteria, "record_force", False)
+        force_samples: list[dict[str, Any]] = []
+        prev_elapsed = 0.0  # previous loop's elapsed, to measure the REAL tick dt
+
         while time.time() - start_time < actual_duration:
             elapsed = time.time() - start_time
+            # Real loop period = elapsed - prev_elapsed (theoretical dt only counts
+            # time.sleep, not send_action/get_observation overhead). Use it so the
+            # drop_rate slope is computed in true Nm/s, not overestimated.
+            actual_dt = elapsed - prev_elapsed
+            prev_elapsed = elapsed
             progress = min(1.0, elapsed / actual_duration)
 
             # Use smooth interpolation (ease-in-out)
@@ -3006,9 +3082,10 @@ class TaskAgentOrchestrator:
             # Calculate intermediate positions
             target_action = {}
             for joint_name in joint_names:
-                if joint_name in target_positions and joint_name in current_positions_dict:
+                if joint_name in current_positions_dict:
                     current = current_positions_dict[joint_name]
-                    target = target_positions[joint_name]
+                    # Omitted joint = hold at current position (target defaults to current)
+                    target = target_positions.get(joint_name, current)
                     # Interpolate: current + (target - current) * progress
                     intermediate = current + (target - current) * smooth_progress
                     # Add .pos suffix for send_action format
@@ -3022,6 +3099,43 @@ class TaskAgentOrchestrator:
 
             # Get observation for collision and monitoring
             observation = self.robot.get_observation()
+
+            # Record force for offline analysis (best-effort)
+            if record_force:
+                forces = {
+                    k[: -len(".force")]: float(v)
+                    for k, v in observation.items()
+                    if k.endswith(".force")
+                }
+                force_samples.append({"t": round(elapsed, 3), "forces": forces})
+
+            # Contact-stop check (local-differential torque rise)
+            if contact_detector is not None:
+                torques = {
+                    j: float(observation.get(f"{j}.force", 0.0))
+                    for j in monitored_contact_joints
+                }
+                if contact_detector.update(torques, actual_dt):
+                    trigger_unit = "Nm/s" if task.completion_criteria.contact_mode == "drop_rate" else "Nm"
+                    trigger_detail = ", ".join(
+                        f"{j}: +{d:.2f} {trigger_unit}"
+                        for j, d in sorted(
+                            contact_detector.last_trigger.items(),
+                            key=lambda kv: -kv[1],
+                        )
+                    )
+                    logger.info(
+                        f"Contact detected during {task.name} — "
+                        f"trigger: {trigger_detail} — stopping early"
+                    )
+                    contact_stopped = True
+                    if task.completion_criteria.compliant_stop:
+                        flexible_joints = (
+                            task.completion_criteria.compliant_joints
+                            or monitored_contact_joints
+                        )
+                        self._run_compliant_stop(task, flexible_joints)
+                    break
 
             # Update real-time monitoring dashboard (non-blocking)
             if self.monitor_collector is not None:
@@ -3041,8 +3155,13 @@ class TaskAgentOrchestrator:
                 except Exception:
                     pass  # Never let monitoring errors affect the control loop
 
-            # Check for collision
-            if self.collision_detector:
+            # Check for collision. For a contact-stop step, skip the soft
+            # anomaly check — contact is the *intended* outcome, and the
+            # collision detector's static base-torque deviation would either
+            # false-fire on gravity drift or preempt the graceful contact-stop.
+            # The step's own contact detector + max_duration remain the stop
+            # conditions; the robot's hardware torque clamps stay as backstop.
+            if self.collision_detector and not task.completion_criteria.stop_on_contact:
                 collision_result = self.collision_detector.check_collision(observation, target_action)
                 if collision_result.is_detected:
                     logger.warning(f"Collision detected during position task {task.name}")
@@ -3052,6 +3171,20 @@ class TaskAgentOrchestrator:
 
             # Pace the control loop to the configured control frequency
             time.sleep(dt)
+
+        # Dump recorded force samples (best-effort — never affect the task result)
+        if record_force and force_samples:
+            try:
+                force_path = task.completion_criteria.force_log_path or (
+                    f"/tmp/{task.name.replace('/', '_').replace(' ', '_')}_force.jsonl"
+                )
+                Path(force_path).parent.mkdir(parents=True, exist_ok=True)
+                with open(force_path, "w") as f:
+                    for s in force_samples:
+                        f.write(json.dumps(s) + "\n")
+                logger.info(f"Force log written: {force_path} ({len(force_samples)} samples)")
+            except Exception as exc:  # noqa: BLE001 - diagnostic, never fatal
+                logger.warning(f"Force log failed: {exc}")
 
         # Check if reached target positions
         final_positions_dict = self.robot.get_current_position()
@@ -3070,6 +3203,11 @@ class TaskAgentOrchestrator:
                 if abs(final - target) > tolerance:
                     all_reached = False
                     logger.debug(f"Joint {joint_name}: target={target:.1f}, actual={final:.1f}, diff={abs(final-target):.1f}")
+
+        # Contact-stop counts as reaching the goal: the move stopped at contact,
+        # not at the fixed angle — that is the intended behavior, not a failure.
+        if contact_stopped:
+            all_reached = True
 
         duration = time.time() - start_time
         # Use COMPLETED status (SUCCESS is not a valid TaskStatus enum value)
@@ -3094,6 +3232,40 @@ class TaskAgentOrchestrator:
             start_time=start_time,
             end_time=start_time + duration,
         )
+
+    def _run_compliant_stop(self, task: TaskConfig, compliant_joints: list[str]) -> None:
+        """Phase 2 of compliant-stop: float the contact joints on a CST soft
+        spring until the float conforms (drift reaches stop_drift_deg) or times
+        out, then return so the caller's ``break`` stops all joints together.
+
+        The compliant float is a hardware capability of the EYou robot only. A
+        robot without ``compliant_hold`` (any non-supre follower) falls back to
+        the rigid stop: we return without floating and the outer ``break`` does
+        the stop, preserving the original behaviour.
+        """
+        crit = task.completion_criteria
+        compliant_hold = getattr(self.robot, "compliant_hold", None)
+        if compliant_hold is None:
+            logger.warning(
+                f"Robot does not support compliant_hold; "
+                f"falling back to rigid stop for {task.name}"
+            )
+            return
+        for joint in compliant_joints:
+            try:
+                compliant_hold(
+                    joint,
+                    kp=crit.compliant_kp,
+                    kd=crit.compliant_kd,
+                    stop_drift_deg=crit.compliant_stop_drift_deg,
+                    seconds=crit.compliant_hold_seconds,
+                    max_drift_deg=crit.compliant_max_drift_deg,
+                    hold_on_stop=True,
+                )
+            except CompliantDriftTrip as exc:
+                logger.warning(f"Compliant hold safety trip on {joint}: {exc}")
+            except Exception as exc:  # noqa: BLE001 - never fail the whole task
+                logger.warning(f"Compliant hold failed on {joint}: {exc}")
 
     def _execute_position_sequence_task(self, task: TaskConfig) -> TaskResult:
         """Execute a position_sequence task - move joints through multiple positions sequentially.
@@ -3141,7 +3313,10 @@ class TaskAgentOrchestrator:
                 # Include it as the chain's final waypoint — that way the
                 # continuous control loop covers the entire trajectory and
                 # stops naturally at the last step (no loop-restart gap).
-                if i < len(task.steps):
+                # EXCEPT a contact-stop step: it must run standalone so its
+                # local-differential contact detector actually runs (a chain
+                # waypoint is pure position control with no contact stop).
+                if i < len(task.steps) and not getattr(task.steps[i], "stop_on_contact", False):
                     i += 1
                 chain_steps = task.steps[chain_start:i]
                 chain_names = [s.name or f"step_{chain_start + k + 1}" for k, s in enumerate(chain_steps)]
@@ -3305,6 +3480,24 @@ class TaskAgentOrchestrator:
                     type="position",
                     target_joint_positions=step.position,
                     position_tolerance=step.position_tolerance,
+                    stop_on_contact=step.stop_on_contact,
+                    contact_joints=step.contact_joints,
+                    contact_torque_threshold=step.contact_torque_threshold,
+                    contact_baseline_window=step.contact_baseline_window,
+                    contact_confirm_window=step.contact_confirm_window,
+                    contact_mode=step.contact_mode,
+                    contact_rate_threshold=step.contact_rate_threshold,
+                    compliant_stop=step.compliant_stop,
+                    compliant_joints=step.compliant_joints,
+                    compliant_kp=step.compliant_kp,
+                    compliant_kd=step.compliant_kd,
+                    compliant_stop_drift_deg=step.compliant_stop_drift_deg,
+                    compliant_hold_seconds=step.compliant_hold_seconds,
+                    compliant_max_drift_deg=step.compliant_max_drift_deg,
+                    record_force=step.record_force,
+                    force_log_path=step.force_log_path,
+                    speed_deg_per_s=step.speed_deg_per_s,
+                    delta=step.delta,
                 ),
             )
             if speed_multiplier != 1.0:

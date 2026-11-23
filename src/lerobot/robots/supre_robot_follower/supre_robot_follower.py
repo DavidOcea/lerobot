@@ -400,6 +400,23 @@ class SupreRobotFollower(Robot):
         hw_positions = [pos * self._joint_direction_map.get(name, 1)
                         for name, pos in zip(self.observation_joint_names, target_positions)]
         self._hardware_manager.write(hw_positions)
+
+    def compliant_hold(self, joint_name: str, **params) -> float:
+        """对单个关节执行 CST 软弹簧保持（接触停止的降刚度基元）。
+
+        透传给硬件管理器，由其按关节名定位所属电机并切换 CST 模式跑弹簧环。
+
+        Args:
+            joint_name: 全局关节名（如 "right_arm_joint_5"）。
+            **params: 转发给 EyouMotorHardware.compliant_hold 的弹簧/停止参数。
+
+        Returns:
+            结束时刻的漂移（度）。
+        """
+        if not self.is_connected:
+            raise RuntimeError("Follower robot is not connected.")
+        return self._hardware_manager.compliant_hold(joint_name, **params)
+
     def disconnect(self) -> None:
         """断开与机器人的连接。"""
         if not self.is_connected:

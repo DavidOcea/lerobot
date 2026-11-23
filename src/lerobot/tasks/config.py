@@ -57,6 +57,43 @@ class CompletionCriteria:
     # (so it is still commanded to close), but judge it separately (skip the
     # |current - target| <= tolerance test for these joints).
     gripper_joints: list[str] = field(default_factory=list)
+    # Contact-stop — complete the move early when torque rises above a local
+    # (just-before-contact) baseline, instead of reaching target_joint_positions.
+    stop_on_contact: bool = False
+    contact_joints: list[str] = field(default_factory=list)
+    contact_torque_threshold: float = 5.0
+    contact_baseline_window: int = 5
+    contact_confirm_window: int = 3
+    contact_mode: str = "abs"  # "abs" (existing rise) or "drop_rate" (unload fall)
+    contact_rate_threshold: float = 0.3  # Nm/s, drop_rate mode only
+    # Compliant-stop — instead of a rigid break at the touch threshold, switch
+    # the contact joints to a CST soft-spring float ("不锁死也不运动") and stop
+    # all joints once the float conforms (drift reaches compliant_stop_drift_deg)
+    # or times out (compliant_hold_seconds).
+    compliant_stop: bool = False
+    # Joints to float once contact triggers. Independent of contact_joints
+    # (which decide *detection*): default empty -> fall back to contact_joints.
+    # Use this to flex the stall-prone (force-bearing) joints while a lighter
+    # joint remains the touch detector. NEVER list the waist (node 1/2).
+    compliant_joints: list[str] = field(default_factory=list)
+    compliant_kp: float = 20.0
+    compliant_kd: float = 5.0
+    compliant_stop_drift_deg: float = 3.0
+    compliant_hold_seconds: float = 2.0
+    compliant_max_drift_deg: float = 15.0
+    # Force logging — record per-tick joint torque during the move for offline
+    # analysis (e.g. identify load-bearing joints during box placement).
+    record_force: bool = False
+    force_log_path: str = ""
+    # Movement speed for position moves (°/s). Default 30 matches the legacy
+    # hardcoded value; set lower to slow a single step (e.g. 6 for a slow box
+    # descent). Global speed_multiplier still scales this up on top.
+    speed_deg_per_s: float = 30.0
+    # Relative move (degrees from CURRENT position), mutually exclusive with
+    # target_joint_positions. Joints omitted from delta are held at their current
+    # position. Used for "micro-retract" after a drop_rate stop, where the
+    # absolute target is unknown but the relative retract is fixed.
+    delta: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -180,6 +217,32 @@ class PositionSequenceStep:
     max_duration: float = 10.0
     position_tolerance: float = 3.0
     overlap_next: bool = False  # 到位前提前发下一步, 消除停顿
+    # Contact-stop (standalone steps only — see parse_task_dict guard).
+    stop_on_contact: bool = False
+    contact_joints: list[str] = field(default_factory=list)
+    contact_torque_threshold: float = 5.0
+    contact_baseline_window: int = 5
+    contact_confirm_window: int = 3
+    contact_mode: str = "abs"  # "abs" (existing rise) or "drop_rate" (unload fall)
+    contact_rate_threshold: float = 0.3  # Nm/s, drop_rate mode only
+    # Compliant-stop (see CompletionCriteria for semantics).
+    compliant_stop: bool = False
+    compliant_joints: list[str] = field(default_factory=list)
+    compliant_kp: float = 20.0
+    compliant_kd: float = 5.0
+    compliant_stop_drift_deg: float = 3.0
+    compliant_hold_seconds: float = 2.0
+    compliant_max_drift_deg: float = 15.0
+    # Force logging — record per-tick joint torque during this step for offline
+    # analysis (e.g. identify load-bearing joints during box placement).
+    record_force: bool = False
+    force_log_path: str = ""
+    # Movement speed (°/s), standalone steps only (see _execute_position_task).
+    # Default 30; set lower to slow this step. Not applied to overlap chains.
+    speed_deg_per_s: float = 30.0
+    # Relative move (degrees from CURRENT position). Mutually exclusive with
+    # `position`; omitted joints are held at current position. Standalone only.
+    delta: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -255,7 +318,7 @@ class ClassifyConfig:
     has its own set of parameters as nested fields.
     """
 
-    method: str = "apriltag"  # classification method: "apriltag", "color", "model"
+    method: str = "apriltag"  # classification method: "apriltag", "yolo_detect", "yolo_roi", "color_threshold"
 
     # --- AprilTag method ---
     marker_id_map: dict[int, str] = field(default_factory=dict)
@@ -280,6 +343,16 @@ class ClassifyConfig:
     # post-pickup checks where the workpiece appears larger near the camera).
     boundary_check_mode: str = "contain"   # "contain" or "iou"
     boundary_iou_threshold: float = 0.6    # only used when boundary_check_mode="iou"
+
+    # --- Color threshold method ("color_threshold") ---
+    # Binary green-light gate: fraction of pixels matching a hue band inside a
+    # fixed pixel ROI. No model needed. Image is RGB (see NOTE(color-format)).
+    roi: list = field(default_factory=list)   # [x, y, w, h] pixel ROI in camera frame
+    color_target: str = "green"               # label returned when the color is "lit"
+    hue_range: list = field(default_factory=lambda: [35, 85])  # OpenCV H (0-180) green band
+    saturation_min: int = 80                  # minimum S (0-255)
+    value_min: int = 80                       # minimum V (0-255)
+    color_fraction_threshold: float = 0.20    # min color-pixel fraction in ROI to count as "lit"
 
     # --- Auto-align (AGV micro-adjustment on ambiguous IoU) ---
     auto_align_enabled: bool = False       # enable AGV auto-alignment
@@ -535,12 +608,47 @@ def parse_task_dict(
                     pos = named_positions[pos].copy()
                 else:
                     raise ValueError(f"Unknown named position: '{pos}'")
+            if step_dict.get("stop_on_contact") and step_dict.get("overlap_next"):
+                raise ValueError(
+                    f"Step '{step_dict.get('name', '')}' cannot combine "
+                    "stop_on_contact with overlap_next: contact-stop only "
+                    "applies to standalone (non-overlap) steps"
+                )
+            if step_dict.get("delta") and step_dict.get("position"):
+                raise ValueError(
+                    f"Step '{step_dict.get('name', '')}' cannot combine "
+                    "'delta' (relative move) with 'position' (absolute target)"
+                )
+            if step_dict.get("delta") and step_dict.get("overlap_next"):
+                raise ValueError(
+                    f"Step '{step_dict.get('name', '')}' cannot combine "
+                    "'delta' with overlap_next: relative move only applies to "
+                    "standalone steps"
+                )
             steps.append(PositionSequenceStep(
                 name=step_dict.get("name", ""),
                 position=pos,
+                delta=step_dict.get("delta", {}),
                 max_duration=step_dict.get("max_duration", 10.0),
                 position_tolerance=step_dict.get("position_tolerance", 3.0),
                 overlap_next=step_dict.get("overlap_next", False),
+                stop_on_contact=step_dict.get("stop_on_contact", False),
+                contact_joints=step_dict.get("contact_joints", []),
+                contact_torque_threshold=step_dict.get("contact_torque_threshold", 5.0),
+                contact_baseline_window=step_dict.get("contact_baseline_window", 5),
+                contact_confirm_window=step_dict.get("contact_confirm_window", 3),
+                contact_mode=step_dict.get("contact_mode", "abs"),
+                contact_rate_threshold=step_dict.get("contact_rate_threshold", 0.3),
+                compliant_stop=step_dict.get("compliant_stop", False),
+                compliant_joints=step_dict.get("compliant_joints", []),
+                compliant_kp=step_dict.get("compliant_kp", 20.0),
+                compliant_kd=step_dict.get("compliant_kd", 5.0),
+                compliant_stop_drift_deg=step_dict.get("compliant_stop_drift_deg", 3.0),
+                compliant_hold_seconds=step_dict.get("compliant_hold_seconds", 2.0),
+                compliant_max_drift_deg=step_dict.get("compliant_max_drift_deg", 15.0),
+                record_force=step_dict.get("record_force", False),
+                force_log_path=step_dict.get("force_log_path", ""),
+                speed_deg_per_s=step_dict.get("speed_deg_per_s", 30.0),
             ))
         task_kwargs["steps"] = steps
         total_steps_duration = sum(s.max_duration for s in steps)

@@ -235,3 +235,31 @@ class SupreRobotHardwareManager:
             # 我们的分发逻辑保证了 Eyou 的列表是完整的。
             print(f"Sending command to {instance.__class__.__name__}: {commands}")
             instance.write(commands)
+
+    def compliant_hold(self, joint_name: str, **params) -> float:
+        """
+        对单个关节执行 CST 软弹簧保持（接触停止的降刚度基元）。
+
+        按全局关节名找到所属硬件实例及其 hw_index，然后把弹簧/停止参数原样
+        透传给 ``EyouMotorHardware.compliant_hold``。
+
+        Args:
+            joint_name: 全局关节名（self.joint_order 中的名字）。
+            **params: 转发给 EyouMotorHardware.compliant_hold 的 kp/kd/停止参数。
+
+        Returns:
+            结束时刻的漂移（度）。
+
+        Raises:
+            ValueError: 关节名不存在、被 disable，或该关节不是 Eyou 电机关节。
+        """
+        if joint_name not in self.joint_order:
+            raise ValueError(f"Unknown joint '{joint_name}'")
+        global_index = self.joint_order.index(joint_name)
+        mapping = self._joint_map.get(global_index)
+        if mapping is None:
+            raise ValueError(f"Joint '{joint_name}' is disabled/unmapped")
+        instance = mapping['instance']
+        if not isinstance(instance, EyouMotorHardware):
+            raise ValueError(f"Joint '{joint_name}' is not an EyouMotorHardware joint")
+        return instance.compliant_hold(mapping['hw_index'], **params)
