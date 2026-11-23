@@ -177,7 +177,8 @@ monitor/prometheus/grafana-data
 monitor/prometheus/prometheus-data/
 
 #
-*.md 
+*.md
 *.mdx
+!BRANCHES.md
 # Serena MCP project cache
 .serena/
