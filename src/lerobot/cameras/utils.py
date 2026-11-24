@@ -25,6 +25,12 @@ IndexOrPath: TypeAlias = int | Path
 
 
 def make_cameras_from_configs(camera_configs: dict[str, CameraConfig]) -> dict[str, Camera]:
+    # A config without a cameras block parses to None (or {}). Return an empty
+    # dict so a camera-less robot still works for pure joint tasks — camera
+    # and joint control are decoupled; only vision policies need cameras.
+    if not camera_configs:
+        return {}
+
     cameras = {}
 
     for key, cfg in camera_configs.items():
